@@ -4,6 +4,7 @@ import { imageProviderStatus } from "@/lib/imagen";
 import { providerStatus } from "@/lib/stock";
 import { listClonedVoices, voiceCloneStatus, CLONE_PREFIX } from "@/lib/voiceclone";
 import { activeTtsProvider, VOICES } from "@/lib/voices";
+import { aiVideoStatus } from "@/lib/video";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,7 @@ export async function GET() {
     cloneStatus: voiceCloneStatus(),
     dubStatus: dubProviderStatus(),
     imageStatus: imageProviderStatus(),
+    videoStatus: aiVideoStatus(),
     clonePrefix: CLONE_PREFIX,
   });
 }

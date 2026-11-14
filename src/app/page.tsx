@@ -23,6 +23,7 @@ import { imageProviderStatus } from "@/lib/imagen";
 import { dubProviderStatus } from "@/lib/dub";
 import { voiceCloneStatus } from "@/lib/voiceclone";
 import { VOICES } from "@/lib/voices";
+import { aiVideoStatus } from "@/lib/video";
 
 export const dynamic = "force-dynamic";
 
@@ -86,6 +87,7 @@ export default async function HomePage() {
   const projects = await listProjects(6).catch(() => []);
   const providers = providerStatus();
   const imageStatus = imageProviderStatus();
+  const videoStatus = aiVideoStatus();
   const dubStatus = dubProviderStatus();
   const cloneStatus = voiceCloneStatus();
 
@@ -269,6 +271,9 @@ export default async function HomePage() {
               <Badge tone="success">Stock: {providers.bundledLibrary} bundled clips</Badge>
               <Badge tone={imageStatus.configured ? "success" : "neutral"}>
                 AI imagery: {imageStatus.label}
+              </Badge>
+              <Badge tone={videoStatus.configured ? "success" : "neutral"}>
+                AI video: {videoStatus.label}
               </Badge>
               <Badge tone={dubStatus.configured ? "success" : "neutral"}>
                 Dubbing: {dubStatus.label}

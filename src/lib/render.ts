@@ -27,6 +27,7 @@ import {
   saveRenderArtifact,
 } from "./storage";
 import { estimateWordTimings, synthesizeSpeech, type WordTiming } from "./tts";
+import { aiVideoEnabled, generateSceneVideo } from "./video";
 import {
   ASPECTS,
   BRAND_FONT_ASS_NAME,
@@ -561,6 +562,25 @@ async function prepareMedia(
         // ignore
       }
     }
+  }
+
+  // 2b. AI-generated footage (HunyuanVideo via a hosted replica of the model).
+  //     Only reached when the scene has no usable stock clip, so it replaces the
+  //     on-device plate below instead of displacing cheap, already-licensed
+  //     footage. generateSceneVideo() never throws, so a video API outage still
+  //     falls through to the plate and the render completes.
+  if (aiVideoEnabled()) {
+    const aspect: AspectRatio =
+      width === height ? "1:1" : width > height ? "16:9" : "9:16";
+    const video = await generateSceneVideo({
+      prompt: scene.mediaQuery || scene.narration || "",
+      duration,
+      width,
+      height,
+      aspect,
+      seed: index * 137 + 29,
+    });
+    if (video) return { file: video.file, isImage: false, procedural: false };
   }
 
   // 3. On-device abstract plate — guarantees the render still completes. It is
