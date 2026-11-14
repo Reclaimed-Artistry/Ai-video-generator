@@ -1,4 +1,6 @@
 import catalogData from "./stock-catalog.json";
+import extraPeopleData from "./stock-people-extra.json";
+import reviewData from "./stock-review.json";
 import {
   getPeopleRepresentation,
   type MediaType,
@@ -98,7 +100,62 @@ export function isAssetCompatibleWithPeople(
   return false;
 }
 
-export const LOCAL_CATALOG = (catalogData as StockAsset[]).filter(
+/**
+ * Race labels in the generated catalog were not backed by Pexels' own
+ * (race-neutral) descriptions, so every labelled clip was reviewed by eye.
+ * `stock-review.json` holds the corrections and is applied on load so that
+ * regenerating `stock-catalog.json` can never silently undo the review.
+ */
+type ReviewOverride = { demographics: PeopleRepresentation[]; hasPeople: boolean };
+const REVIEW_OVERRIDES = (reviewData as unknown as { overrides: Record<string, ReviewOverride> })
+  .overrides;
+
+const RACE_TERM_TAGS = new Set([
+  "african american", "black", "african", "africa", "hispanic", "latino", "latina",
+  "east asian", "asian", "south asian", "indian", "middle eastern", "arab",
+  "caucasian", "white", "european", "diverse", "multiracial",
+]);
+const RACE_TITLE_WORDS =
+  /\b(african[\s-]american|black|african|hispanic|latin[oa]|east[\s-]asian|south[\s-]asian|asian|indian|middle[\s-]eastern|arab|caucasian|white|european|diverse|multiracial)\b\s*/gi;
+const TAGS_FOR_DEMOGRAPHIC: Record<PeopleRepresentation, string[]> = {
+  all: ["diverse", "multiracial"],
+  "african-american": ["african american", "black"],
+  african: ["african", "africa"],
+  hispanic: ["hispanic", "latino"],
+  "east-asian": ["east asian", "asian"],
+  "south-asian": ["south asian", "indian"],
+  "middle-eastern": ["middle eastern", "arab"],
+  caucasian: ["caucasian", "white"],
+};
+
+function applyReview(asset: StockAsset): StockAsset {
+  const override = REVIEW_OVERRIDES[asset.id];
+  if (!override) return asset;
+  const title = asset.title.replace(RACE_TITLE_WORDS, "").replace(/\s+/g, " ").trim();
+  return {
+    ...asset,
+    title: title.charAt(0).toUpperCase() + title.slice(1),
+    tags: [
+      ...override.demographics.flatMap((demo) => TAGS_FOR_DEMOGRAPHIC[demo] ?? []),
+      ...asset.tags.filter((tag) => !RACE_TERM_TAGS.has(tag.toLowerCase())),
+    ],
+    hasPeople: override.hasPeople,
+    demographics: override.demographics,
+  };
+}
+
+/** Generated catalog (with reviewed corrections) + hand-verified people clips. */
+const MERGED_CATALOG: StockAsset[] = (() => {
+  const base = (catalogData as StockAsset[]).map(applyReview);
+  const seen = new Set(base.map((asset) => asset.id));
+  const extra = (extraPeopleData as unknown as StockAsset[]).filter((asset) => !seen.has(asset.id));
+  return [...base, ...extra];
+})();
+
+const ANIMAL_CLIP_RE =
+  /\b(dogs?|puppy|puppies|cats?|kittens?|lions?|cubs?|birds?|horses?|animals?|wildlife|pets?|golden retriever)\b/i;
+
+export const LOCAL_CATALOG = MERGED_CATALOG.filter(
   (asset) => asset.type === "video" && !isAbstractAsset(asset),
 );
 export const VIDEO_CATALOG = LOCAL_CATALOG;
@@ -1391,6 +1448,29 @@ export async function matchVideoForNarration(opts: {
     ? scoreAsset(localBest, plan.targetTokens)
     : 0;
   const localBestUnused = localBest && !excludeIds.includes(localBest.id);
+
+  // A specific cast was chosen but no clip of that cast fits this narration:
+  // an on-topic clip with no people in it (food, places, objects) matches the
+  // narration without ever showing someone of a different race.
+  const narrationMentionsAnimals = ANIMAL_CLIP_RE.test(`${opts.narration} ${opts.caption ?? ""}`);
+  if (people !== "all" && localBestNarrationScore < 8) {
+    const peopleFree = searchLocalCatalog(
+      `${plan.displayQuery} ${plan.targetTokens.slice(0, 6).join(" ")}`,
+      { type: "video", limit: 24, peopleRepresentation: people, allowNonHumanScenic: true },
+    )
+      .filter(
+        (asset) =>
+          asset.hasPeople === false &&
+          !excludeIds.includes(asset.id) &&
+          // Animal footage only stands in when the narration is about animals.
+          (narrationMentionsAnimals || !ANIMAL_CLIP_RE.test(`${asset.title} ${asset.tags.join(" ")}`)),
+      )
+      .map((asset) => ({ asset, score: scoreAsset(asset, plan.targetTokens) }))
+      .sort((a, b) => b.score - a.score)[0];
+    if (peopleFree && peopleFree.score >= Math.max(8, localBestNarrationScore + 4)) {
+      return { asset: peopleFree.asset, mediaQuery: query };
+    }
+  }
 
   // When a specific race is chosen (and no live Pexels/Pixabay API key is set)
   // OR when an unused verified clip already matches the narration strongly,
