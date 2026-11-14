@@ -6,7 +6,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:ai": "node --env-file-if-exists=.env.local scripts/verify-ai.mjs"
   },
   "dependencies": {
     "@andresaya/edge-tts": "^1.9.1",
