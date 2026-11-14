@@ -4,6 +4,7 @@ import { ArrowUpRight, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { formatSmpte } from "@/components/BrandMark";
+import { resolveMediaUrl } from "@/lib/media-url";
 import type { Project, StockAsset } from "@/lib/types";
 
 export default function ReferenceMonitor({
@@ -23,11 +24,17 @@ export default function ReferenceMonitor({
   const activeProject = renderedProjects[selectedIndex] ?? null;
 
   const videoSrc = activeProject
-    ? `/api/files/renders/${activeProject.id}/output.mp4`
+    ? resolveMediaUrl(
+        activeProject.outputPath,
+        `renders/${activeProject.id}/output.mp4`,
+      ) ?? ""
     : fallbackClip?.sources[0]?.url ?? "";
 
   const posterSrc = activeProject?.posterPath
-    ? `/api/files/renders/${activeProject.id}/poster.jpg`
+    ? resolveMediaUrl(
+        activeProject.posterPath,
+        `renders/${activeProject.id}/poster.jpg`,
+      ) ?? undefined
     : fallbackClip?.thumb ?? undefined;
 
   function togglePlay() {

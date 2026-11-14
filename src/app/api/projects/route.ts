@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
+import { db, ensureSchema } from "@/db";
 import { projects } from "@/db/schema";
+import { listProjects, toProject } from "@/lib/projects";
 import { generateScript } from "@/lib/script";
-import { ensureSchema, listProjects, toProject } from "@/lib/projects";
 import type { AspectRatio, Resolution, Style, Tone } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export async function GET() {
   const items = await listProjects(24);
@@ -14,6 +15,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  await ensureSchema();
+
   const body = (await request.json().catch(() => ({}))) as {
     prompt?: string;
     title?: string;
@@ -33,9 +36,13 @@ export async function POST(request: Request) {
 
   const duration = Math.min(90, Math.max(15, Number(body.duration ?? 30)));
   const tone = (body.tone ?? "energetic") as Tone;
-  const script = await generateScript({ prompt, duration, tone, language: body.language ?? "en" });
+  const script = await generateScript({
+    prompt,
+    duration,
+    tone,
+    language: body.language ?? "en",
+  });
 
-  await ensureSchema();
   const inserted = await db
     .insert(projects)
     .values({

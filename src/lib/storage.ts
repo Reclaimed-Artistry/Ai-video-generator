@@ -2,74 +2,136 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { del, put } from "@vercel/blob";
+import { eq } from "drizzle-orm";
+import { db, ensureSchema } from "@/db";
+import { projectAssets } from "@/db/schema";
 
-export const IS_VERCEL = Boolean(process.env.VERCEL);
+export const IS_VERCEL = process.env.VERCEL === "1";
 
-/**
- * Working directory for renders. Vercel functions only have a writable,
- * ephemeral /tmp, so finished masters are uploaded to Vercel Blob from there.
- * Docker / VPS hosts keep files on a persistent STORAGE_DIR volume instead.
- */
-export const STORAGE_DIR =
-  process.env.STORAGE_DIR ??
-  (IS_VERCEL
-    ? path.join(os.tmpdir(), "cutline-storage")
-    : path.join(process.cwd(), "storage"));
-
-export function blobEnabled(): boolean {
+export function isBlobConfigured(): boolean {
   return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 }
 
-/** Vercel without Blob has nowhere durable to keep rendered videos. */
-export function storageProblem(): string | null {
-  if (IS_VERCEL && !blobEnabled()) {
-    return "Rendered videos need Vercel Blob storage on Vercel. In your Vercel project open Storage → Create → Blob, connect it to this project (this adds BLOB_READ_WRITE_TOKEN), then redeploy.";
-  }
-  return null;
+/**
+ * Writable scratch directory for FFmpeg scene rendering. On Vercel `/var/task`
+ * is read-only, so scratch files always live under `/tmp/cutline-storage`.
+ */
+export function getStorageRoot(): string {
+  if (process.env.STORAGE_DIR) return process.env.STORAGE_DIR;
+  if (IS_VERCEL) return path.join(os.tmpdir(), "cutline-storage");
+  return path.join(/* turbopackIgnore: true */ process.cwd(), "storage");
 }
 
-export function isRemoteUrl(value: string | null | undefined): value is string {
-  return Boolean(value && /^https?:\/\//i.test(value));
+export function getProjectScratchDir(projectId: string): string {
+  return path.join(getStorageRoot(), "renders", projectId);
 }
 
-/** Upload a finished file to Vercel Blob and return its public URL. */
-export async function uploadToBlob(
-  pathname: string,
-  file: string,
+export function storageDriverLabel(): "vercel-blob" | "postgres-bytea" | "local-disk" {
+  if (isBlobConfigured()) return "vercel-blob";
+  if (IS_VERCEL) return "postgres-bytea";
+  return "local-disk";
+}
+
+/**
+ * Persists a rendered deliverable (`output.mp4` or `poster.jpg`) to the best
+ * available backend and returns the stored reference (either a Vercel Blob
+ * HTTPS CDN URL or a relative key like `renders/<id>/output.mp4`).
+ */
+export async function saveRenderArtifact(
+  projectId: string,
+  filename: string,
+  localFilePath: string,
   contentType: string,
 ): Promise<string> {
-  try {
-    const result = await put(pathname, fs.createReadStream(file), {
+  const key = `renders/${projectId}/${filename}`;
+
+  // Tier 1: Vercel Blob (fast global CDN + native Range requests)
+  if (isBlobConfigured()) {
+    const buffer = fs.readFileSync(/* turbopackIgnore: true */ localFilePath);
+    const blob = await put(key, buffer, {
       access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
       contentType,
-      addRandomSuffix: true,
-      multipart: fs.statSync(file).size > 8 * 1024 * 1024,
     });
-    return result.url;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/private/i.test(message)) {
-      throw new Error(
-        "Your Vercel Blob store is private. Videos are shared by public URL, so create a Blob store with Public access (Storage → Create → Blob → Public), connect it to this project and redeploy.",
-      );
-    }
-    throw new Error(`Uploading the finished video to Vercel Blob failed: ${message}`);
+    return blob.url;
   }
+
+  // Tier 2: Serverless Vercel without Blob token -> persist in PostgreSQL
+  if (IS_VERCEL) {
+    await ensureSchema();
+    const buffer = fs.readFileSync(/* turbopackIgnore: true */ localFilePath);
+    await db
+      .insert(projectAssets)
+      .values({
+        key,
+        projectId,
+        contentType,
+        size: buffer.length,
+        data: buffer,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: projectAssets.key,
+        set: {
+          contentType,
+          size: buffer.length,
+          data: buffer,
+          updatedAt: new Date(),
+        },
+      });
+    return key;
+  }
+
+  // Tier 3: Local / Docker / Railway persistent volume
+  return key;
 }
 
-export async function deleteFromBlob(urls: (string | null | undefined)[]): Promise<void> {
-  const remote = urls.filter(isRemoteUrl);
-  if (!blobEnabled() || remote.length === 0) return;
+export async function readDbArtifact(key: string): Promise<{
+  data: Buffer;
+  contentType: string;
+  size: number;
+} | null> {
+  await ensureSchema();
+  const rows = await db
+    .select({
+      data: projectAssets.data,
+      contentType: projectAssets.contentType,
+      size: projectAssets.size,
+    })
+    .from(projectAssets)
+    .where(eq(projectAssets.key, key))
+    .limit(1);
+
+  if (!rows[0]) return null;
+  return rows[0];
+}
+
+export async function deleteProjectArtifacts(
+  projectId: string,
+  urls: (string | null | undefined)[] = [],
+): Promise<void> {
+  // Clean local scratch / disk directory
+  const dir = getProjectScratchDir(projectId);
   try {
-    await del(remote);
+    fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
   } catch {
-    // Best effort: a missing blob should never block deleting a project.
+    // Ignore missing directory
   }
-}
 
-/** Append Blob's download flag so browsers save instead of playing inline. */
-export function blobDownloadUrl(url: string): string {
-  const parsed = new URL(url);
-  parsed.searchParams.set("download", "1");
-  return parsed.toString();
+  // Clean Vercel Blob objects if URLs were stored in Blob
+  if (isBlobConfigured()) {
+    const blobUrls = urls.filter(
+      (value): value is string =>
+        typeof value === "string" &&
+        (value.startsWith("https://") || value.startsWith("http://")),
+    );
+    if (blobUrls.length > 0) {
+      try {
+        await del(blobUrls);
+      } catch {
+        // Ignore already-deleted blobs
+      }
+    }
+  }
 }

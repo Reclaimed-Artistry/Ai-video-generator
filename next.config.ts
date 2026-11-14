@@ -1,25 +1,31 @@
 import type { NextConfig } from "next";
 
-/**
- * Files loaded by path at runtime (not via import) are invisible to Next's
- * output tracing, so serverless hosts like Vercel would ship functions
- * without them. List them explicitly for the routes that need them.
- */
-const renderAssets = [
-  "./node_modules/ffmpeg-static/ffmpeg",
-  "./assets/fonts/**/*",
-  "./node_modules/mespeak/**/*",
-];
-
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["mespeak", "ffmpeg-static"],
+  serverExternalPackages: ["ffmpeg-static", "mespeak", "@andresaya/edge-tts"],
+  images: {
+    unoptimized: true,
+  },
   outputFileTracingIncludes: {
-    // Only the encoder route needs ffmpeg + fonts (~85 MB); keep other routes lean.
-    "/api/projects/*/render": renderAssets,
-    "/api/tts/**": ["./node_modules/mespeak/**/*"],
+    "/api/projects/*/render": [
+      "./node_modules/ffmpeg-static/ffmpeg",
+      "./node_modules/ffmpeg-static/index.js",
+      "./node_modules/ffmpeg-static/package.json",
+      "./src/assets/fonts/**/*",
+      "./node_modules/mespeak/src/**/*",
+      "./node_modules/mespeak/voices/en/**/*",
+    ],
+    "/api/tts/preview": [
+      "./node_modules/mespeak/src/**/*",
+      "./node_modules/mespeak/voices/en/**/*",
+    ],
   },
   outputFileTracingExcludes: {
-    "*": ["./storage/**/*", "./node_modules/ffprobe-static/**/*"],
+    "*": [
+      "./storage/**/*",
+      "./node_modules/ffprobe-static/**/*",
+      "./.git/**/*",
+      "./scripts/**/*",
+    ],
   },
 };
 

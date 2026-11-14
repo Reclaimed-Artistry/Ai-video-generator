@@ -7,83 +7,105 @@ import ffmpegStatic from "ffmpeg-static";
 
 const execFileAsync = promisify(execFile);
 
-/** Fonts shipped in the repo so captions render identically on any host (Vercel has no system fonts). */
-export const FONTS_DIR = path.join(process.cwd(), "assets", "fonts");
+function resolveFfmpegBin(): string {
+  const candidates = [
+    typeof ffmpegStatic === "string" ? ffmpegStatic : "",
+    path.join(/* turbopackIgnore: true */ process.cwd(), "node_modules", "ffmpeg-static", "ffmpeg"),
+    "/var/task/node_modules/ffmpeg-static/ffmpeg",
+  ].filter(Boolean);
 
-let resolvedBinary: string | null = null;
-
-/**
- * Locate a runnable ffmpeg binary. On serverless hosts the traced binary can
- * lose its executable bit, so it is copied to the writable tmp dir and chmod'ed.
- */
-function ffmpegBinary(): string {
-  if (resolvedBinary) return resolvedBinary;
-  const candidate = (ffmpegStatic as unknown as string | null) ?? "ffmpeg";
-  if (!path.isAbsolute(candidate)) {
-    resolvedBinary = candidate;
-    return candidate;
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(/* turbopackIgnore: true */ candidate)) {
+        return candidate;
+      }
+    } catch {
+      // keep probing
+    }
   }
-  try {
-    fs.accessSync(candidate, fs.constants.X_OK);
-    resolvedBinary = candidate;
-  } catch {
-    const copy = path.join(os.tmpdir(), "cutline-ffmpeg");
-    if (!fs.existsSync(copy)) fs.copyFileSync(candidate, copy);
-    fs.chmodSync(copy, 0o755);
-    resolvedBinary = copy;
-  }
-  return resolvedBinary;
+  return "ffmpeg";
 }
 
-let fontconfigFile: string | null = null;
+export const FFMPEG_BIN = resolveFfmpegBin();
 
-/** Minimal fontconfig config that only knows the bundled fonts and caches in tmp. */
-function fontconfigEnv(): NodeJS.ProcessEnv {
-  if (!fontconfigFile) {
-    const cacheDir = path.join(os.tmpdir(), "cutline-fontconfig-cache");
-    fs.mkdirSync(cacheDir, { recursive: true });
-    fontconfigFile = path.join(os.tmpdir(), "cutline-fonts.conf");
-    fs.writeFileSync(
-      fontconfigFile,
-      `<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+/**
+ * Locate bundled TrueType fonts shipped inside `src/assets/fonts` so `libass`
+ * burns captions reliably on Vercel's bare Amazon Linux runtime as well as
+ * local Debian/Docker hosts.
+ */
+export function getFontsDir(): string | null {
+  const candidates = [
+    path.join(/* turbopackIgnore: true */ process.cwd(), "src", "assets", "fonts"),
+    "/var/task/src/assets/fonts",
+    "/usr/share/fonts/truetype/dejavu",
+  ];
+  for (const dir of candidates) {
+    try {
+      if (fs.existsSync(/* turbopackIgnore: true */ dir)) return dir;
+    } catch {
+      // keep probing
+    }
+  }
+  return null;
+}
+
+function ensureFontconfigPath(): string | undefined {
+  const fontsDir = getFontsDir();
+  if (!fontsDir) return undefined;
+  const confPath = path.join(os.tmpdir(), "cutline-fonts.conf");
+  const cacheDir = path.join(os.tmpdir(), "cutline-fc-cache");
+  try {
+    fs.mkdirSync(/* turbopackIgnore: true */ cacheDir, { recursive: true });
+    const xml = `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
 <fontconfig>
-  <dir>${FONTS_DIR}</dir>
+  <dir>${fontsDir}</dir>
   <cachedir>${cacheDir}</cachedir>
 </fontconfig>
-`,
-      "utf8",
-    );
+`;
+    fs.writeFileSync(/* turbopackIgnore: true */ confPath, xml, "utf8");
+    return confPath;
+  } catch {
+    return undefined;
   }
-  return {
-    ...process.env,
-    FONTCONFIG_FILE: fontconfigFile,
-    FONTCONFIG_PATH: path.dirname(fontconfigFile),
-  };
 }
 
 export async function runFfmpeg(args: string[]): Promise<string> {
-  const { stderr } = await execFileAsync(ffmpegBinary(), ["-hide_banner", ...args], {
+  const fontconfig = ensureFontconfigPath();
+  const env = fontconfig
+    ? { ...process.env, FONTCONFIG_FILE: fontconfig }
+    : process.env;
+  const { stderr } = await execFileAsync(FFMPEG_BIN, args, {
     maxBuffer: 1024 * 1024 * 32,
-    env: fontconfigEnv(),
+    env,
   });
   return stderr;
 }
 
-/** Read a media file's duration from ffmpeg's own header dump (no ffprobe needed). */
+/**
+ * Probes media duration using `ffmpeg -i` stderr output — avoids bundling the
+ * 336 MB multi-platform `ffprobe-static` package into Vercel Functions.
+ */
 export async function probeDuration(file: string): Promise<number> {
-  let stderr = "";
-  try {
-    const result = await execFileAsync(ffmpegBinary(), ["-hide_banner", "-i", file], {
-      maxBuffer: 1024 * 1024 * 8,
-    });
-    stderr = result.stderr;
-  } catch (error) {
-    // `ffmpeg -i` without an output always exits non-zero; the header is still on stderr.
-    stderr = (error as { stderr?: string }).stderr ?? "";
-  }
-  const match = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(stderr);
-  if (!match) return 0;
-  const [, hours, minutes, seconds] = match;
-  return Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds);
+  return new Promise((resolve) => {
+    execFile(
+      /* turbopackIgnore: true */ FFMPEG_BIN,
+      ["-hide_banner", "-i", file],
+      { maxBuffer: 1024 * 1024 * 8 },
+      (_err, _stdout, stderr) => {
+        const match = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(
+          stderr || "",
+        );
+        if (!match) {
+          resolve(0);
+          return;
+        }
+        const hours = Number(match[1]);
+        const minutes = Number(match[2]);
+        const seconds = Number(match[3]);
+        const total = hours * 3600 + minutes * 60 + seconds;
+        resolve(Number.isFinite(total) ? total : 0);
+      },
+    );
+  });
 }

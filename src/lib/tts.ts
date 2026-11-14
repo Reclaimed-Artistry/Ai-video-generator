@@ -9,7 +9,9 @@ export type Speech = {
   provider: TtsProvider;
 };
 
-const MESPEAK_ROOT = path.join(process.cwd(), "node_modules", "mespeak");
+function mespeakRoot(): string {
+  return path.join(/* turbopackIgnore: true */ process.cwd(), "node_modules", "mespeak");
+}
 
 let mespeakModule: typeof import("mespeak") | null = null;
 const loadedVoices = new Set<string>();
@@ -18,8 +20,8 @@ function loadMespeak() {
   if (mespeakModule) return mespeakModule;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require("mespeak") as typeof import("mespeak");
-  const configPath = path.join(MESPEAK_ROOT, "src", "mespeak_config.json");
-  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const configPath = path.join(mespeakRoot(), "src", "mespeak_config.json");
+  const config = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ configPath, "utf8"));
   mod.loadConfig(config);
   mespeakModule = mod;
   return mod;
@@ -27,12 +29,13 @@ function loadMespeak() {
 
 function mespeakVoiceFile(engineVoice: string): string | null {
   const base = engineVoice.split("+")[0];
+  const root = mespeakRoot();
   const candidates = [
-    path.join(MESPEAK_ROOT, "voices", "en", `${base}.json`),
-    path.join(MESPEAK_ROOT, "voices", `${base}.json`),
+    path.join(root, "voices", "en", `${base}.json`),
+    path.join(root, "voices", `${base}.json`),
   ];
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+    if (fs.existsSync(/* turbopackIgnore: true */ candidate)) return candidate;
   }
   return null;
 }
@@ -42,7 +45,7 @@ function synthesizeBuiltin(text: string, engineVoice: string, rate: number, pitc
   const mespeak = loadMespeak();
   const file = mespeakVoiceFile(engineVoice);
   if (file && !loadedVoices.has(file)) {
-    mespeak.loadVoice(JSON.parse(fs.readFileSync(file, "utf8")));
+    mespeak.loadVoice(JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ file, "utf8")));
     loadedVoices.add(file);
   }
   const buffer = mespeak.speak(text, {

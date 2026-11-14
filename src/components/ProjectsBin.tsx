@@ -4,6 +4,7 @@ import { ArrowUpRight, CheckCircle2, Download, Film, Plus, Search, Trash2 } from
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { estimateSceneSeconds, formatClock } from "@/components/BrandMark";
+import { resolveMediaUrl } from "@/lib/media-url";
 import type { Project } from "@/lib/types";
 
 type StatusFilter = "all" | "done" | "drafts";
@@ -115,11 +116,18 @@ export default function ProjectsBin({
               (acc, scene) => acc + estimateSceneSeconds(scene.narration, scene.duration),
               0,
             );
+            const masterUrl = resolveMediaUrl(
+              project.outputPath,
+              `renders/${project.id}/output.mp4`,
+            );
             const previewVideo = isDone
-              ? `/api/files/renders/${project.id}/output.mp4`
+              ? masterUrl
               : project.script.scenes[0]?.mediaUrl ?? null;
             const poster = project.posterPath
-              ? `/api/files/renders/${project.id}/poster.jpg`
+              ? resolveMediaUrl(
+                  project.posterPath,
+                  `renders/${project.id}/poster.jpg`,
+                )
               : project.script.scenes[0]?.mediaThumb ?? null;
 
             return (
@@ -230,9 +238,9 @@ export default function ProjectsBin({
                           <span>Cut Desk</span>
                           <ArrowUpRight className="h-3 w-3" />
                         </Link>
-                        {isDone ? (
+                        {isDone && masterUrl ? (
                           <a
-                            href={`/api/files/renders/${project.id}/output.mp4?download=1`}
+                            href={masterUrl}
                             download={`cutline-${project.id.slice(0, 8)}.mp4`}
                             className="inline-flex items-center gap-1 rounded-[2px] border border-line bg-panel px-2 py-1 font-tech text-[10px] uppercase text-stone-ink transition-colors hover:border-line-strong hover:text-paper"
                           >

@@ -29,6 +29,7 @@ import {
   formatClock,
   formatSmpte,
 } from "@/components/BrandMark";
+import { resolveMediaUrl } from "@/lib/media-url";
 import {
   ASPECT_ORDER,
   ASPECTS,
@@ -485,8 +486,21 @@ export default function Studio({
     [voices, project.voice],
   );
 
-  const outputUrl = `/api/files/renders/${project.id}/output.mp4?v=${renderVersion}`;
-  const posterUrl = `/api/files/renders/${project.id}/poster.jpg?v=${renderVersion}`;
+  const outputUrl =
+    resolveMediaUrl(
+      project.outputPath,
+      `renders/${project.id}/output.mp4`,
+      renderVersion,
+    ) ?? `/api/files/renders/${project.id}/output.mp4?v=${renderVersion}`;
+  const downloadUrl =
+    resolveMediaUrl(project.outputPath, `renders/${project.id}/output.mp4`) ??
+    `/api/files/renders/${project.id}/output.mp4`;
+  const posterUrl =
+    resolveMediaUrl(
+      project.posterPath,
+      `renders/${project.id}/poster.jpg`,
+      renderVersion,
+    ) ?? undefined;
   const activeTiming = sceneTimings[activeIndex] ?? { start: 0, duration: 5, end: 5 };
 
   const monitorFrameClass =
@@ -637,7 +651,7 @@ export default function Studio({
 
             {hasMasterFile && render.status !== "rendering" ? (
               <a
-                href={`/api/files/renders/${project.id}/output.mp4?download=1`}
+                href={downloadUrl}
                 download={`cutline-${project.id.slice(0, 8)}-${project.resolution}.mp4`}
                 className="inline-flex items-center gap-1.5 rounded-[3px] border border-nominal/45 bg-nominal/10 px-3 py-1.5 font-tech text-[11px] font-medium text-nominal transition-colors hover:bg-nominal/20"
               >

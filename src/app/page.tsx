@@ -4,6 +4,7 @@ import { CutlineMark } from "@/components/BrandMark";
 import Composer from "@/components/Composer";
 import FootageContactSheet from "@/components/FootageContactSheet";
 import ReferenceMonitor from "@/components/ReferenceMonitor";
+import { resolveMediaUrl } from "@/lib/media-url";
 import { listProjects } from "@/lib/projects";
 import { providerStatus, VIDEO_CATALOG } from "@/lib/stock";
 import { VOICES } from "@/lib/voices";
@@ -176,10 +177,16 @@ export default async function HomePage() {
             <div className="console-surface divide-y divide-line overflow-hidden rounded-[4px]">
               {projects.slice(0, 6).map((project) => {
                 const isDone = project.status === "done";
-                const leadThumb =
-                  project.posterPath
-                    ? `/api/files/renders/${project.id}/poster.jpg`
-                    : project.script.scenes[0]?.mediaThumb ?? null;
+                const leadThumb = project.posterPath
+                  ? resolveMediaUrl(
+                      project.posterPath,
+                      `renders/${project.id}/poster.jpg`,
+                    )
+                  : project.script.scenes[0]?.mediaThumb ?? null;
+                const masterDownloadUrl = resolveMediaUrl(
+                  project.outputPath,
+                  `renders/${project.id}/output.mp4`,
+                );
 
                 return (
                   <div
@@ -241,9 +248,9 @@ export default async function HomePage() {
                     </div>
 
                     <div className="flex items-center gap-2">
-                      {isDone ? (
+                      {isDone && masterDownloadUrl ? (
                         <a
-                          href={`/api/files/renders/${project.id}/output.mp4?download=1`}
+                          href={masterDownloadUrl}
                           download={`cutline-${project.id.slice(0, 8)}.mp4`}
                           className="inline-flex items-center gap-1 rounded-[3px] border border-line bg-inset px-2.5 py-1.5 font-tech text-[11px] text-stone-ink transition-colors hover:border-line-strong hover:text-paper"
                         >

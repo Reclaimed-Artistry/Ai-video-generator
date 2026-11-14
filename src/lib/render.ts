@@ -5,19 +5,18 @@ import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { synthesizeSpeech } from "./tts";
 import { LOCAL_CATALOG, getLocalAsset, matchLocalAsset, pickSource } from "./stock";
-import { FONTS_DIR, probeDuration, runFfmpeg } from "./ffmpeg";
+import { getFontsDir, probeDuration, runFfmpeg } from "./ffmpeg";
 import { getProject, updateProject } from "./projects";
 import {
-  STORAGE_DIR,
-  blobEnabled,
-  deleteFromBlob,
-  storageProblem,
-  uploadToBlob,
+  getProjectScratchDir,
+  IS_VERCEL,
+  isBlobConfigured,
+  saveRenderArtifact,
 } from "./storage";
 import { ASPECTS, RESOLUTIONS, type AspectRatio, type Resolution, type Scene, type Style } from "./types";
 
 export function projectDir(id: string): string {
-  return path.join(STORAGE_DIR, "renders", id);
+  return getProjectScratchDir(id);
 }
 
 export function fileUrl(...parts: string[]): string {
@@ -257,12 +256,19 @@ async function renderSceneVideo(
     "utf8",
   );
 
-  const captionFilter = `ass=filename=${captionFile}:fontsdir=${FONTS_DIR}`;
+  const fontsDir = getFontsDir();
+  const escapedAss = captionFile.replace(/\\/g, "/").replace(/:/g, "\\:");
+  const escapedFontsDir = fontsDir
+    ? fontsDir.replace(/\\/g, "/").replace(/:/g, "\\:")
+    : null;
+  const captionFilter = escapedFontsDir
+    ? `ass=filename=${escapedAss}:fontsdir=${escapedFontsDir}`
+    : `ass=${escapedAss}`;
 
   const media = await resolveMedia(scene, height);
 
   if (media.kind === "generated" || !media.url) {
-    const gradient = `gradients=s=${width}x${height}:c0=0x1e1b4b:c1=0x0ea5e9:x0=0:y0=0:x1=${width}:y1=${height}:d=${Math.ceil(duration)}:r=${30}`;
+    const gradient = `gradients=s=${width}x${height}:c0=0x121210:c1=0x262521:x0=0:y0=0:x1=${width}:y1=${height}:d=${Math.ceil(duration)}:r=${30}`;
     await runFfmpeg([
       "-y",
       "-f",
@@ -317,21 +323,24 @@ async function renderSceneVideo(
     "high",
     "-r",
     "30",
+    ...(IS_VERCEL ? ["-threads", "2"] : []),
     "-an",
     output,
   );
 
-  await runFfmpeg(args);
+  try {
+    await runFfmpeg(args);
+  } finally {
+    // Free source clip immediately so serverless /tmp stays well below 512MB
+    fs.rmSync(/* turbopackIgnore: true */ mediaFile, { force: true });
+    fs.rmSync(/* turbopackIgnore: true */ captionFile, { force: true });
+  }
   return output;
 }
 
 export async function renderProject(projectId: string): Promise<void> {
   const project = await getProject(projectId);
   if (!project) throw new Error("Project not found");
-  const problem = storageProblem();
-  if (problem) throw new Error(problem);
-  const previousOutput = project.outputPath;
-  const previousPoster = project.posterPath;
 
   const dir = projectDir(projectId);
   fs.rmSync(dir, { recursive: true, force: true });
@@ -480,28 +489,34 @@ export async function renderProject(projectId: string): Promise<void> {
     // poster is optional
   }
 
-  const hasPoster = fs.existsSync(poster);
-  let outputPath = path.join("renders", projectId, "output.mp4");
-  let posterPath: string | null = hasPoster
-    ? path.join("renders", projectId, "poster.jpg")
+  const totalDuration = await probeDuration(output);
+
+  await updateProject(projectId, {
+    progress: 94,
+    stage: isBlobConfigured()
+      ? "Uploading master to Vercel Blob"
+      : "Saving rendered master",
+  });
+
+  const savedOutputPath = await saveRenderArtifact(
+    projectId,
+    "output.mp4",
+    output,
+    "video/mp4",
+  );
+  const hasPoster = fs.existsSync(/* turbopackIgnore: true */ poster);
+  const savedPosterPath = hasPoster
+    ? await saveRenderArtifact(projectId, "poster.jpg", poster, "image/jpeg")
     : null;
 
-  if (blobEnabled()) {
-    // Serverless hosts (Vercel) keep nothing on disk between requests, so the
-    // master and poster are published to Vercel Blob and the URLs stored.
-    await updateProject(projectId, { progress: 96, stage: "Uploading master to storage" });
-    outputPath = await uploadToBlob(`renders/${projectId}/output.mp4`, output, "video/mp4");
-    posterPath = hasPoster
-      ? await uploadToBlob(`renders/${projectId}/poster.jpg`, poster, "image/jpeg")
-      : null;
-    fs.rmSync(dir, { recursive: true, force: true });
-    await deleteFromBlob([previousOutput, previousPoster]);
+  // On Vercel or when Vercel Blob owns the deliverables, wipe the entire /tmp
+  // scratch directory so warm Fluid Compute instances never fill /tmp.
+  if (IS_VERCEL || isBlobConfigured()) {
+    fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
   } else {
-    // Keep only the deliverables; the downloaded source clips and intermediates
-    // can be tens of megabytes each.
-    for (const file of fs.readdirSync(dir)) {
+    for (const file of fs.readdirSync(/* turbopackIgnore: true */ dir)) {
       if (file === "output.mp4" || file === "poster.jpg") continue;
-      fs.rmSync(path.join(dir, file), { force: true });
+      fs.rmSync(/* turbopackIgnore: true */ path.join(dir, file), { force: true });
     }
   }
 
@@ -510,9 +525,28 @@ export async function renderProject(projectId: string): Promise<void> {
     progress: 100,
     stage: "Ready to share",
     error: null,
-    outputPath,
-    posterPath,
+    outputPath: savedOutputPath,
+    posterPath: savedPosterPath,
   });
+
+  void totalDuration;
+}
+
+export async function runRenderJob(projectId: string): Promise<void> {
+  const jobs = jobMap();
+  jobs.set(projectId, { status: "running", error: null, startedAt: Date.now() });
+  try {
+    await renderProject(projectId);
+    jobs.set(projectId, { status: "done", error: null, startedAt: Date.now() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Render failed";
+    jobs.set(projectId, { status: "error", error: message, startedAt: Date.now() });
+    await updateProject(projectId, {
+      status: "error",
+      stage: "Render failed",
+      error: message,
+    }).catch(() => undefined);
+  }
 }
 
 type JobState = {
@@ -540,18 +574,13 @@ export function getJobState(projectId: string): JobState {
   );
 }
 
-/**
- * Start a render and return its promise (or null if one is already running in
- * this instance). Route handlers pass the promise to `after()` so serverless
- * platforms keep the function alive until the encode finishes.
- */
-export function startRender(projectId: string): Promise<void> | null {
+export function startRender(projectId: string): boolean {
   const jobs = jobMap();
   const existing = jobs.get(projectId);
-  if (existing?.status === "running") return null;
+  if (existing?.status === "running") return false;
   jobs.set(projectId, { status: "running", error: null, startedAt: Date.now() });
 
-  return (async () => {
+  void (async () => {
     try {
       await renderProject(projectId);
       jobs.set(projectId, { status: "done", error: null, startedAt: Date.now() });
@@ -563,11 +592,8 @@ export function startRender(projectId: string): Promise<void> | null {
         stage: "Render failed",
         error: message,
       }).catch(() => undefined);
-    } finally {
-      // On Blob-backed hosts nothing in the tmp working dir is needed afterwards.
-      if (blobEnabled()) {
-        fs.rmSync(projectDir(projectId), { recursive: true, force: true });
-      }
     }
   })();
+
+  return true;
 }
