@@ -75,6 +75,7 @@ async function main() {
   console.log(`  AI_VIDEO_MODE             ${mode}\n`);
 
   console.log(`${BOLD}Live checks${RESET}`);
+  const outcomes = [];
 
   if (replicate) {
     const account = await probe(
@@ -82,6 +83,7 @@ async function main() {
       "https://api.replicate.com/v1/account",
       { authorization: `Bearer ${replicate}` },
     );
+    outcomes.push(account.state);
     console.log("  " + report(account.state, account.detail, "Replicate account       "));
 
     const model = await probe(
@@ -89,6 +91,7 @@ async function main() {
       "https://api.replicate.com/v1/models/tencent/hunyuan-video",
       { authorization: `Bearer ${replicate}` },
     );
+    outcomes.push(model.state);
     console.log("  " + report(model.state, model.detail, "HunyuanVideo model      "));
   } else {
     console.log("  " + warn("Replicate checks skipped — no token"));
@@ -98,6 +101,7 @@ async function main() {
     const result = await probe("pollinations", "https://gen.pollinations.ai/v1/models", {
       authorization: `Bearer ${pollinations}`,
     });
+    outcomes.push(result.state);
     console.log("  " + report(result.state, result.detail, "Pollinations API        "));
   } else {
     console.log("  " + warn("Pollinations checks skipped — no key"));
@@ -144,6 +148,16 @@ async function main() {
       console.log("  2. Set POLLINATIONS_API_KEY in .env.local for AI images and scripting.");
     }
     console.log("  3. Re-run: npm run verify:ai");
+  } else if (outcomes.some((o) => o === "rejected")) {
+    console.log("  " + bad("A provider rejected its key — re-check the value above."));
+  } else if (outcomes.length && outcomes.every((o) => o === "unreachable")) {
+    console.log(
+      "  " + warn("Keys are set but no provider could be reached from this machine."),
+    );
+    console.log(
+      "    The app will still resolve them (see above); this only means the live",
+    );
+    console.log("    check itself was blocked — by a firewall, proxy, or being offline.");
   } else {
     console.log("  " + ok("All configured providers verified — render a video to try it."));
   }
