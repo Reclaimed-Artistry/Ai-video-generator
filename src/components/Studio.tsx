@@ -9,30 +9,37 @@ import {
   Download,
   Film,
   Loader2,
+  Music,
+  Pause,
   Play,
   Plus,
   RefreshCw,
   Search,
+  Send,
   Sliders,
   Square,
+  Terminal,
   Trash2,
   Volume2,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AspectGlyph,
   AudioMeter,
-  countWords,
   BrandMark,
+  countWords,
   estimateSceneSeconds,
   formatClock,
   formatSmpte,
 } from "@/components/BrandMark";
 import { resolveMediaUrl } from "@/lib/media-url";
+import { getMusicTrack, MUSIC_TRACKS } from "@/lib/music";
 import {
   ASPECT_ORDER,
   ASPECTS,
+  CAPTION_MODES,
   LANGUAGES,
   MAX_SCENES,
   RESOLUTION_ORDER,
@@ -40,10 +47,13 @@ import {
   STYLES,
   TONES,
   type AspectRatio,
+  type CaptionMode,
+  type MusicTrackId,
   type Project,
   type Resolution,
   type Scene,
   type StockAsset,
+  type StockProvider,
   type Style,
   type Tone,
 } from "@/lib/types";
@@ -59,7 +69,25 @@ type RenderState = {
   error: string | null;
 };
 
-const QUICK_TOPICS = ["city", "technology", "coffee", "ocean", "fitness", "airplane", "neon"];
+const QUICK_TOPICS = [
+  "city",
+  "technology",
+  "coffee",
+  "ocean",
+  "fitness",
+  "business",
+  "nature",
+  "space",
+];
+
+const COMMAND_EXAMPLES = [
+  "Change voice to British male",
+  "Switch to 9:16 vertical",
+  "Replace scene 2 with ocean waves",
+  "Add cinematic music",
+  "Make it 1080p",
+  "Turn off captions",
+];
 
 function pickPreviewUrl(asset: StockAsset): string | null {
   if (!asset.sources.length) return null;
@@ -68,6 +96,17 @@ function pickPreviewUrl(asset: StockAsset): string | null {
   );
   const mid = sorted.find((source) => (source.height ?? 540) >= 360) ?? sorted[0];
   return mid?.url ?? null;
+}
+
+function computeDimensions(resolution: Resolution, aspect: AspectRatio): string {
+  const base = RESOLUTIONS[resolution];
+  const ratio = ASPECTS[aspect].ratio;
+  const short = Math.min(base.width, base.height);
+  const width =
+    ratio >= 1 ? Math.round((short * ratio) / 2) * 2 : Math.round(short / 2) * 2;
+  const height =
+    ratio >= 1 ? Math.round(short / 2) * 2 : Math.round(short / ratio / 2) * 2;
+  return `${width}×${height}`;
 }
 
 function captionPreviewClasses(style: Style): string {
@@ -81,7 +120,7 @@ function captionPreviewClasses(style: Style): string {
     case "corporate":
       return "bg-[#1E3A8A]/90 px-3.5 py-1.5 text-white border-l-2 border-amber-cue";
     default:
-      return "bg-black/65 px-3 py-1 text-paper";
+      return "bg-black/75 px-3 py-1 text-paper";
   }
 }
 
@@ -100,20 +139,39 @@ export default function Studio({
   );
   const [showSafeGuides, setShowSafeGuides] = useState(false);
   const [hasUnrenderedEdits, setHasUnrenderedEdits] = useState(false);
+  const [storyboardPlaying, setStoryboardPlaying] = useState(false);
 
+  // Command Box (InVideo Magic Box)
+  const [commandInput, setCommandInput] = useState("");
+  const [commandRunning, setCommandRunning] = useState(false);
+  const [commandAutoRender, setCommandAutoRender] = useState(true);
+  const [commandFeedback, setCommandFeedback] = useState<{
+    ok: boolean;
+    lines: string[];
+  } | null>(null);
+
+  // Export Modal
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportResolution, setExportResolution] = useState<Resolution>(
+    initialProject.resolution,
+  );
+
+  // Voices & Music
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceAccentFilter, setVoiceAccentFilter] = useState<string>("all");
   const [playingAudioKey, setPlayingAudioKey] = useState<string | null>(null);
 
+  // Stock Media Bin
   const [assets, setAssets] = useState<StockAsset[]>([]);
   const [mediaSource, setMediaSource] = useState<string>("");
-  const [providerFilter, setProviderFilter] = useState<"all" | "pexels" | "pixabay">("all");
+  const [providerFilter, setProviderFilter] = useState<StockProvider>("all");
   const [search, setSearch] = useState<string>(
     initialProject.script.scenes[0]?.mediaQuery ?? "",
   );
   const [searching, setSearching] = useState(false);
   const [hoveredAssetId, setHoveredAssetId] = useState<string | null>(null);
 
+  // Persistence & Render state
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [rewritingAll, setRewritingAll] = useState(false);
@@ -139,6 +197,12 @@ export default function Studio({
   }, [scenes, activeSceneId]);
   const activeScene: Scene | null = scenes[activeIndex] ?? null;
 
+  const captionMode: CaptionMode =
+    project.script.options?.captionMode ?? "word-highlight";
+  const musicTrackId: MusicTrackId =
+    project.script.options?.musicTrack ?? "cinematic";
+  const musicVolume = project.script.options?.musicVolume ?? 0.16;
+
   const sceneTimings = useMemo(() => {
     let cursor = 0;
     return scenes.map((scene) => {
@@ -162,7 +226,7 @@ export default function Studio({
   const hasMasterFile = Boolean(project.outputPath) || render.status === "done";
 
   const searchMedia = useCallback(
-    async (query: string, provider: "all" | "pexels" | "pixabay" = providerFilter) => {
+    async (query: string, provider: StockProvider = providerFilter) => {
       setSearching(true);
       try {
         const response = await fetch(
@@ -192,10 +256,27 @@ export default function Studio({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /**
-   * Non-clobbering persistence: sends changes to PostgreSQL without overwriting
-   * newer local keystrokes when responses arrive out of order.
-   */
+  // Multi-scene Storyboard auto-step playback
+  useEffect(() => {
+    if (!storyboardPlaying || monitorMode !== "storyboard" || scenes.length === 0) {
+      return;
+    }
+    const currentDurMs = Math.max(
+      1800,
+      Math.round((sceneTimings[activeIndex]?.duration ?? 4) * 1000),
+    );
+    const timer = setTimeout(() => {
+      const nextIdx = activeIndex + 1;
+      if (nextIdx >= scenes.length) {
+        setStoryboardPlaying(false);
+        setActiveSceneId(scenes[0].id);
+      } else {
+        setActiveSceneId(scenes[nextIdx].id);
+      }
+    }, currentDurMs);
+    return () => clearTimeout(timer);
+  }, [storyboardPlaying, monitorMode, activeIndex, scenes, sceneTimings]);
+
   const persistPatch = useCallback(
     async (patch: Record<string, unknown>, marksRenderDirty = true) => {
       const seq = ++saveSeqRef.current;
@@ -229,7 +310,6 @@ export default function Studio({
     [project.id, hasMasterFile],
   );
 
-  // Debounced autosave for script & title edits
   useEffect(() => {
     if (!hydrated.current) {
       hydrated.current = true;
@@ -242,7 +322,7 @@ export default function Studio({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.script, project.title]);
 
-  // Poll FFmpeg render status while active
+  // Poll FFmpeg encode status while active
   useEffect(() => {
     if (render.status !== "rendering") return;
     const timer = setInterval(async () => {
@@ -265,11 +345,13 @@ export default function Studio({
           setProject((curr) => ({
             ...curr,
             status: "done",
+            resolution: refreshed.project.resolution,
             outputPath: refreshed.project.outputPath,
             posterPath: refreshed.project.posterPath,
           }));
         }
         setHasUnrenderedEdits(false);
+        setStoryboardPlaying(false);
         setRenderVersion((v) => v + 1);
         setMonitorMode("master");
       }
@@ -282,10 +364,25 @@ export default function Studio({
     value: Project[K],
   ) {
     setProject((curr) => ({ ...curr, [key]: value }));
+    if (key === "resolution") setExportResolution(value as Resolution);
     if (key === "aspect" || key === "style") {
       setMonitorMode("storyboard");
     }
     void persistPatch({ [key]: value }, true);
+  }
+
+  function updateScriptOptions(patch: Partial<NonNullable<Project["script"]["options"]>>) {
+    setProject((curr) => ({
+      ...curr,
+      script: {
+        ...curr.script,
+        options: {
+          ...curr.script.options,
+          ...patch,
+        },
+      },
+    }));
+    if (hasMasterFile) setHasUnrenderedEdits(true);
   }
 
   function updateScene(sceneId: string, patch: Partial<Scene>) {
@@ -409,14 +506,21 @@ export default function Studio({
     });
   }
 
-  async function playSpeechSample(key: string, voiceId: string, text?: string) {
-    if (playingAudioKey === key && audioRef.current) {
+  function stopAudio() {
+    if (audioRef.current) {
       audioRef.current.pause();
-      setPlayingAudioKey(null);
+      audioRef.current.currentTime = 0;
+    }
+    setPlayingAudioKey(null);
+  }
+
+  async function playSpeechSample(key: string, voiceId: string, text?: string) {
+    if (playingAudioKey === key) {
+      stopAudio();
       return;
     }
     try {
-      if (audioRef.current) audioRef.current.pause();
+      stopAudio();
       setPlayingAudioKey(key);
       const response = await fetch("/api/tts/preview", {
         method: "POST",
@@ -436,31 +540,62 @@ export default function Studio({
     }
   }
 
-  async function startMasterRender() {
+  async function playMusicSample(trackId: MusicTrackId) {
+    const key = `music-${trackId}`;
+    if (playingAudioKey === key) {
+      stopAudio();
+      return;
+    }
+    const track = getMusicTrack(trackId);
+    if (!track.url) return;
+    try {
+      stopAudio();
+      setPlayingAudioKey(key);
+      if (!audioRef.current) audioRef.current = new Audio();
+      audioRef.current.src = track.url;
+      audioRef.current.volume = 0.45;
+      audioRef.current.onended = () => setPlayingAudioKey(null);
+      audioRef.current.onerror = () => setPlayingAudioKey(null);
+      await audioRef.current.play();
+    } catch {
+      setPlayingAudioKey(null);
+    }
+  }
+
+  async function startMasterRender(overrideResolution?: Resolution, overrideProject?: Project) {
+    const targetProject = overrideProject ?? project;
+    const targetResolution = overrideResolution ?? targetProject.resolution;
+
+    if (overrideResolution && overrideResolution !== project.resolution) {
+      setProject((curr) => ({ ...curr, resolution: overrideResolution }));
+    }
+
+    setExportOpen(false);
+    setStoryboardPlaying(false);
     setRender({
       status: "rendering",
       progress: 2,
-      stage: "Queueing FFmpeg pipeline…",
+      stage: `Encoding ${targetResolution} H.264 master…`,
       error: null,
     });
-    // Flush latest script state before triggering render
-    await fetch(`/api/projects/${project.id}`, {
+
+    await fetch(`/api/projects/${targetProject.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        title: project.title,
-        script: project.script,
-        voice: project.voice,
-        resolution: project.resolution,
-        aspect: project.aspect,
-        tone: project.tone,
-        style: project.style,
-        language: project.language,
-        duration: project.duration,
+        title: targetProject.title,
+        script: targetProject.script,
+        voice: targetProject.voice,
+        resolution: targetResolution,
+        aspect: targetProject.aspect,
+        tone: targetProject.tone,
+        style: targetProject.style,
+        language: targetProject.language,
+        duration: targetProject.duration,
       }),
     }).catch(() => undefined);
 
-    const response = await fetch(`/api/projects/${project.id}/render`, {
+    const response = await fetch(`/api/projects/${targetProject.id}/render`, {
       method: "POST",
     });
     if (!response.ok) {
@@ -471,6 +606,51 @@ export default function Studio({
         stage: "Encode aborted",
         error: data.error ?? "Render failed",
       });
+    }
+  }
+
+  async function submitEditCommand(rawCmd?: string) {
+    const command = (rawCmd ?? commandInput).trim();
+    if (!command || commandRunning) return;
+    setCommandRunning(true);
+    setCommandFeedback(null);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/command`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setCommandFeedback({
+          ok: false,
+          lines: [data.error ?? "Command could not be applied."],
+        });
+        return;
+      }
+      const updated = data.project as Project;
+      setProject(updated);
+      setExportResolution(updated.resolution);
+      if (
+        updated.script.scenes.length > 0 &&
+        !updated.script.scenes.some((s) => s.id === activeSceneId)
+      ) {
+        setActiveSceneId(updated.script.scenes[0].id);
+      }
+      setCommandInput("");
+      setCommandFeedback({
+        ok: true,
+        lines: Array.isArray(data.changes) ? data.changes : ["Updated sequence"],
+      });
+      setHasUnrenderedEdits(true);
+
+      if (commandAutoRender && render.status !== "rendering") {
+        void startMasterRender(updated.resolution, updated);
+      } else {
+        setMonitorMode("storyboard");
+      }
+    } finally {
+      setCommandRunning(false);
     }
   }
 
@@ -505,17 +685,26 @@ export default function Studio({
 
   const monitorFrameClass =
     project.aspect === "9:16"
-      ? "aspect-[9/16] h-[360px] sm:h-[410px]"
+      ? "aspect-[9/16] h-[340px] sm:h-[395px]"
       : project.aspect === "1:1"
-        ? "aspect-square h-[340px] sm:h-[390px]"
-        : "aspect-video w-full max-h-[410px]";
+        ? "aspect-square h-[320px] sm:h-[375px]"
+        : "aspect-video w-full max-h-[395px]";
+
+  // Preview caption words for Storyboard mode
+  const previewSubtitleWords = useMemo(() => {
+    if (!activeScene) return [];
+    const sourceText =
+      captionMode === "headline"
+        ? activeScene.caption
+        : activeScene.narration || activeScene.caption;
+    return sourceText.trim().split(/\s+/).slice(0, 6);
+  }, [activeScene, captionMode]);
 
   return (
     <div className="flex min-h-screen flex-col bg-canvas text-paper">
       {/* Top NLE Transport & Sequence Bar */}
       <header className="sticky top-0 z-30 border-b border-line bg-panel">
         <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5">
-          {/* Left: Bin navigation + editable sequence title */}
           <div className="flex min-w-0 items-center gap-3">
             <Link
               href="/projects"
@@ -534,7 +723,7 @@ export default function Studio({
                 onChange={(event) =>
                   setProject((curr) => ({ ...curr, title: event.target.value }))
                 }
-                className="w-56 max-w-full truncate rounded-[2px] bg-transparent px-1 py-0.5 text-sm font-semibold text-paper outline-none ring-1 ring-transparent transition focus:bg-inset focus:ring-amber-cue sm:w-80"
+                className="w-52 max-w-full truncate rounded-[2px] bg-transparent px-1 py-0.5 text-sm font-semibold text-paper outline-none ring-1 ring-transparent transition focus:bg-inset focus:ring-amber-cue sm:w-72"
               />
               <div className="font-tech flex items-center gap-2 px-1 text-[10px] text-ash">
                 <span className="inline-flex items-center gap-1">
@@ -543,23 +732,22 @@ export default function Studio({
                       saving ? "bg-amber-cue" : "bg-nominal"
                     }`}
                   />
-                  {saving
-                    ? "Syncing…"
-                    : savedAt
-                      ? `Saved ${savedAt}`
-                      : "PostgreSQL synced"}
+                  {saving ? "Syncing…" : savedAt ? `Saved ${savedAt}` : "Synced"}
                 </span>
                 <span>·</span>
                 <span>{scenes.length} cues</span>
                 <span>·</span>
                 <span>~{formatClock(totalEstimatedSeconds)}</span>
+                <span className="hidden md:inline">·</span>
+                <span className="hidden md:inline">
+                  Score: {getMusicTrack(musicTrackId).name}
+                </span>
               </div>
             </div>
           </div>
 
-          {/* Right: Segmented Raster + Aspect + Redraft + Master Render */}
           <div className="flex flex-wrap items-center gap-2">
-            {/* Segmented Resolution Switcher */}
+            {/* Quick Resolution Switcher */}
             <div
               role="group"
               aria-label="Export resolution"
@@ -584,7 +772,7 @@ export default function Studio({
               })}
             </div>
 
-            {/* Segmented Aspect Gate Switcher */}
+            {/* Aspect Gate Switcher */}
             <div
               role="group"
               aria-label="Aspect ratio"
@@ -619,7 +807,9 @@ export default function Studio({
               <RefreshCw
                 className={`h-3 w-3 ${rewritingAll ? "animate-spin text-amber-cue" : ""}`}
               />
-              <span>{rewritingAll ? "Redrafting…" : "Redraft All"}</span>
+              <span className="hidden lg:inline">
+                {rewritingAll ? "Redrafting…" : "Redraft Script"}
+              </span>
             </button>
 
             <button
@@ -635,51 +825,33 @@ export default function Studio({
               {render.status === "rendering" ? (
                 <>
                   <span className="tally-dot h-2 w-2 rounded-full bg-tally" />
-                  <span>Encoding {render.progress}%</span>
+                  <span>Generating {render.progress}%</span>
                 </>
               ) : (
                 <>
                   <Play className="h-3 w-3 fill-current" />
                   <span>
                     {hasMasterFile && !hasUnrenderedEdits
-                      ? `Re-encode ${project.resolution}`
-                      : `Render ${project.resolution} Master`}
+                      ? `Re-render ${project.resolution}`
+                      : `Generate ${project.resolution}`}
                   </span>
                 </>
               )}
             </button>
 
-            {hasMasterFile && render.status !== "rendering" ? (
-              <a
-                href={downloadUrl}
-                download={`reclaimed-artistry-${project.id.slice(0, 8)}-${project.resolution}.mp4`}
-                className="inline-flex items-center gap-1.5 rounded-[3px] border border-nominal/45 bg-nominal/10 px-3 py-1.5 font-tech text-[11px] font-medium text-nominal transition-colors hover:bg-nominal/20"
-              >
-                <Download className="h-3 w-3" />
-                <span>MP4</span>
-              </a>
-            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                setExportResolution(project.resolution);
+                setExportOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-[3px] border border-nominal/45 bg-nominal/10 px-3 py-1.5 font-tech text-[11px] font-medium text-nominal transition-colors hover:bg-nominal/20"
+            >
+              <Download className="h-3 w-3" />
+              <span>Export</span>
+            </button>
           </div>
         </div>
-
-        {/* Live FFmpeg Encode Telemetry Strip */}
-        {render.status === "rendering" ? (
-          <div className="border-t border-line bg-inset px-4 py-2">
-            <div className="flex items-center justify-between font-tech text-[11px]">
-              <span className="flex items-center gap-2 text-paper">
-                <Loader2 className="h-3 w-3 animate-spin text-amber-cue" />
-                {render.stage || "Encoding H.264 stream…"}
-              </span>
-              <span className="text-amber-cue">{render.progress}%</span>
-            </div>
-            <div className="mt-1.5 h-1 w-full overflow-hidden bg-canvas">
-              <div
-                className="h-full bg-amber-cue transition-[width] duration-300"
-                style={{ width: `${Math.max(4, render.progress)}%` }}
-              />
-            </div>
-          </div>
-        ) : null}
 
         {render.error ? (
           <div className="border-t border-tally/40 bg-tally/10 px-4 py-2 font-tech text-xs text-[#f4b4a8]">
@@ -689,13 +861,13 @@ export default function Studio({
       </header>
 
       {/* Main 3-Pane NLE Workbench */}
-      <div className="grid flex-1 xl:grid-cols-[330px_minmax(0,1fr)_390px]">
+      <div className="grid flex-1 xl:grid-cols-[320px_minmax(0,1fr)_390px]">
         {/* LEFT PANE: Scene Rundown */}
         <section className="flex flex-col border-b border-line bg-panel xl:max-h-[calc(100vh-57px)] xl:border-b-0 xl:border-r">
           <div className="flex items-center justify-between border-b border-line bg-inset px-3.5 py-2.5">
             <div>
               <h2 className="font-tech text-[11px] font-semibold uppercase tracking-[0.14em] text-paper">
-                Scene Rundown
+                Script & Scenes
               </h2>
               <p className="font-tech text-[10px] text-ash">
                 {totalWords} words · est. {formatClock(totalEstimatedSeconds)}
@@ -708,7 +880,7 @@ export default function Studio({
               className="inline-flex items-center gap-1 rounded-[2px] border border-line bg-panel px-2 py-1 font-tech text-[10px] uppercase tracking-wider text-paper transition-colors hover:border-amber-cue hover:text-amber-cue disabled:opacity-40"
             >
               <Plus className="h-3 w-3" />
-              <span>Cue</span>
+              <span>Scene</span>
             </button>
           </div>
 
@@ -738,7 +910,11 @@ export default function Studio({
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 font-tech text-[10px]">
-                    <span className={selected ? "font-semibold text-amber-cue" : "text-stone-ink"}>
+                    <span
+                      className={
+                        selected ? "font-semibold text-amber-cue" : "text-stone-ink"
+                      }
+                    >
                       SC {String(index + 1).padStart(2, "0")}
                     </span>
                     <span className="text-ash">
@@ -761,10 +937,15 @@ export default function Studio({
                           <Film className="h-3.5 w-3.5" />
                         </div>
                       )}
+                      {scene.mediaProvider ? (
+                        <span className="absolute bottom-0.5 right-0.5 rounded-[1px] bg-black/80 px-1 font-tech text-[8px] uppercase text-stone-ink">
+                          {scene.mediaProvider}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="min-w-0">
                       <p className="truncate text-xs font-semibold text-paper">
-                        {scene.caption || "Untitled super"}
+                        {scene.caption || `Scene ${index + 1}`}
                       </p>
                       <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-stone-ink">
                         {scene.narration || "No voiceover copy"}
@@ -777,11 +958,11 @@ export default function Studio({
           </div>
         </section>
 
-        {/* CENTER PANE: Program Monitor + Timeline Strip + Cue Sheet Editor */}
+        {/* CENTER PANE: Program Monitor + AI Command Box + Timeline + Cue Editor */}
         <section className="flex min-w-0 flex-col bg-canvas xl:max-h-[calc(100vh-57px)] xl:overflow-y-auto">
           {/* Monitor Bezel Header */}
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-inset px-4 py-2">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <div className="inline-flex rounded-[2px] border border-line bg-canvas p-0.5 font-tech text-[10px] uppercase tracking-wider">
                 <button
                   type="button"
@@ -792,47 +973,73 @@ export default function Studio({
                       : "text-ash hover:text-paper"
                   }`}
                 >
-                  Storyboard Gate
+                  Storyboard
                 </button>
                 <button
                   type="button"
                   disabled={!hasMasterFile}
-                  onClick={() => setMonitorMode("master")}
+                  onClick={() => {
+                    setStoryboardPlaying(false);
+                    setMonitorMode("master");
+                  }}
                   className={`inline-flex items-center gap-1.5 rounded-[2px] px-2.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
                     monitorMode === "master"
                       ? "bg-elevated font-semibold text-nominal"
                       : "text-ash hover:text-paper"
                   }`}
                 >
-                  <span>Master MP4</span>
+                  <span>Rendered Video</span>
                   {hasUnrenderedEdits && hasMasterFile ? (
                     <span
-                      title="Edits made since last encode"
+                      title="Edits pending re-render"
                       className="h-1.5 w-1.5 rounded-full bg-amber-cue"
                     />
                   ) : null}
                 </button>
               </div>
 
-              {monitorMode === "storyboard" ? (
-                <button
-                  type="button"
-                  onClick={() => setShowSafeGuides((v) => !v)}
-                  className={`inline-flex items-center gap-1 rounded-[2px] border px-2 py-1 font-tech text-[10px] uppercase tracking-wider transition-colors ${
-                    showSafeGuides
-                      ? "border-amber-cue/60 bg-amber-cue/10 text-amber-cue"
-                      : "border-line bg-canvas text-ash hover:text-paper"
-                  }`}
-                >
-                  <Crosshair className="h-3 w-3" />
-                  <span>Safe Guides</span>
-                </button>
+              {monitorMode === "storyboard" && render.status !== "rendering" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setStoryboardPlaying((v) => !v)}
+                    className={`inline-flex items-center gap-1 rounded-[2px] border px-2 py-1 font-tech text-[10px] uppercase tracking-wider transition-colors ${
+                      storyboardPlaying
+                        ? "border-amber-cue bg-amber-cue/15 text-amber-cue"
+                        : "border-line bg-canvas text-stone-ink hover:text-paper"
+                    }`}
+                  >
+                    {storyboardPlaying ? (
+                      <>
+                        <Pause className="h-3 w-3" />
+                        <span>Stop Cut</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="h-3 w-3 fill-current" />
+                        <span>Play Storyboard</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowSafeGuides((v) => !v)}
+                    className={`inline-flex items-center gap-1 rounded-[2px] border px-2 py-1 font-tech text-[10px] uppercase tracking-wider transition-colors ${
+                      showSafeGuides
+                        ? "border-amber-cue/60 bg-amber-cue/10 text-amber-cue"
+                        : "border-line bg-canvas text-ash hover:text-paper"
+                    }`}
+                  >
+                    <Crosshair className="h-3 w-3" />
+                    <span>Guides</span>
+                  </button>
+                </>
               ) : null}
             </div>
 
             <div className="font-tech flex items-center gap-3 text-[11px]">
               <span className="text-ash">
-                {RESOLUTIONS[project.resolution].label} · {project.aspect}
+                {computeDimensions(project.resolution, project.aspect)} · {project.resolution}
               </span>
               <span className="timecode text-amber-cue">
                 {monitorMode === "master"
@@ -843,14 +1050,51 @@ export default function Studio({
           </div>
 
           {/* Program Monitor Bay */}
-          <div className="flex items-center justify-center border-b border-line bg-[#060605] p-4 sm:p-6">
-            {monitorMode === "master" && hasMasterFile ? (
-              <div className={`relative overflow-hidden border border-line bg-black ${monitorFrameClass}`}>
+          <div className="relative flex items-center justify-center border-b border-line bg-[#060605] p-4 sm:p-5">
+            {render.status === "rendering" ? (
+              <div
+                className={`relative flex flex-col items-center justify-center overflow-hidden border border-line-strong bg-[#0c0c0a] p-6 text-center ${monitorFrameClass}`}
+              >
+                {activeScene?.mediaThumb ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={activeScene.mediaThumb}
+                    alt=""
+                    className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-20"
+                  />
+                ) : null}
+                <div className="relative z-10 w-full max-w-md space-y-3">
+                  <div className="inline-flex items-center gap-2 rounded-[2px] border border-tally/40 bg-black/75 px-2.5 py-1 font-tech text-[10px] uppercase tracking-[0.14em] text-[#f9c6bd]">
+                    <span className="tally-dot h-2 w-2 rounded-full bg-tally" />
+                    <span>Rendering {project.resolution} Master</span>
+                  </div>
+                  <p className="font-editorial text-2xl text-paper">
+                    Assembling voiceover, footage & synced captions…
+                  </p>
+                  <p className="font-tech text-xs text-stone-ink">
+                    {render.stage || "Preparing FFmpeg pipeline…"}
+                  </p>
+                  <div className="h-1.5 w-full overflow-hidden rounded-[1px] bg-line">
+                    <div
+                      className="h-full bg-amber-cue transition-[width] duration-300"
+                      style={{ width: `${Math.max(4, render.progress)}%` }}
+                    />
+                  </div>
+                  <p className="font-tech text-[11px] text-amber-cue">
+                    {render.progress}% complete · auto-plays when finished
+                  </p>
+                </div>
+              </div>
+            ) : monitorMode === "master" && hasMasterFile ? (
+              <div
+                className={`relative overflow-hidden border border-line bg-black ${monitorFrameClass}`}
+              >
                 <video
                   key={outputUrl}
                   src={outputUrl}
                   poster={posterUrl}
                   controls
+                  autoPlay={renderVersion > 0}
                   playsInline
                   onTimeUpdate={(e) => setMasterTime(e.currentTarget.currentTime)}
                   className="h-full w-full object-contain"
@@ -880,37 +1124,46 @@ export default function Studio({
                   />
                 ) : null}
 
-                {/* Broadcast Action/Title Safe Guides */}
                 {showSafeGuides ? (
                   <div className="pointer-events-none absolute inset-0">
                     <div className="absolute inset-[5%] border border-dashed border-white/25" />
                     <div className="absolute inset-[10%] border border-amber-cue/40" />
-                    <div className="absolute left-1/2 top-[8%] bottom-[8%] w-px bg-white/15" />
-                    <div className="absolute top-1/2 left-[8%] right-[8%] h-px bg-white/15" />
+                    <div className="absolute bottom-[8%] left-1/2 top-[8%] w-px bg-white/15" />
+                    <div className="absolute left-[8%] right-[8%] top-1/2 h-px bg-white/15" />
                   </div>
                 ) : null}
 
-                {/* Top-left monitor HUD */}
                 <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-1.5">
-                  <span className="rounded-[2px] bg-black/75 px-1.5 py-0.5 font-tech text-[10px] text-amber-cue">
-                    SC {String(activeIndex + 1).padStart(2, "0")}/{String(scenes.length).padStart(2, "0")}
+                  <span className="rounded-[2px] bg-black/80 px-1.5 py-0.5 font-tech text-[10px] text-amber-cue">
+                    SC {String(activeIndex + 1).padStart(2, "0")}/
+                    {String(scenes.length).padStart(2, "0")}
                   </span>
                   {activeScene?.mediaTitle ? (
-                    <span className="max-w-[220px] truncate rounded-[2px] bg-black/75 px-1.5 py-0.5 font-tech text-[10px] text-stone-ink">
+                    <span className="max-w-[230px] truncate rounded-[2px] bg-black/80 px-1.5 py-0.5 font-tech text-[10px] text-stone-ink">
                       {activeScene.mediaTitle}
                     </span>
                   ) : null}
                 </div>
 
-                {/* Live Styled Lower-Third / Caption Preview */}
-                {activeScene?.caption ? (
-                  <div className="relative z-10 mb-[8%] flex w-[84%] flex-col items-center text-center">
+                {/* Live Caption / Word-Highlight Preview */}
+                {captionMode !== "off" && previewSubtitleWords.length > 0 ? (
+                  <div className="relative z-10 mb-[8%] flex w-[86%] flex-col items-center text-center">
                     <span
                       className={`text-sm font-semibold leading-snug sm:text-base ${captionPreviewClasses(
                         project.style,
                       )}`}
                     >
-                      {activeScene.caption}
+                      {captionMode === "word-highlight"
+                        ? previewSubtitleWords.map((word, idx) => (
+                            <span
+                              key={`${word}-${idx}`}
+                              className={idx === 1 ? "text-amber-cue" : undefined}
+                            >
+                              {idx > 0 ? " " : ""}
+                              {word}
+                            </span>
+                          ))
+                        : previewSubtitleWords.join(" ")}
                     </span>
                   </div>
                 ) : null}
@@ -918,13 +1171,88 @@ export default function Studio({
             )}
           </div>
 
+          {/* INVIDEO-STYLE AI EDIT COMMAND BOX ("Direct the Cut") */}
+          <div className="border-b border-line bg-panel px-4 py-3">
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 font-tech text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-cue">
+                <Terminal className="h-3 w-3" />
+                <span>AI Edit Command Box</span>
+              </span>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 font-tech text-[10px] text-stone-ink">
+                <input
+                  type="checkbox"
+                  checked={commandAutoRender}
+                  onChange={(e) => setCommandAutoRender(e.target.checked)}
+                  className="accent-[#E5A93C]"
+                />
+                <span>Auto re-render after command</span>
+              </label>
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                value={commandInput}
+                onChange={(event) => setCommandInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void submitEditCommand();
+                  }
+                }}
+                disabled={commandRunning}
+                placeholder="Give a command to edit this video — e.g. 'Change voice to British male', 'Replace scene 2 with ocean waves', 'Make it 1080p'…"
+                className="min-w-0 flex-1 rounded-[3px] border border-line bg-canvas px-3 py-2 text-xs text-paper outline-none transition-colors placeholder:text-ash focus:border-amber-cue"
+              />
+              <button
+                type="button"
+                onClick={() => void submitEditCommand()}
+                disabled={commandRunning || !commandInput.trim()}
+                className="inline-flex items-center gap-1.5 rounded-[3px] bg-elevated px-3.5 py-2 font-tech text-[11px] font-semibold uppercase tracking-[0.06em] text-paper shadow-[inset_0_0_0_1px_#3a3832] transition-colors hover:bg-amber-cue hover:text-[#14110A] disabled:opacity-40"
+              >
+                {commandRunning ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Send className="h-3 w-3" />
+                )}
+                <span>Apply</span>
+              </button>
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              {COMMAND_EXAMPLES.map((cmd) => (
+                <button
+                  key={cmd}
+                  type="button"
+                  disabled={commandRunning}
+                  onClick={() => void submitEditCommand(cmd)}
+                  className="rounded-[2px] border border-line bg-inset px-2 py-0.5 font-tech text-[10px] text-stone-ink transition-colors hover:border-amber-cue/60 hover:text-paper disabled:opacity-40"
+                >
+                  {cmd}
+                </button>
+              ))}
+            </div>
+
+            {commandFeedback ? (
+              <div
+                className={`mt-2 rounded-[2px] border px-2.5 py-1.5 font-tech text-[11px] ${
+                  commandFeedback.ok
+                    ? "border-nominal/35 bg-nominal/10 text-nominal"
+                    : "border-tally/40 bg-tally/10 text-[#f4b4a8]"
+                }`}
+              >
+                {commandFeedback.ok ? "APPLIED // " : "NOTE // "}
+                {commandFeedback.lines.join(" · ")}
+              </div>
+            ) : null}
+          </div>
+
           {/* Proportional Timeline Filmstrip */}
-          <div className="border-b border-line bg-panel px-4 py-2.5">
+          <div className="border-b border-line bg-inset/60 px-4 py-2.5">
             <div className="mb-1.5 flex items-center justify-between font-tech text-[10px] text-ash">
-              <span>TIMELINE RUNDOWN // CLICK CUE TO INSPECT</span>
+              <span>TIMELINE // CLICK CUE TO EDIT</span>
               <span>TOTAL ~{formatSmpte(totalEstimatedSeconds)}</span>
             </div>
-            <div className="flex h-12 gap-1 overflow-x-auto">
+            <div className="flex h-11 gap-1 overflow-x-auto">
               {scenes.map((scene, idx) => {
                 const timing = sceneTimings[idx];
                 const share =
@@ -976,11 +1304,11 @@ export default function Studio({
                     SC {String(activeIndex + 1).padStart(2, "0")}
                   </span>
                   <h3 className="text-sm font-semibold text-paper">
-                    Cue Sheet & Narration
+                    Script & Media Editor
                   </h3>
                   <span className="font-tech text-[11px] text-ash">
                     {countWords(activeScene.narration)} words · ~
-                    {activeTiming.duration.toFixed(1)}s read
+                    {activeTiming.duration.toFixed(1)}s
                   </span>
                 </div>
 
@@ -1004,7 +1332,7 @@ export default function Studio({
                     ) : (
                       <>
                         <Volume2 className="h-3 w-3 text-amber-cue" />
-                        <span>Audition Cue ({selectedVoiceObj?.name ?? project.voice})</span>
+                        <span>Audition ({selectedVoiceObj?.name ?? project.voice})</span>
                       </>
                     )}
                   </button>
@@ -1013,7 +1341,7 @@ export default function Studio({
                     type="button"
                     onClick={() => moveScene(activeScene.id, -1)}
                     disabled={activeIndex === 0}
-                    title="Move cue earlier"
+                    title="Move earlier"
                     className="inline-flex h-7 w-7 items-center justify-center rounded-[3px] border border-line bg-panel text-stone-ink transition-colors hover:text-paper disabled:opacity-30"
                   >
                     <ArrowUp className="h-3.5 w-3.5" />
@@ -1022,7 +1350,7 @@ export default function Studio({
                     type="button"
                     onClick={() => moveScene(activeScene.id, 1)}
                     disabled={activeIndex === scenes.length - 1}
-                    title="Move cue later"
+                    title="Move later"
                     className="inline-flex h-7 w-7 items-center justify-center rounded-[3px] border border-line bg-panel text-stone-ink transition-colors hover:text-paper disabled:opacity-30"
                   >
                     <ArrowDown className="h-3.5 w-3.5" />
@@ -1036,17 +1364,19 @@ export default function Studio({
                   >
                     <RefreshCw
                       className={`h-3 w-3 ${
-                        rewritingSceneId === activeScene.id ? "animate-spin text-amber-cue" : ""
+                        rewritingSceneId === activeScene.id
+                          ? "animate-spin text-amber-cue"
+                          : ""
                       }`}
                     />
-                    <span>Rewrite Cue</span>
+                    <span>Rewrite</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => removeScene(activeScene.id)}
                     disabled={scenes.length <= 1}
-                    title="Delete cue"
+                    title="Delete scene"
                     className="inline-flex h-7 w-7 items-center justify-center rounded-[3px] border border-line bg-panel text-ash transition-colors hover:border-tally/50 hover:text-tally disabled:opacity-30"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -1054,10 +1384,9 @@ export default function Studio({
                 </div>
               </div>
 
-              {/* Spoken Voiceover Copy */}
               <label className="block">
                 <span className="font-tech text-[10px] uppercase tracking-[0.14em] text-ash">
-                  Spoken Voiceover Script
+                  Spoken Voiceover Script (drives synced captions & timing)
                 </span>
                 <textarea
                   value={activeScene.narration}
@@ -1069,11 +1398,10 @@ export default function Studio({
                 />
               </label>
 
-              {/* Burned-in Caption + B-Roll Search Query + Hold Override */}
               <div className="mt-3 grid gap-3 sm:grid-cols-12">
-                <label className="block sm:col-span-5">
+                <label className="block sm:col-span-4">
                   <span className="font-tech flex justify-between text-[10px] uppercase tracking-[0.14em] text-ash">
-                    <span>Burned-In Lower Third</span>
+                    <span>Scene Headline</span>
                     <span>{activeScene.caption.length} ch</span>
                   </span>
                   <input
@@ -1087,7 +1415,7 @@ export default function Studio({
 
                 <div className="sm:col-span-5">
                   <span className="font-tech block text-[10px] uppercase tracking-[0.14em] text-ash">
-                    B-Roll Shot Query
+                    Stock Video Search Query
                   </span>
                   <div className="mt-1.5 flex gap-1.5">
                     <input
@@ -1102,7 +1430,7 @@ export default function Studio({
                           void searchMedia(activeScene.mediaQuery);
                         }
                       }}
-                      placeholder="e.g. barista espresso steam"
+                      placeholder="e.g. ocean waves, coffee barista"
                       className="min-w-0 flex-1 rounded-[3px] border border-line bg-panel px-3 py-2 text-xs text-paper outline-none transition-colors focus:border-amber-cue"
                     />
                     <button
@@ -1114,42 +1442,60 @@ export default function Studio({
                       }}
                       className="rounded-[3px] border border-line bg-inset px-2.5 py-2 font-tech text-[10px] uppercase tracking-wider text-amber-cue transition-colors hover:border-amber-cue"
                     >
-                      Match
+                      Find
                     </button>
                   </div>
                 </div>
 
-                <label className="block sm:col-span-2">
+                <label className="block sm:col-span-3">
                   <span className="font-tech block text-[10px] uppercase tracking-[0.14em] text-ash">
-                    Min Hold (s)
+                    Transition / Hold
                   </span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={45}
-                    placeholder="Auto"
-                    value={activeScene.duration ?? ""}
-                    onChange={(event) =>
-                      updateScene(activeScene.id, {
-                        duration: event.target.value ? Number(event.target.value) : null,
-                      })
-                    }
-                    className="mt-1.5 w-full rounded-[3px] border border-line bg-panel px-2.5 py-2 font-tech text-xs text-paper outline-none transition-colors focus:border-amber-cue"
-                  />
+                  <div className="mt-1.5 flex gap-1.5">
+                    <select
+                      aria-label="Scene transition"
+                      value={activeScene.transition}
+                      onChange={(e) =>
+                        updateScene(activeScene.id, {
+                          transition: e.target.value as "fade" | "none",
+                        })
+                      }
+                      className="w-1/2 rounded-[3px] border border-line bg-panel px-2 py-2 font-tech text-[11px] text-paper outline-none focus:border-amber-cue"
+                    >
+                      <option value="none" className="bg-panel">Cut</option>
+                      <option value="fade" className="bg-panel">Fade</option>
+                    </select>
+                    <input
+                      type="number"
+                      min={0}
+                      max={45}
+                      placeholder="Auto"
+                      title="Minimum hold duration in seconds"
+                      value={activeScene.duration ?? ""}
+                      onChange={(event) =>
+                        updateScene(activeScene.id, {
+                          duration: event.target.value
+                            ? Number(event.target.value)
+                            : null,
+                        })
+                      }
+                      className="w-1/2 rounded-[3px] border border-line bg-panel px-2 py-2 font-tech text-[11px] text-paper outline-none focus:border-amber-cue"
+                    />
+                  </div>
                 </label>
               </div>
             </div>
           ) : null}
         </section>
 
-        {/* RIGHT PANE: B-Roll Footage Bin / Neural Voice Booth / Master Settings */}
+        {/* RIGHT PANE: Multi-Site Stock Video Bin / VO & Music Booth / Master Specs */}
         <section className="flex flex-col border-t border-line bg-panel xl:max-h-[calc(100vh-57px)] xl:border-l xl:border-t-0">
           <div className="grid grid-cols-3 border-b border-line bg-inset">
             {(
               [
-                ["media", "B-Roll Bin", Film],
-                ["voices", "VO Booth", Volume2],
-                ["settings", "Master Specs", Sliders],
+                ["media", "Stock Video", Film],
+                ["voices", "VO & Music", Volume2],
+                ["settings", "Settings", Sliders],
               ] as const
             ).map(([key, label, Icon]) => {
               const active = tab === key;
@@ -1158,7 +1504,7 @@ export default function Studio({
                   key={key}
                   type="button"
                   onClick={() => setTab(key)}
-                  className={`flex items-center justify-center gap-1.5 border-b-2 px-2 py-2.5 font-tech text-[11px] uppercase tracking-[0.08em] transition-colors ${
+                  className={`flex items-center justify-center gap-1.5 border-b-2 px-2 py-2.5 font-tech text-[11px] uppercase tracking-[0.06em] transition-colors ${
                     active
                       ? "border-amber-cue bg-panel font-semibold text-paper"
                       : "border-transparent text-ash hover:text-stone-ink"
@@ -1172,42 +1518,38 @@ export default function Studio({
           </div>
 
           <div className="scroll-thin flex-1 overflow-y-auto p-3.5">
-            {/* TAB 1: MOVING B-ROLL FOOTAGE BIN */}
+            {/* TAB 1: MULTI-SITE MOVING STOCK VIDEO BIN */}
             {tab === "media" ? (
               <div className="space-y-3">
-                {/* Provider selector */}
-                <div className="flex items-center justify-between gap-2">
-                  <div className="inline-flex rounded-[2px] border border-line bg-canvas p-0.5 font-tech text-[10px] uppercase">
-                    {(
-                      [
-                        ["all", "All Pools"],
-                        ["pexels", "Pexels"],
-                        ["pixabay", "Pixabay"],
-                      ] as const
-                    ).map(([prov, label]) => (
-                      <button
-                        key={prov}
-                        type="button"
-                        onClick={() => {
-                          setProviderFilter(prov);
-                          void searchMedia(search, prov);
-                        }}
-                        className={`rounded-[2px] px-2 py-1 transition-colors ${
-                          providerFilter === prov
-                            ? "bg-elevated font-semibold text-amber-cue"
-                            : "text-ash hover:text-paper"
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  <span className="font-tech text-[10px] uppercase text-ash">
-                    {mediaSource || "video-only"}
-                  </span>
+                <div className="flex flex-wrap items-center gap-1">
+                  {(
+                    [
+                      ["all", "All Sites"],
+                      ["pexels", "Pexels"],
+                      ["mixkit", "Mixkit"],
+                      ["wikimedia", "Wikimedia"],
+                      ["nasa", "NASA"],
+                      ["pixabay", "Pixabay"],
+                    ] as const
+                  ).map(([prov, label]) => (
+                    <button
+                      key={prov}
+                      type="button"
+                      onClick={() => {
+                        setProviderFilter(prov);
+                        void searchMedia(search, prov);
+                      }}
+                      className={`rounded-[2px] px-2 py-1 font-tech text-[10px] uppercase transition-colors ${
+                        providerFilter === prov
+                          ? "bg-amber-cue font-semibold text-[#14110A]"
+                          : "border border-line bg-inset text-stone-ink hover:text-paper"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
 
-                {/* Search input */}
                 <div className="flex gap-1.5">
                   <div className="relative min-w-0 flex-1">
                     <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-ash" />
@@ -1217,7 +1559,7 @@ export default function Studio({
                       onKeyDown={(event) => {
                         if (event.key === "Enter") void searchMedia(search);
                       }}
-                      placeholder="Search moving B-roll clips…"
+                      placeholder="Search Pexels, Mixkit, Wikimedia, NASA…"
                       className="w-full rounded-[3px] border border-line bg-canvas py-2 pl-8 pr-2.5 text-xs text-paper outline-none transition-colors focus:border-amber-cue"
                     />
                   </div>
@@ -1230,7 +1572,6 @@ export default function Studio({
                   </button>
                 </div>
 
-                {/* Quick roll filters */}
                 <div className="flex flex-wrap gap-1">
                   {QUICK_TOPICS.map((topic) => (
                     <button
@@ -1247,164 +1588,273 @@ export default function Studio({
                   ))}
                 </div>
 
-                <p className="font-tech text-[10px] text-ash">
-                  Click any clip to cut into{" "}
-                  <span className="text-paper">
-                    SC {String(activeIndex + 1).padStart(2, "0")}
-                  </span>{" "}
-                  · Hover to scrub footage
-                </p>
-
-                <div className="grid grid-cols-2 gap-2">
-                  {assets.map((asset) => {
-                    const isAssigned = activeScene?.mediaId === asset.id;
-                    const hovered = hoveredAssetId === asset.id;
-                    const clipPreview = pickPreviewUrl(asset);
-
-                    return (
-                      <button
-                        key={asset.id}
-                        type="button"
-                        onClick={() => assignMedia(asset)}
-                        onMouseEnter={() => setHoveredAssetId(asset.id)}
-                        onMouseLeave={() =>
-                          setHoveredAssetId((curr) => (curr === asset.id ? null : curr))
-                        }
-                        className={`group overflow-hidden rounded-[3px] border text-left transition-colors ${
-                          isAssigned
-                            ? "border-amber-cue bg-elevated"
-                            : "border-line bg-inset hover:border-line-strong"
-                        }`}
-                      >
-                        <div className="relative aspect-video w-full overflow-hidden bg-black">
-                          {hovered && clipPreview ? (
-                            <video
-                              src={clipPreview}
-                              poster={asset.thumb}
-                              autoPlay
-                              muted
-                              loop
-                              playsInline
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={asset.thumb}
-                              alt={asset.title}
-                              loading="lazy"
-                              className="h-full w-full object-cover"
-                            />
-                          )}
-                          <span className="absolute bottom-1 left-1 rounded-[2px] bg-black/80 px-1 py-0.5 font-tech text-[9px] text-paper">
-                            {formatClock(asset.duration ?? 10)}
-                          </span>
-                          {isAssigned ? (
-                            <span className="absolute right-1 top-1 inline-flex items-center gap-0.5 rounded-[2px] bg-amber-cue px-1.5 py-0.5 font-tech text-[9px] font-semibold text-[#14110A]">
-                              <Check className="h-2.5 w-2.5" />
-                              IN CUE
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="p-2">
-                          <p className="truncate text-[11px] font-medium text-paper">
-                            {asset.title}
-                          </p>
-                          <p className="font-tech truncate text-[9px] uppercase text-ash">
-                            {asset.provider} · {asset.creator}
-                          </p>
-                        </div>
-                      </button>
-                    );
-                  })}
+                <div className="flex items-center justify-between font-tech text-[10px] text-ash">
+                  <span>
+                    Click clip →{" "}
+                    <span className="text-paper">
+                      SC {String(activeIndex + 1).padStart(2, "0")}
+                    </span>
+                  </span>
+                  <span className="uppercase">{mediaSource || "video-only"}</span>
                 </div>
+
+                {searching ? (
+                  <div className="grid place-items-center py-10 font-tech text-xs text-stone-ink">
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-cue" />
+                      Searching stock video libraries…
+                    </span>
+                  </div>
+                ) : assets.length === 0 ? (
+                  <div className="rounded-[3px] border border-line bg-inset p-4 text-center font-tech text-xs text-stone-ink">
+                    No clips matched “{search}” on {providerFilter}. Try another term or switch to All Sites.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    {assets.map((asset) => {
+                      const isAssigned = activeScene?.mediaId === asset.id;
+                      const hovered = hoveredAssetId === asset.id;
+                      const clipPreview = pickPreviewUrl(asset);
+
+                      return (
+                        <button
+                          key={asset.id}
+                          type="button"
+                          onClick={() => assignMedia(asset)}
+                          onMouseEnter={() => setHoveredAssetId(asset.id)}
+                          onMouseLeave={() =>
+                            setHoveredAssetId((curr) =>
+                              curr === asset.id ? null : curr,
+                            )
+                          }
+                          className={`group overflow-hidden rounded-[3px] border text-left transition-colors ${
+                            isAssigned
+                              ? "border-amber-cue bg-elevated"
+                              : "border-line bg-inset hover:border-line-strong"
+                          }`}
+                        >
+                          <div className="relative aspect-video w-full overflow-hidden bg-black">
+                            {hovered && clipPreview ? (
+                              <video
+                                src={clipPreview}
+                                poster={asset.thumb}
+                                autoPlay
+                                muted
+                                loop
+                                playsInline
+                                className="h-full w-full object-cover"
+                              />
+                            ) : (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={asset.thumb}
+                                alt={asset.title}
+                                loading="lazy"
+                                className="h-full w-full object-cover"
+                              />
+                            )}
+                            <span className="absolute bottom-1 left-1 rounded-[2px] bg-black/80 px-1 py-0.5 font-tech text-[9px] text-paper">
+                              {formatClock(asset.duration ?? 10)}
+                            </span>
+                            <span className="absolute bottom-1 right-1 rounded-[2px] bg-black/80 px-1 py-0.5 font-tech text-[8px] uppercase text-stone-ink">
+                              {asset.provider}
+                            </span>
+                            {isAssigned ? (
+                              <span className="absolute right-1 top-1 inline-flex items-center gap-0.5 rounded-[2px] bg-amber-cue px-1.5 py-0.5 font-tech text-[9px] font-semibold text-[#14110A]">
+                                <Check className="h-2.5 w-2.5" />
+                                IN CUE
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="p-2">
+                            <p className="truncate text-[11px] font-medium text-paper">
+                              {asset.title}
+                            </p>
+                            <p className="font-tech truncate text-[9px] uppercase text-ash">
+                              {asset.creator}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             ) : null}
 
-            {/* TAB 2: 24KHZ NEURAL VOICE BOOTH */}
+            {/* TAB 2: NEURAL VOICES & ROYALTY-FREE BACKGROUND MUSIC MIXER */}
             {tab === "voices" ? (
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center gap-1">
-                  {["all", "American", "British", "Australian"].map((acc) => (
-                    <button
-                      key={acc}
-                      type="button"
-                      onClick={() => setVoiceAccentFilter(acc)}
-                      className={`rounded-[2px] px-2 py-1 font-tech text-[10px] uppercase transition-colors ${
-                        voiceAccentFilter === acc
-                          ? "bg-amber-cue font-semibold text-[#14110A]"
-                          : "border border-line bg-inset text-stone-ink hover:text-paper"
-                      }`}
-                    >
-                      {acc}
-                    </button>
-                  ))}
+              <div className="space-y-5">
+                {/* Background Music Bed Section */}
+                <div className="rounded-[3px] border border-line bg-inset p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 font-tech text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-cue">
+                      <Music className="h-3 w-3" />
+                      <span>Background Music Score</span>
+                    </span>
+                    <span className="font-tech text-[10px] text-stone-ink">
+                      Mix: {Math.round(musicVolume * 100)}%
+                    </span>
+                  </div>
+
+                  <div className="mt-2.5 space-y-1">
+                    {MUSIC_TRACKS.map((track) => {
+                      const active = musicTrackId === track.id;
+                      const playing = playingAudioKey === `music-${track.id}`;
+                      return (
+                        <div
+                          key={track.id}
+                          className={`flex items-center justify-between gap-2 rounded-[2px] border px-2.5 py-1.5 transition-colors ${
+                            active
+                              ? "border-amber-cue bg-elevated"
+                              : "border-line bg-panel hover:border-line-strong"
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateScriptOptions({ musicTrack: track.id })
+                            }
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <p className="flex items-center gap-2 text-xs font-medium text-paper">
+                              <span className={active ? "text-amber-cue" : undefined}>
+                                {track.name}
+                              </span>
+                              <span className="font-tech text-[9px] uppercase text-ash">
+                                {track.mood}
+                              </span>
+                            </p>
+                          </button>
+                          {track.url ? (
+                            <button
+                              type="button"
+                              onClick={() => void playMusicSample(track.id)}
+                              className="inline-flex h-6 items-center gap-1 rounded-[2px] border border-line bg-canvas px-2 font-tech text-[10px] text-stone-ink hover:border-amber-cue hover:text-paper"
+                            >
+                              {playing ? (
+                                <>
+                                  <AudioMeter active />
+                                  <Square className="h-2.5 w-2.5 fill-current text-amber-cue" />
+                                </>
+                              ) : (
+                                <Play className="h-2.5 w-2.5 fill-current" />
+                              )}
+                            </button>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {musicTrackId !== "none" ? (
+                    <label className="mt-2.5 block">
+                      <div className="flex justify-between font-tech text-[10px] text-ash">
+                        <span>Music bed level under voiceover</span>
+                        <span className="text-paper">
+                          {Math.round(musicVolume * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={5}
+                        max={38}
+                        value={Math.round(musicVolume * 100)}
+                        onChange={(e) =>
+                          updateScriptOptions({
+                            musicVolume: Number(e.target.value) / 100,
+                          })
+                        }
+                        className="mt-1 w-full accent-[#E5A93C]"
+                      />
+                    </label>
+                  ) : null}
                 </div>
 
-                <p className="font-tech text-[10px] leading-relaxed text-ash">
-                  24kHz Microsoft neural voices normalized to -16 LUFS. Audition
-                  reads your active cue copy live.
-                </p>
-
-                <div className="divide-y divide-line border-y border-line">
-                  {filteredVoices.map((voice) => {
-                    const selected = project.voice === voice.id;
-                    const playing = playingAudioKey === `voice-${voice.id}`;
-                    return (
-                      <div
-                        key={voice.id}
-                        className={`flex items-center justify-between gap-2 py-2.5 px-2 transition-colors ${
-                          selected ? "bg-elevated" : "hover:bg-inset/60"
-                        }`}
-                      >
+                {/* Neural Voices Section */}
+                <div>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-tech text-[10px] font-semibold uppercase tracking-[0.14em] text-paper">
+                      24kHz Neural Narrators
+                    </span>
+                    <div className="flex gap-1">
+                      {["all", "American", "British", "Australian"].map((acc) => (
                         <button
+                          key={acc}
                           type="button"
-                          onClick={() => updateProjectSetting("voice", voice.id)}
-                          className="min-w-0 flex-1 text-left"
+                          onClick={() => setVoiceAccentFilter(acc)}
+                          className={`rounded-[2px] px-1.5 py-0.5 font-tech text-[9px] uppercase transition-colors ${
+                            voiceAccentFilter === acc
+                              ? "bg-amber-cue font-semibold text-[#14110A]"
+                              : "border border-line bg-inset text-stone-ink hover:text-paper"
+                          }`}
                         >
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`text-xs font-semibold ${
-                                selected ? "text-amber-cue" : "text-paper"
-                              }`}
-                            >
-                              {voice.name}
-                            </span>
-                            <span className="font-tech text-[10px] uppercase text-ash">
-                              {voice.accent} · {voice.gender}
-                            </span>
-                          </div>
-                          <p className="mt-0.5 truncate text-[11px] text-stone-ink">
-                            {voice.style} — {voice.description}
-                          </p>
+                          {acc === "all" ? "All" : acc.slice(0, 2)}
                         </button>
+                      ))}
+                    </div>
+                  </div>
 
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void playSpeechSample(
-                              `voice-${voice.id}`,
-                              voice.id,
-                              activeScene?.narration || voice.previewText,
-                            )
-                          }
-                          className="inline-flex h-7 items-center gap-1.5 rounded-[2px] border border-line bg-canvas px-2.5 font-tech text-[10px] text-stone-ink transition-colors hover:border-amber-cue hover:text-paper"
+                  <div className="divide-y divide-line border-y border-line">
+                    {filteredVoices.map((voice) => {
+                      const selected = project.voice === voice.id;
+                      const playing = playingAudioKey === `voice-${voice.id}`;
+                      return (
+                        <div
+                          key={voice.id}
+                          className={`flex items-center justify-between gap-2 px-2 py-2.5 transition-colors ${
+                            selected ? "bg-elevated" : "hover:bg-inset/60"
+                          }`}
                         >
-                          {playing ? (
-                            <>
-                              <AudioMeter active />
-                              <Square className="h-2.5 w-2.5 fill-current text-amber-cue" />
-                            </>
-                          ) : (
-                            <>
-                              <Play className="h-2.5 w-2.5 fill-current" />
-                              <span>Test</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    );
-                  })}
+                          <button
+                            type="button"
+                            onClick={() => updateProjectSetting("voice", voice.id)}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`text-xs font-semibold ${
+                                  selected ? "text-amber-cue" : "text-paper"
+                                }`}
+                              >
+                                {voice.name}
+                              </span>
+                              <span className="font-tech text-[10px] uppercase text-ash">
+                                {voice.accent} · {voice.gender}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 truncate text-[11px] text-stone-ink">
+                              {voice.style} — {voice.description}
+                            </p>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void playSpeechSample(
+                                `voice-${voice.id}`,
+                                voice.id,
+                                activeScene?.narration || voice.previewText,
+                              )
+                            }
+                            className="inline-flex h-7 items-center gap-1.5 rounded-[2px] border border-line bg-canvas px-2.5 font-tech text-[10px] text-stone-ink transition-colors hover:border-amber-cue hover:text-paper"
+                          >
+                            {playing ? (
+                              <>
+                                <AudioMeter active />
+                                <Square className="h-2.5 w-2.5 fill-current text-amber-cue" />
+                              </>
+                            ) : (
+                              <>
+                                <Play className="h-2.5 w-2.5 fill-current" />
+                                <span>Test</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -1414,7 +1864,58 @@ export default function Studio({
               <div className="space-y-4">
                 <div>
                   <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
-                    Deliverable Resolution
+                    Subtitle / Caption Mode
+                  </span>
+                  <div className="space-y-1.5">
+                    {CAPTION_MODES.map((mode) => {
+                      const active = captionMode === mode.id;
+                      return (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          onClick={() =>
+                            updateScriptOptions({ captionMode: mode.id })
+                          }
+                          className={`block w-full rounded-[3px] border px-3 py-2 text-left transition-colors ${
+                            active
+                              ? "border-amber-cue bg-elevated"
+                              : "border-line bg-inset hover:border-line-strong"
+                          }`}
+                        >
+                          <span className="font-tech text-xs font-semibold text-paper">
+                            {mode.label}
+                          </span>
+                          <span className="block text-[11px] text-stone-ink">
+                            {mode.note}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <label className="block">
+                  <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
+                    Caption Theme (libass)
+                  </span>
+                  <select
+                    value={project.style}
+                    onChange={(event) =>
+                      updateProjectSetting("style", event.target.value as Style)
+                    }
+                    className="w-full rounded-[3px] border border-line bg-canvas px-3 py-2 text-xs font-medium capitalize text-paper outline-none focus:border-amber-cue"
+                  >
+                    {STYLES.map((opt) => (
+                      <option key={opt} value={opt} className="bg-panel capitalize">
+                        {opt}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div>
+                  <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
+                    Export Resolution
                   </span>
                   <div className="space-y-1.5">
                     {RESOLUTION_ORDER.map((opt) => {
@@ -1440,7 +1941,7 @@ export default function Studio({
                             </span>
                           </div>
                           <span className="font-tech text-[10px] text-amber-cue">
-                            {info.spec}
+                            {computeDimensions(opt, project.aspect)}
                           </span>
                         </button>
                       );
@@ -1473,25 +1974,6 @@ export default function Studio({
                     })}
                   </div>
                 </div>
-
-                <label className="block">
-                  <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
-                    Burned-In Caption Styling (libass)
-                  </span>
-                  <select
-                    value={project.style}
-                    onChange={(event) =>
-                      updateProjectSetting("style", event.target.value as Style)
-                    }
-                    className="w-full rounded-[3px] border border-line bg-canvas px-3 py-2 text-xs font-medium capitalize text-paper outline-none focus:border-amber-cue"
-                  >
-                    {STYLES.map((opt) => (
-                      <option key={opt} value={opt} className="bg-panel capitalize">
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
-                </label>
 
                 <div className="grid grid-cols-2 gap-2.5">
                   <label className="block">
@@ -1532,35 +2014,143 @@ export default function Studio({
                     </select>
                   </label>
                 </div>
-
-                <label className="block">
-                  <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
-                    Target Brief Duration (15–90s)
-                  </span>
-                  <input
-                    type="number"
-                    min={15}
-                    max={90}
-                    value={project.duration}
-                    onChange={(event) =>
-                      updateProjectSetting(
-                        "duration",
-                        Math.min(90, Math.max(15, Number(event.target.value) || 30)),
-                      )
-                    }
-                    className="w-full rounded-[3px] border border-line bg-canvas px-3 py-2 font-tech text-xs text-paper outline-none focus:border-amber-cue"
-                  />
-                </label>
-
-                <div className="rounded-[3px] border border-line bg-inset p-3 font-tech text-[10px] leading-relaxed text-ash">
-                  Final master runtime locks to exact spoken neural voiceover
-                  length (+0.45s tail pad per cue) so narration is never clipped.
-                </div>
               </div>
             ) : null}
           </div>
         </section>
       </div>
+
+      {/* DEDICATED EXPORT MODAL (240p / 360p / 1080p) */}
+      {exportOpen ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-[2px]"
+          onClick={() => setExportOpen(false)}
+        >
+          <div
+            className="console-surface w-full max-w-lg rounded-[4px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-line bg-inset px-4 py-3">
+              <div>
+                <h2 className="font-tech text-xs font-semibold uppercase tracking-[0.14em] text-paper">
+                  Export Master MP4
+                </h2>
+                <p className="font-tech text-[10px] text-ash">
+                  H.264 High · AAC-LC 160k · -16 LUFS ·{" "}
+                  {ASPECTS[project.aspect].shortLabel}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExportOpen(false)}
+                aria-label="Close export modal"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-[2px] border border-line text-stone-ink hover:text-paper"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-4 sm:p-5">
+              <div>
+                <span className="font-tech mb-2 block text-[10px] uppercase tracking-[0.14em] text-ash">
+                  Select Export Resolution
+                </span>
+                <div className="space-y-2">
+                  {RESOLUTION_ORDER.map((res) => {
+                    const info = RESOLUTIONS[res];
+                    const selected = exportResolution === res;
+                    const estMB = Math.max(
+                      0.4,
+                      (totalEstimatedSeconds * info.estMbps) / 8,
+                    ).toFixed(1);
+                    return (
+                      <button
+                        key={res}
+                        type="button"
+                        onClick={() => setExportResolution(res)}
+                        className={`flex w-full items-center justify-between rounded-[3px] border px-3.5 py-2.5 text-left transition-colors ${
+                          selected
+                            ? "border-amber-cue bg-elevated"
+                            : "border-line bg-inset hover:border-line-strong"
+                        }`}
+                      >
+                        <div>
+                          <span className="font-tech text-sm font-semibold text-paper">
+                            {info.label}
+                          </span>
+                          <span className="ml-2 text-xs text-stone-ink">
+                            {info.role} — {info.note}
+                          </span>
+                        </div>
+                        <div className="text-right font-tech text-[10px]">
+                          <span className="block text-amber-cue">
+                            {computeDimensions(res, project.aspect)}
+                          </span>
+                          <span className="text-ash">~{estMB} MB</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <dl className="grid grid-cols-2 gap-2 rounded-[3px] border border-line bg-inset p-3 font-tech text-[11px]">
+                <div>
+                  <dt className="text-[10px] uppercase text-ash">Voiceover</dt>
+                  <dd className="text-paper">
+                    {selectedVoiceObj?.name ?? project.voice} ({project.language.toUpperCase()})
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[10px] uppercase text-ash">Music Score</dt>
+                  <dd className="text-paper">{getMusicTrack(musicTrackId).name}</dd>
+                </div>
+                <div>
+                  <dt className="text-[10px] uppercase text-ash">Subtitles</dt>
+                  <dd className="text-paper">
+                    {CAPTION_MODES.find((c) => c.id === captionMode)?.label}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[10px] uppercase text-ash">Runtime</dt>
+                  <dd className="text-paper">
+                    ~{formatClock(totalEstimatedSeconds)} ({scenes.length} cues)
+                  </dd>
+                </div>
+              </dl>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                {hasMasterFile &&
+                !hasUnrenderedEdits &&
+                exportResolution === project.resolution ? (
+                  <a
+                    href={downloadUrl}
+                    download={`reclaimed-artistry-${project.id.slice(0, 8)}-${project.resolution}.mp4`}
+                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-[3px] bg-nominal px-4 py-2.5 font-tech text-xs font-semibold uppercase tracking-[0.08em] text-[#08130C] transition-opacity hover:opacity-90"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    <span>Download {project.resolution} MP4 Now</span>
+                  </a>
+                ) : null}
+
+                <button
+                  type="button"
+                  disabled={render.status === "rendering"}
+                  onClick={() => void startMasterRender(exportResolution)}
+                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-[3px] bg-amber-cue px-4 py-2.5 font-tech text-xs font-semibold uppercase tracking-[0.08em] text-[#14110A] transition-colors hover:bg-amber-hover disabled:opacity-50"
+                >
+                  <Play className="h-3.5 w-3.5 fill-current" />
+                  <span>
+                    {hasMasterFile && exportResolution === project.resolution
+                      ? `Re-render ${exportResolution} MP4`
+                      : `Render ${exportResolution} MP4`}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

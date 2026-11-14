@@ -1,15 +1,32 @@
 import { randomUUID } from "node:crypto";
-import type { Scene, Tone, VideoScript } from "./types";
-import { MAX_SCENES, MIN_SCENES } from "./types";
-import { hydrateSceneMedia, matchLocalAsset, previewUrlForAsset } from "./stock";
+import { defaultMusicForTone } from "./music";
+import {
+  hydrateSceneMedia,
+  matchBestStockVideo,
+  matchLocalAsset,
+  previewUrlForAsset,
+} from "./stock";
+import type {
+  CaptionMode,
+  MusicTrackId,
+  Scene,
+  StockAsset,
+  Tone,
+  VideoScript,
+  Workflow,
+} from "./types";
+import { MAX_SCENES, MIN_SCENES, WORKFLOWS } from "./types";
 
 type Category = {
   key: string;
   words: string[];
-  tags: string[];
-  steps: string[];
-  benefits: string[];
-  proof: string[];
+  visuals: string[];
+  painPoint: string;
+  craft: string;
+  payoff: string;
+  proof: string;
+  ctaCommercial: string;
+  ctaExplainer: string;
 };
 
 const CATEGORIES: Category[] = [
@@ -19,21 +36,44 @@ const CATEGORIES: Category[] = [
       "ai", "artificial intelligence", "tech", "technology", "software", "app",
       "saas", "data", "digital", "computer", "code", "robot", "machine learning",
       "cybersecurity", "crypto", "blockchain", "internet", "cloud", "developer",
-      "automation", "chatbot", "generative", "agent", "agents", "llm",
-      "copilot", "prompt", "prompts", "machine-learning",
+      "automation", "chatbot", "generative", "agent", "agents", "llm", "copilot",
+      "prompt", "prompts", "support", "workflow", "platform",
     ],
-    tags: ["technology", "network", "abstract", "digital", "animation", "future"],
-    steps: [
-      "audit where the bottleneck actually is",
-      "automate the repetitive part first",
-      "measure the result every single week",
+    visuals: [
+      "technology data network",
+      "software developer laptop coding",
+      "futuristic digital connections",
+      "modern tech office team",
+      "glowing neural network animation",
     ],
-    benefits: [
-      "you ship faster with far less busywork",
-      "the output becomes repeatable instead of random",
-      "your team gets hours back every week",
+    painPoint: "Teams lose hours every week to manual handoffs and slow legacy workflows",
+    craft: "Intelligent automation handles the repetitive queue in seconds while keeping humans in control of every decision",
+    payoff: "Response times drop, accuracy climbs, and your team finally focuses on high-leverage work",
+    proof: "Modern teams deploying this shift cut turnaround times in half within the first month",
+    ctaCommercial: "See what it looks like in your own workflow — try it today.",
+    ctaExplainer: "Start with one repetitive bottleneck this week and measure the hours you win back.",
+  },
+  {
+    key: "food",
+    words: [
+      "food", "restaurant", "coffee", "recipe", "cooking", "cafe", "meal",
+      "chef", "baking", "drink", "smoothie", "kitchen", "espresso", "dinner",
+      "roastery", "roaster", "beans", "brew", "barista", "brunch", "latte",
+      "bakery", "pastry", "tea", "wine", "chocolate",
     ],
-    proof: ["cut build time by more than half", "report double the output", "never miss a deadline"],
+    visuals: [
+      "barista pouring espresso coffee",
+      "coffee machine brewing cafe",
+      "fresh food kitchen preparation",
+      "cozy cafe table latte art",
+      "artisan chef cooking kitchen",
+    ],
+    painPoint: "Most mornings rush past with flat flavor and shortcuts you can taste immediately",
+    craft: "Every batch starts with careful sourcing, patient temperature control, and craft you can smell before the first sip",
+    payoff: "Rich balance, clean aroma, and a ritual worth slowing down for every single day",
+    proof: "Once people taste the difference of small-batch craft, ordinary never feels the same again",
+    ctaCommercial: "Taste the first pour — visit us or order your first batch today.",
+    ctaExplainer: "Upgrade one ingredient at a time, dial in your timing, and let the craft speak for itself.",
   },
   {
     key: "business",
@@ -41,260 +81,178 @@ const CATEGORIES: Category[] = [
       "business", "startup", "marketing", "sales", "entrepreneur", "company",
       "leadership", "revenue", "growth", "product", "customer", "seo", "brand",
       "agency", "finance", "money", "invest", "strategy", "remote work", "client",
+      "founder", "founders", "pitch", "saas", "b2b",
     ],
-    tags: ["team", "office", "meeting", "business", "collaboration", "presentation"],
-    steps: [
-      "pick one channel and go all in",
-      "ship a weekly cadence you can sustain",
-      "double down on whatever actually converts",
+    visuals: [
+      "business team office meeting",
+      "startup collaboration whiteboard",
+      "modern skyscrapers city skyline",
+      "analytics dashboard laptop office",
+      "executive presentation conference room",
     ],
-    benefits: [
-      "the pipeline finally feels predictable",
-      "you stop guessing where the next deal comes from",
-      "growth becomes a system, not a lucky month",
-    ],
-    proof: ["grew revenue every month for a year", "closed twice the deals", "doubled their audience"],
+    painPoint: "Too many growing teams chase noise while their real pipeline stays unpredictable",
+    craft: "Focus on one repeatable acquisition channel, sharp positioning, and weekly execution that compounds",
+    payoff: "Clearer positioning, steadier conversions, and growth you can forecast instead of guess",
+    proof: "Companies that replace scattered tactics with a focused weekly system outperform louder competitors",
+    ctaCommercial: "Book a walkthrough today and build a system that scales with you.",
+    ctaExplainer: "Pick one core lever, commit to a weekly cadence, and cut everything that doesn't move the needle.",
   },
   {
     key: "nature",
     words: [
       "nature", "environment", "climate", "forest", "ocean", "mountain",
-      "wildlife", "sustainability", "green", "earth", "weather", "renewable",
-      "conservation", "eco",
+      "wildlife", "sustainability", "sustainable", "green", "earth", "weather",
+      "renewable", "conservation", "eco", "water", "bottle", "solar", "river",
+      "trees", "wild", "planet", "space", "coral",
     ],
-    tags: ["nature", "forest", "mountain", "ocean", "green", "landscape"],
-    steps: [
-      "cut the waste you actually control",
-      "restore the piece of habitat nearby",
-      "publish the numbers so others follow",
+    visuals: [
+      "aerial ocean waves crashing",
+      "mountain forest mist nature",
+      "turquoise waves rocky shore",
+      "sunlight forest trees aerial",
+      "clear river nature landscape",
     ],
-    benefits: [
-      "the local ecosystem starts to recover",
-      "the footprint of the brand shrinks for good",
-      "the story becomes proof, not a promise",
-    ],
-    proof: ["restored four hectares of wetland", "cut emissions by a third", "replaced every single plastic item"],
+    painPoint: "Everyday habits leave a heavier footprint on the planet than most of us realize",
+    craft: "Designed with durable materials and responsible sourcing built to replace thousands of single-use disposables",
+    payoff: "Cleaner oceans, less waste, and thoughtful design made to travel anywhere you go",
+    proof: "Small everyday switches scale fast when millions of people make durability the default",
+    ctaCommercial: "Make the switch today and carry something built to last.",
+    ctaExplainer: "Start with the single-use habits you repeat daily — consistency matters more than perfection.",
   },
   {
     key: "travel",
     words: [
       "travel", "trip", "vacation", "tour", "hotel", "flight", "beach",
       "destination", "adventure", "itinerary", "holiday", "airport", "road trip",
+      "island", "lisbon", "tokyo", "paris", "istanbul", "resort", "explore",
     ],
-    tags: ["travel", "airplane", "beach", "holiday", "summer", "ocean"],
-    steps: [
-      "choose the region before the hotel",
-      "book the one anchor experience",
-      "leave room for the unexpected detour",
+    visuals: [
+      "airplane flying over ocean beach",
+      "aerial coastal beach sunset",
+      "clouds from airplane wing",
+      "scenic city aerial travel",
+      "train passing through landscape",
     ],
-    benefits: [
-      "the trip finally matches the photos",
-      "you spend less time planning and more time living",
-      "every day has a highlight worth remembering",
-    ],
-    proof: ["covered nine countries in a month", "found the town that is now their favourite", "planned in half the time"],
-  },
-  {
-    key: "food",
-    words: [
-      "food", "restaurant", "coffee", "recipe", "cooking", "cafe", "meal",
-      "chef", "baking", "drink", "smoothie", "kitchen", "espresso", "dinner",
-      "roastery", "roaster", "beans", "brew", "barista", "brunch", "restaurant",
-    ],
-    tags: ["food", "coffee", "cafe", "recipe", "cooking", "drink"],
-    steps: [
-      "source the ingredients properly",
-      "master one signature dish",
-      "serve it while it is still hot",
-    ],
-    benefits: [
-      "the flavour lands the same way every time",
-      "you spend less money for a better plate",
-      "guests remember the dish, not the venue",
-    ],
-    proof: ["sold out in under an hour", "earned a five star review", "tripled weekend covers"],
+    painPoint: "Great trips get ruined when you spend more time rushing through checklists than taking in the place",
+    craft: "Build each day around one unforgettable anchor experience, then leave space for side streets and golden hour",
+    payoff: "Less friction, richer stories, and a journey that actually feels like the postcards promised",
+    proof: "Travelers who slow the pace down come home with twice the memories and half the burnout",
+    ctaCommercial: "Plan your next departure and experience it firsthand.",
+    ctaExplainer: "Pick the region first, lock in one anchor per day, and leave the rest open to discovery.",
   },
   {
     key: "fitness",
     words: [
       "fitness", "workout", "gym", "health", "training", "yoga", "run",
-      "muscle", "wellness", "nutrition", "exercise", "marathon", "mobility",
+      "running", "muscle", "wellness", "nutrition", "exercise", "marathon",
+      "mobility", "strength", "cardio", "athlete", "sport",
     ],
-    tags: ["fitness", "gym", "workout", "health", "training"],
-    steps: [
-      "fix the basics before adding anything",
-      "add progressive overload every week",
-      "treat recovery as part of the training",
+    visuals: [
+      "athlete running treadmill gym",
+      "modern gym workout training",
+      "couple exercising fitness gym",
+      "morning outdoor runner sunrise",
+      "strength training gym weights",
     ],
-    benefits: [
-      "the gains show up and then they stay",
-      "you train hard without burning out",
-      "energy holds steady through the afternoon",
-    ],
-    proof: ["finished their first marathon", "doubled their strength in a year", "showed up every single day for 200 days"],
+    painPoint: "Chasing complicated routines burns people out long before real results show up",
+    craft: "Nail the fundamentals, add small progressive overload each week, and treat sleep and recovery like part of the session",
+    payoff: "Steady strength, higher energy through the afternoon, and momentum that holds all year",
+    proof: "Consistency beats intensity every time — twenty focused minutes done daily outperforms occasional marathons",
+    ctaCommercial: "Start your first session today and feel the shift in week one.",
+    ctaExplainer: "Lock in three non-negotiable sessions a week before adding anything extra.",
   },
   {
     key: "city",
     words: [
       "city", "urban", "skyline", "downtown", "architecture", "street",
       "metro", "real estate", "apartment", "neighbourhood", "neighborhood",
+      "train", "rail", "transit", "commute", "building", "buildings",
     ],
-    tags: ["city", "skyline", "aerial", "urban", "architecture", "sunset"],
-    steps: [
-      "know the neighbourhood on foot",
-      "learn where the locals actually eat",
-      "watch how the light moves through the day",
+    visuals: [
+      "aerial city skyline skyscrapers",
+      "drone train passing buildings",
+      "downtown night city traffic",
+      "modern architecture sunset skyline",
+      "railway tracks urban transit",
     ],
-    benefits: [
-      "the city finally feels like somewhere you belong",
-      "you stop paying tourist prices",
-      "every corner gives you a better shot",
-    ],
-    proof: ["shot a full series on one block", "found the rooftop everyone misses", "captured the city in twelve mornings"],
+    painPoint: "Cities change faster than most people notice until entire neighborhoods feel transformed overnight",
+    craft: "Better transit corridors, human-scale design, and smarter architecture reshape how millions move every morning",
+    payoff: "Shorter commutes, livelier streets, and skylines designed around people instead of gridlock",
+    proof: "From rail corridors to mixed-use blocks, the cities investing in movement win the next decade",
+    ctaCommercial: "Discover the spaces shaping tomorrow's skyline.",
+    ctaExplainer: "Next time you walk your neighborhood, watch how light, transit, and street design steer the crowd.",
   },
   {
     key: "marketing",
     words: [
-      "marketing", "social media", "instagram", "tiktok", "youtube", "promo",
+      "social media", "instagram", "tiktok", "youtube", "promo", "reel",
       "advertisement", "campaign", "subscribe", "creator", "influencer",
-      "newsletter", "brand awareness",
+      "newsletter", "brand awareness", "video", "content", "podcast",
     ],
-    tags: ["marketing", "social", "neon", "subscribe", "cta", "animation"],
-    steps: [
-      "hook the viewer in the first three seconds",
-      "show the payoff before the explanation",
-      "give one clear next action",
+    visuals: [
+      "vibrant neon light trails",
+      "creative studio production desk",
+      "dynamic abstract motion lights",
+      "social creator filming camera",
+      "modern workspace editing laptop",
     ],
-    benefits: [
-      "people stay until the last frame",
-      "the message lands instead of scrolling past",
-      "the video sells without feeling like an ad",
-    ],
-    proof: ["doubled the watch time", "sold out the launch in a day", "crossed a hundred thousand views"],
-  },
-  {
-    key: "education",
-    words: [
-      "course", "learn", "teach", "lesson", "tutorial", "class", "student",
-      "workshop", "skill", "course", "training", "bootcamp",
-    ],
-    tags: ["workspace", "laptop", "team", "office", "study", "desk"],
-    steps: [
-      "learn the fundamentals properly",
-      "build one small real project",
-      "teach it to somebody else",
-    ],
-    benefits: [
-      "the knowledge sticks because you used it",
-      "the skill opens doors you did not know about",
-      "you can explain it in your own words",
-    ],
-    proof: ["landed the first paid project", "taught it to forty students", "passed the certification on the first try"],
+    painPoint: "You have three seconds before a viewer scrolls past — weak openings kill even brilliant ideas",
+    craft: "Lead with visual contrast, deliver the core payoff immediately, and pair crisp pacing with readable captions",
+    payoff: "Higher watch-through rates, sharper brand recall, and content that holds attention to the final frame",
+    proof: "Creators who tighten their first five seconds regularly double retention without changing their camera",
+    ctaCommercial: "Launch your next campaign with footage and pacing built to stop the scroll.",
+    ctaExplainer: "Cut the throat-clearing intro on your next upload and open straight on the payoff.",
   },
   {
     key: "lifestyle",
     words: [
       "life", "habit", "routine", "morning", "productivity", "mindset",
-      "self improvement", "motivation", "focus", "balance", "wellbeing",
+      "self improvement", "motivation", "focus", "balance", "wellbeing", "calm",
     ],
-    tags: ["lifestyle", "morning", "nature", "workspace", "calm"],
-    steps: [
-      "fix the first hour of the day",
-      "remove one daily friction point",
-      "repeat it until it is automatic",
+    visuals: [
+      "minimal workspace morning light",
+      "calm ocean waves sunrise",
+      "person writing notebook desk",
+      "coffee cup quiet morning",
+      "peaceful forest landscape",
     ],
-    benefits: [
-      "the day starts on your terms",
-      "the stress level drops without trying",
-      "progress becomes the default, not the exception",
-    ],
-    proof: ["kept the habit for a full year", "went from scattered to focused", "quietly changed everything"],
+    painPoint: "When the first hour of the day belongs to notifications, the rest of the day stays reactive",
+    craft: "Protect one quiet block before messages open, write down a single priority, and finish it before noon",
+    payoff: "Calmer mornings, sharper focus, and tangible progress before lunch even arrives",
+    proof: "High performers rarely rely on willpower — they remove friction from the first sixty minutes",
+    ctaCommercial: "Reclaim your mornings starting tomorrow.",
+    ctaExplainer: "Try protecting just the first thirty minutes tomorrow morning and notice how the rest of the day shifts.",
   },
 ];
 
 const DEFAULT_CATEGORY = CATEGORIES[CATEGORIES.length - 1];
 
-const TONE_OPENERS: Record<Tone, string[]> = {
-  energetic: ["Ready?", "Watch this.", "Here is the thing."],
-  professional: ["Let us break it down.", "Here is the approach.", "Consider this."],
-  friendly: ["Let us look at this together.", "Here is what works.", "Let me show you."],
-  cinematic: ["Imagine this.", "Every shift starts somewhere.", "Picture it."],
-  minimal: ["Simply this:", "In short:", "One idea:"],
-};
+const STOP_WORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "from", "into", "your", "their",
+  "about", "over", "under", "have", "will", "just", "more", "most", "very",
+  "than", "then", "when", "where", "what", "which", "while", "how", "why",
+  "video", "clip", "reel", "short", "second", "seconds", "minute", "minutes",
+  "make", "create", "generate", "explainer", "promo", "commercial", "film",
+  "scenes", "scene", "story", "today", "every", "single", "people", "teams",
+  "start", "using", "build", "work", "best", "good", "great", "here", "there",
+  "take", "five", "yourself", "right", "across", "quiet", "small", "inside",
+  "spills", "wakes", "fresh", "smooth", "warm", "dark", "only", "even", "also",
+  "really", "actually", "never", "always", "before", "after", "through", "around",
+]);
 
-const TONE_HOOKS: Record<Tone, string[]> = {
-  energetic: [
-    "{opener} {topic} is way simpler than people think — {promise}.",
-    "Most people get {topic} wrong. Here is the fast fix.",
-    "Stop scrolling. {topicStart} can be this easy.",
-  ],
-  professional: [
-    "{opener} A practical look at {topic}, and why it matters now.",
-    "{topicStart} deserves a clear framework. Here is one.",
-    "A short, structured guide to {topic} that you can apply today.",
-  ],
-  friendly: [
-    "{opener} Here is the friendly version of {topic}.",
-    "If {topic} has felt confusing, this walkthrough is for you.",
-    "{opener} We will make {topic} feel simple.",
-  ],
-  cinematic: [
-    "{opener} Every breakthrough in {topic} started with a single decision.",
-    "Before the noise, there was {topic}. This is the story.",
-    "{topicStart} is not a trend. It is a shift.",
-  ],
-  minimal: [
-    "{opener} {topicStart}, explained in one minute.",
-    "{opener} {topic} without the fluff.",
-    "{topicStart}: what matters, what does not.",
-  ],
-};
-
-const PROMISES = [
-  "it is simpler than you think",
-  "there is a repeatable system underneath",
-  "small changes compound fast",
-  "you can start today, not someday",
-];
-
-const REASONS = [
-  "it quietly decides the rest of the outcome",
-  "it separates the teams that win from the ones that guess",
-  "it is where almost all of the wasted effort hides",
-  "it compounds faster than any other lever",
-];
-
-const TIPS = [
-  "keep the first version embarrassingly simple",
-  "batch the work into focused blocks",
-  "review the numbers every single week",
-  "talk to one real customer before you build more",
-  "write the caption before you record a word",
-];
-
-const CAPTION_TEMPLATES: Record<string, string> = {
-  hook: "Why {topic}",
-  context: "The bigger picture",
-  how: "Step by step",
-  benefit: "What you gain",
-  proof: "Real results",
-  tip: "One small tip",
-  cta: "Start today",
-};
-
-const SMALL_WORDS = new Set(["a", "an", "the", "for", "of", "and", "to", "in", "on"]);
+const SMALL_WORDS = new Set(["a", "an", "the", "for", "of", "and", "to", "in", "on", "with"]);
 
 const ACRONYMS = new Set([
   "ai", "api", "seo", "roi", "kpi", "hr", "saas", "ux", "ui", "vr", "ar",
   "diy", "b2b", "b2c", "ceo", "cfo", "cto", "faq", "pdf", "uk", "us", "ml",
-  "gpu", "cpu", "iot", "crm", "erp", "nft", "usdt", "3d", "2d", "ai-powered",
+  "gpu", "cpu", "iot", "crm", "erp", "3d", "2d", "hd", "4k", "mp4",
 ]);
 
 function titleCase(value: string): string {
   return value
     .split(" ")
     .filter(Boolean)
-    .slice(0, 6)
+    .slice(0, 7)
     .map((word, index) => {
       const lower = word.toLowerCase();
       if (ACRONYMS.has(lower)) return lower.toUpperCase();
@@ -304,6 +262,12 @@ function titleCase(value: string): string {
     .join(" ");
 }
 
+function sentenceCase(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
 export function cleanTopic(prompt: string): string {
   let topic = prompt.trim().replace(/\s+/g, " ");
   const question =
@@ -311,7 +275,7 @@ export function cleanTopic(prompt: string): string {
       topic,
     );
   const structured =
-    /^(?:a|an|the)?\s*(?:\d+\s*[- ]?(?:second|sec|s|minute|min)s?\s+)?(?:[\w'’-]+\s+){0,4}?(?:video|clip|reel|ad|advert|advertisement|promo|explainer|film|post|piece|showcase|spot|reel)\b\s+(?:about|on|for|explaining|that\s+explains|covering|highlighting|showcasing)\s+(.+)$/i.exec(
+    /^(?:a|an|the)?\s*(?:\d+\s*[- ]?(?:second|sec|s|minute|min)s?\s+)?(?:[\w'’-]+\s+){0,4}?(?:video|clip|reel|ad|advert|advertisement|promo|explainer|film|post|piece|showcase|spot|documentary|short)\b\s+(?:about|on|for|explaining|that\s+explains|covering|highlighting|showcasing|featuring)\s+(.+)$/i.exec(
       topic,
     );
   if (question) {
@@ -325,8 +289,19 @@ export function cleanTopic(prompt: string): string {
     );
     topic = topic.replace(/^(a|an|the)\s+/i, "");
   }
-  topic = topic.replace(/[.!?]+$/, "");
+  topic = topic.replace(/[.!?]+$/, "").trim();
   return topic.length > 0 ? topic : prompt.trim();
+}
+
+export function extractVisualKeywords(text: string, fallback = "cinematic city"): string {
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+  const unique = [...new Set(words)];
+  if (unique.length === 0) return fallback;
+  return unique.slice(0, 3).join(" ");
 }
 
 export function detectCategory(prompt: string): Category {
@@ -346,8 +321,6 @@ export function detectCategory(prompt: string): Category {
         lastHit = Math.max(lastHit, match.index);
       }
     }
-    // Ties are broken by the keyword that appears latest in the prompt, since
-    // the subject of the video usually sits at the end of the sentence.
     if (score > bestScore || (score === bestScore && score > 0 && lastHit > bestHit)) {
       best = category;
       bestScore = score;
@@ -357,99 +330,146 @@ export function detectCategory(prompt: string): Category {
   return best;
 }
 
-function sentenceCase(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return trimmed;
-  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+function sceneCountFor(duration: number, workflow: Workflow): number {
+  const divisor = workflow === "shorts" ? 7 : workflow === "documentary" ? 11 : 9;
+  return Math.max(MIN_SCENES, Math.min(MAX_SCENES, Math.round(duration / divisor)));
 }
 
 function beatSequence(count: number): string[] {
-  const beats = ["hook", "context", "how", "benefit", "proof", "tip", "cta"];
-  if (count <= beats.length) {
-    if (count === 3) return ["hook", "how", "cta"];
-    if (count === 4) return ["hook", "how", "benefit", "cta"];
-    if (count === 5) return ["hook", "context", "how", "benefit", "cta"];
-    return beats.slice(0, count);
-  }
-  const out: string[] = [];
+  if (count <= 3) return ["hook", "craft", "cta"];
+  if (count === 4) return ["hook", "problem", "craft", "cta"];
+  if (count === 5) return ["hook", "problem", "craft", "payoff", "cta"];
+  const base = ["hook", "problem", "craft", "payoff", "proof", "cta"];
+  const out = [...base];
   while (out.length < count) {
-    for (const beat of beats) {
-      if (out.length >= count) break;
-      if (beat === "hook" && out.length > 0) continue;
-      out.push(beat);
-    }
+    out.splice(out.length - 1, 0, out.length % 2 === 0 ? "craft" : "payoff");
   }
-  return out;
+  return out.slice(0, count);
 }
 
-function pick<T>(list: T[], index: number): T {
-  return list[index % list.length];
-}
-
-function buildNarration(
+function buildWorkflowNarration(
   beat: string,
   topic: string,
   category: Category,
+  workflow: Workflow,
   tone: Tone,
   index: number,
 ): string {
-  const opener = pick(TONE_OPENERS[tone], index);
   const topicStart = sentenceCase(topic);
-  const promise = pick(PROMISES, index);
-  const reason = pick(REASONS, index);
-  const step1 = category.steps[0];
-  const step2 = category.steps[1];
-  const step3 = category.steps[2];
-  const benefit = pick(category.benefits, index);
-  const proof = pick(category.proof, index);
-  const tip = pick(TIPS, index);
 
+  if (workflow === "commercial") {
+    switch (beat) {
+      case "hook":
+        return tone === "energetic"
+          ? `Meet ${topic} — built to change the way you experience every day.`
+          : `There is a quieter, sharper standard for ${topic}.`;
+      case "problem":
+        return `${category.painPoint}. It was time for something genuinely better.`;
+      case "craft":
+        return `${category.craft}.`;
+      case "payoff":
+        return `${category.payoff}.`;
+      case "proof":
+        return `${category.proof}.`;
+      case "cta":
+      default:
+        return category.ctaCommercial;
+    }
+  }
+
+  if (workflow === "shorts") {
+    switch (beat) {
+      case "hook":
+        return `Stop scrolling — here is what nobody tells you about ${topic}.`;
+      case "problem":
+        return `${category.painPoint}.`;
+      case "craft":
+        return `Here is the shift: ${category.craft.charAt(0).toLowerCase()}${category.craft.slice(1)}.`;
+      case "payoff":
+        return `The payoff? ${category.payoff}.`;
+      case "proof":
+        return `${category.proof}.`;
+      case "cta":
+      default:
+        return `Save this for later and try it with ${topic} today.`;
+    }
+  }
+
+  if (workflow === "documentary") {
+    switch (beat) {
+      case "hook":
+        return `Look closely at ${topic}, and a much larger story comes into focus.`;
+      case "problem":
+        return `${category.painPoint}. For years, almost everyone accepted that as normal.`;
+      case "craft":
+        return `Beneath the surface, the approach is shifting. ${category.craft}.`;
+      case "payoff":
+        return `Over time, those quiet choices compound: ${category.payoff.charAt(0).toLowerCase()}${category.payoff.slice(1)}.`;
+      case "proof":
+        return `${category.proof}.`;
+      case "cta":
+      default:
+        return `${topicStart} is no longer a distant idea — it is already unfolding around us.`;
+    }
+  }
+
+  // Default: YouTube Explainer
   switch (beat) {
     case "hook":
-      return pick(TONE_HOOKS[tone], index)
-        .replace("{opener}", opener)
-        .replace("{topicStart}", topicStart)
-        .replace("{topic}", topic)
-        .replace("{promise}", promise);
-    case "context":
-      return `Most teams treat ${topicStart} as a side task. It is not. ${reason.charAt(0).toUpperCase()}${reason.slice(1)}.`;
-    case "how":
-      return `Here is the simple version. Start with ${step1}. Then ${step2}. Finally ${step3}.`;
-    case "benefit":
-      return `The result is obvious once it clicks: ${benefit}. No more guesswork, no more wasted motion.`;
+      return tone === "energetic"
+        ? `Let us unpack ${topic} — and why it matters right now.`
+        : `Here is a clear, practical breakdown of ${topic}.`;
+    case "problem":
+      return `${category.painPoint}. That is why the old playbook keeps stalling.`;
+    case "craft":
+      return `What actually works is straightforward: ${category.craft.charAt(0).toLowerCase()}${category.craft.slice(1)}.`;
+    case "payoff":
+      return `Once that clicks, the difference is immediate: ${category.payoff.charAt(0).toLowerCase()}${category.payoff.slice(1)}.`;
     case "proof":
-      return `It is not theory. Teams that run this play ${proof}, and the difference shows up within weeks.`;
-    case "tip":
-      return `One more thing that changes everything: ${tip}. That single habit keeps ${topic} compounding.`;
+      return `${category.proof}.`;
     case "cta":
-      return `Try it on your next project, and subscribe for more practical breakdowns like this one.`;
     default:
-      return `${topic}, explained clearly and quickly.`;
+      return index > 0 ? category.ctaExplainer : category.ctaCommercial;
   }
 }
 
-function buildCaption(beat: string, topic: string): string {
-  const template = CAPTION_TEMPLATES[beat] ?? "{topic}";
-  return template.replace("{topic}", titleCase(topic));
+function buildBeatCaption(beat: string, topic: string): string {
+  const shortTitle = titleCase(topic.split(" ").slice(0, 4).join(" "));
+  switch (beat) {
+    case "hook":
+      return shortTitle;
+    case "problem":
+      return "The Bottleneck";
+    case "craft":
+      return "How It Works";
+    case "payoff":
+      return "The Payoff";
+    case "proof":
+      return "Why It Works";
+    case "cta":
+      return "Take the Next Step";
+    default:
+      return shortTitle;
+  }
 }
 
-function buildMediaQuery(beat: string, category: Category, index: number): string {
-  const tags = [...category.tags];
-  const rotated = [...tags.slice(index % tags.length), ...tags.slice(0, index % tags.length)];
-  const extra: Record<string, string> = {
-    hook: rotated.slice(0, 3).join(" "),
-    context: rotated.slice(1, 4).join(" "),
-    how: rotated.slice(0, 2).join(" "),
-    benefit: rotated.slice(2, 4).join(" "),
-    proof: "team office meeting business",
-    tip: rotated.slice(1, 3).join(" "),
-    cta: rotated.slice(0, 2).join(" "),
-  };
-  return extra[beat] ?? rotated.slice(0, 3).join(" ");
-}
-
-function sceneCountFor(duration: number): number {
-  return Math.max(MIN_SCENES, Math.min(MAX_SCENES, Math.round(duration / 9)));
+function sceneFromAsset(
+  base: Omit<
+    Scene,
+    "mediaId" | "mediaType" | "mediaUrl" | "mediaThumb" | "mediaTitle" | "mediaCreator" | "mediaProvider"
+  >,
+  matched: StockAsset | null,
+): Scene {
+  return hydrateSceneMedia({
+    ...base,
+    mediaId: matched?.id ?? null,
+    mediaType: "video",
+    mediaUrl: matched ? previewUrlForAsset(matched) : null,
+    mediaThumb: matched?.thumb ?? null,
+    mediaTitle: matched?.title ?? null,
+    mediaCreator: matched?.creator ?? null,
+    mediaProvider: matched?.provider ?? "pexels",
+  });
 }
 
 export type GenerateScriptOptions = {
@@ -457,52 +477,173 @@ export type GenerateScriptOptions = {
   duration: number;
   tone: Tone;
   language: string;
+  workflow?: Workflow;
+  musicTrack?: MusicTrackId;
+  musicVolume?: number;
+  captionMode?: CaptionMode;
   title?: string;
 };
 
-function localGenerate(options: GenerateScriptOptions): VideoScript {
+/**
+ * Script-to-Video mode: splits the user's pasted script verbatim into scenes,
+ * infers visual search keywords per paragraph, and matches moving stock clips.
+ */
+async function scriptToVideoGenerate(
+  options: GenerateScriptOptions,
+): Promise<VideoScript> {
+  const raw = options.prompt.trim();
+  // Split on blank lines first; if single paragraph, split into 2-sentence groups
+  let blocks = raw
+    .split(/\n\s*\n+/)
+    .map((b) => b.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  if (blocks.length === 1) {
+    const lineBlocks = raw
+      .split(/\n+/)
+      .map((b) => b.trim())
+      .filter(Boolean);
+    if (lineBlocks.length >= 2) {
+      blocks = lineBlocks;
+    } else {
+      const sentences = raw.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [raw];
+      blocks = [];
+      for (let i = 0; i < sentences.length; i += 2) {
+        const pair = sentences.slice(i, i + 2).join(" ").trim();
+        if (pair) blocks.push(pair);
+      }
+    }
+  }
+
+  blocks = blocks.slice(0, MAX_SCENES);
+  const category = detectCategory(raw);
+  const usedAssets: string[] = [];
+  const scenes: Scene[] = [];
+
+  for (let idx = 0; idx < blocks.length; idx += 1) {
+    const narration = blocks[idx];
+    const keywords = extractVisualKeywords(
+      narration,
+      category.visuals[idx % category.visuals.length],
+    );
+    const matched = await matchBestStockVideo(keywords, usedAssets);
+    if (matched) usedAssets.push(matched.id);
+
+    const headlineWords = narration
+      .replace(/[.!?,;:]+/g, "")
+      .split(/\s+/)
+      .slice(0, 5)
+      .join(" ");
+
+    scenes.push(
+      sceneFromAsset(
+        {
+          id: randomUUID(),
+          narration,
+          caption: titleCase(headlineWords || `Scene ${idx + 1}`),
+          mediaQuery: keywords,
+          duration: null,
+          transition: idx === 0 ? "fade" : "none",
+        },
+        matched,
+      ),
+    );
+  }
+
+  const firstTitle =
+    options.title?.trim() ||
+    titleCase(extractVisualKeywords(blocks[0] ?? raw, "Custom Script Video"));
+
+  return {
+    title: firstTitle.slice(0, 90),
+    summary: `${scenes.length} scenes · script-to-video · ${options.tone} tone`,
+    scenes,
+    options: {
+      workflow: "script",
+      musicTrack: options.musicTrack ?? defaultMusicForTone(options.tone),
+      musicVolume: options.musicVolume ?? 0.16,
+      captionMode: options.captionMode ?? "word-highlight",
+    },
+  };
+}
+
+async function localGenerate(options: GenerateScriptOptions): Promise<VideoScript> {
+  const workflow = options.workflow ?? "explainer";
+  if (workflow === "script") {
+    return scriptToVideoGenerate(options);
+  }
+
   const topic = cleanTopic(options.prompt);
   const category = detectCategory(options.prompt);
-  const count = sceneCountFor(options.duration);
+  const count = sceneCountFor(options.duration, workflow);
   const beats = beatSequence(count);
+  const topicKeywords = extractVisualKeywords(topic, category.visuals[0]);
   const usedAssets: string[] = [];
+  const scenes: Scene[] = [];
 
-  const scenes: Scene[] = beats.map((beat, index) => {
-    const mediaQuery = buildMediaQuery(beat, category, index);
-    const matched = matchLocalAsset(mediaQuery, "video", usedAssets);
+  for (let index = 0; index < beats.length; index += 1) {
+    const beat = beats[index];
+    const narration = buildWorkflowNarration(
+      beat,
+      topic,
+      category,
+      workflow,
+      options.tone,
+      index,
+    );
+    const caption = buildBeatCaption(beat, topic);
+
+    // Combine concrete topic nouns on lead scenes with curated category visuals
+    const mediaQuery =
+      index === 0
+        ? topicKeywords
+        : index === 1
+          ? `${topicKeywords.split(" ")[0]} ${category.visuals[0].split(" ").slice(0, 2).join(" ")}`.trim()
+          : category.visuals[index % category.visuals.length];
+
+    const matched = await matchBestStockVideo(mediaQuery, usedAssets);
     if (matched) usedAssets.push(matched.id);
-    return hydrateSceneMedia({
-      id: randomUUID(),
-      narration: buildNarration(beat, topic, category, options.tone, index),
-      caption: buildCaption(beat, topic),
-      mediaQuery,
-      mediaId: matched?.id ?? null,
-      mediaType: "video",
-      mediaUrl: matched ? previewUrlForAsset(matched) : null,
-      mediaThumb: matched?.thumb ?? null,
-      mediaTitle: matched?.title ?? null,
-      mediaCreator: matched?.creator ?? null,
-      mediaProvider: matched?.provider ?? "pexels",
-      duration: null,
-      transition: beat === "hook" ? "fade" : "none",
-    });
-  });
 
+    scenes.push(
+      sceneFromAsset(
+        {
+          id: randomUUID(),
+          narration,
+          caption,
+          mediaQuery,
+          duration: null,
+          transition: index === 0 || index === beats.length - 1 ? "fade" : "none",
+        },
+        matched,
+      ),
+    );
+  }
+
+  const wfMeta = WORKFLOWS[workflow];
   const title =
     options.title?.trim() ||
-    `${titleCase(topic)} — ${titleCase(options.tone)} Explainer`.slice(0, 90);
+    `${titleCase(topic)} — ${wfMeta.shortLabel}`.slice(0, 90);
 
   return {
     title,
-    summary: `${sceneCountFor(options.duration)} scenes · ${category.key} topic · ${options.tone} tone`,
+    summary: `${scenes.length} scenes · ${wfMeta.label} · ${options.tone} tone`,
     scenes,
+    options: {
+      workflow,
+      musicTrack: options.musicTrack ?? wfMeta.defaultMusic ?? defaultMusicForTone(options.tone),
+      musicVolume: options.musicVolume ?? 0.16,
+      captionMode: options.captionMode ?? wfMeta.defaultCaptionMode,
+    },
   };
 }
 
 async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript | null> {
   const key = process.env.OPENAI_API_KEY;
-  if (!key) return null;
-  const count = sceneCountFor(options.duration);
+  const workflow = options.workflow ?? "explainer";
+  if (!key || workflow === "script") return null;
+
+  const count = sceneCountFor(options.duration, workflow);
+  const wfMeta = WORKFLOWS[workflow];
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -512,17 +653,17 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        temperature: 0.8,
+        temperature: 0.75,
         response_format: { type: "json_object" },
         messages: [
           {
             role: "system",
             content:
-              "You are a senior video scriptwriter for short-form video. Return JSON only.",
+              "You are a veteran video director & scriptwriter like InVideo AI. Write natural, vivid, spoken narration (no clichés, no robotic intros). Return strict JSON only.",
           },
           {
             role: "user",
-            content: `Write a ${count}-scene video script about: "${options.prompt}". Tone: ${options.tone}. Each scene narration must be 2 sentences max. Each scene needs a punchy caption (max 6 words) and a short stock media search query (2-3 keywords). Return JSON: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string}]}`,
+            content: `Write a ${count}-scene ${wfMeta.label} video script in language "${options.language}" about: "${options.prompt}". Tone: ${options.tone}. Target total duration: ${options.duration}s. Each scene narration should be 1-2 natural spoken sentences. Each scene needs a concise caption (max 5 words) and a concrete stock-video search query (2-3 visual keywords). Return JSON: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string}]}`,
           },
         ],
       }),
@@ -539,28 +680,39 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
       scenes?: { narration?: string; caption?: string; mediaQuery?: string }[];
     };
     if (!parsed.scenes?.length) return null;
+
+    const usedAssets: string[] = [];
+    const scenes: Scene[] = [];
+    for (let idx = 0; idx < parsed.scenes.length; idx += 1) {
+      const scene = parsed.scenes[idx];
+      const mediaQuery = scene.mediaQuery?.trim() || extractVisualKeywords(scene.narration || options.prompt);
+      const matched = await matchBestStockVideo(mediaQuery, usedAssets);
+      if (matched) usedAssets.push(matched.id);
+      scenes.push(
+        sceneFromAsset(
+          {
+            id: randomUUID(),
+            narration: scene.narration ?? "",
+            caption: scene.caption ?? "",
+            mediaQuery,
+            duration: null,
+            transition: idx === 0 ? "fade" : "none",
+          },
+          matched,
+        ),
+      );
+    }
+
     return {
-      title: parsed.title ?? cleanTopic(options.prompt),
-      summary: parsed.summary ?? `${parsed.scenes.length} scenes`,
-      scenes: parsed.scenes.map((scene) => {
-        const mediaQuery = scene.mediaQuery ?? options.prompt;
-        const matched = matchLocalAsset(mediaQuery, "video");
-        return hydrateSceneMedia({
-          id: randomUUID(),
-          narration: scene.narration ?? "",
-          caption: scene.caption ?? "",
-          mediaQuery,
-          mediaId: matched?.id ?? null,
-          mediaType: "video",
-          mediaUrl: matched ? previewUrlForAsset(matched) : null,
-          mediaThumb: matched?.thumb ?? null,
-          mediaTitle: matched?.title ?? null,
-          mediaCreator: matched?.creator ?? null,
-          mediaProvider: matched?.provider ?? "pexels",
-          duration: null,
-          transition: "none" as const,
-        });
-      }),
+      title: parsed.title ?? titleCase(cleanTopic(options.prompt)),
+      summary: parsed.summary ?? `${scenes.length} scenes · ${wfMeta.label}`,
+      scenes,
+      options: {
+        workflow,
+        musicTrack: options.musicTrack ?? wfMeta.defaultMusic ?? defaultMusicForTone(options.tone),
+        musicVolume: options.musicVolume ?? 0.16,
+        captionMode: options.captionMode ?? wfMeta.defaultCaptionMode,
+      },
     };
   } catch {
     return null;
@@ -575,35 +727,42 @@ export async function generateScript(
   return localGenerate(options);
 }
 
-export function regenerateScene(
+export async function regenerateScene(
   script: VideoScript,
   sceneIndex: number,
   options: { prompt: string; tone: Tone },
-): Scene {
+): Promise<Scene> {
   const scene = script.scenes[sceneIndex];
+  const workflow = script.options?.workflow ?? "explainer";
   const category = detectCategory(options.prompt);
   const topic = cleanTopic(options.prompt);
   const beats = beatSequence(Math.max(MIN_SCENES, script.scenes.length));
-  const beat = beats[sceneIndex] ?? "context";
-  const variant = Math.floor(Math.random() * 12) + sceneIndex + 1;
-  const narration = buildNarration(beat, topic, category, options.tone, variant);
-  const caption = buildCaption(beat, topic);
-  const mediaQuery = buildMediaQuery(beat, category, variant);
+  const beat = beats[sceneIndex] ?? "craft";
+  const variant = Math.floor(Math.random() * 10) + sceneIndex + 1;
+  const narration = buildWorkflowNarration(
+    beat,
+    topic,
+    category,
+    workflow === "script" ? "explainer" : workflow,
+    options.tone,
+    variant,
+  );
+  const caption = buildBeatCaption(beat, topic);
+  const mediaQuery = category.visuals[variant % category.visuals.length];
   const excludeIds = script.scenes
     .map((item) => item.mediaId)
     .filter((id): id is string => Boolean(id));
-  const matched = matchLocalAsset(mediaQuery, "video", excludeIds);
-  return hydrateSceneMedia({
-    ...scene,
-    narration,
-    caption,
-    mediaQuery,
-    mediaId: matched?.id ?? scene.mediaId,
-    mediaType: "video",
-    mediaUrl: matched ? previewUrlForAsset(matched) : scene.mediaUrl,
-    mediaThumb: matched?.thumb ?? scene.mediaThumb,
-    mediaTitle: matched?.title ?? scene.mediaTitle,
-    mediaCreator: matched?.creator ?? scene.mediaCreator,
-    mediaProvider: matched?.provider ?? scene.mediaProvider,
-  });
+  const matched =
+    (await matchBestStockVideo(mediaQuery, excludeIds)) ??
+    matchLocalAsset(mediaQuery, "video", excludeIds);
+
+  return sceneFromAsset(
+    {
+      ...scene,
+      narration,
+      caption,
+      mediaQuery,
+    },
+    matched,
+  );
 }

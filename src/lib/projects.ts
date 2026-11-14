@@ -1,6 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { db, ensureSchema } from "@/db";
 import { projects, type ProjectRow } from "@/db/schema";
+import { defaultMusicForTone } from "./music";
 import { hydrateSceneMedia } from "./stock";
 import { deleteProjectArtifacts } from "./storage";
 import type { AspectRatio, Project, Resolution, Style, Tone, VideoScript } from "./types";
@@ -30,6 +31,17 @@ export function toProject(row: ProjectRow): Project {
       title: script.title ?? row.title,
       summary: script.summary ?? "",
       scenes,
+      options: {
+        workflow: script.options?.workflow ?? "explainer",
+        musicTrack:
+          script.options?.musicTrack ??
+          defaultMusicForTone((row.tone as Tone) || "cinematic"),
+        musicVolume:
+          typeof script.options?.musicVolume === "number"
+            ? script.options.musicVolume
+            : 0.16,
+        captionMode: script.options?.captionMode ?? "word-highlight",
+      },
     },
     outputPath: row.outputPath,
     posterPath: row.posterPath,

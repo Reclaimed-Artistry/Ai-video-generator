@@ -14,27 +14,27 @@ export const dynamic = "force-dynamic";
 const PIPELINE_STAGES = [
   {
     code: "01",
-    title: "Beat-structured script desk",
-    spec: "HOOK → CONTEXT → STEPS → PAYOFF → CTA",
-    body: "Turns a plain-English brief into timed narration cues, burned-in lower-third supers, and shot queries. Every line stays editable in the studio before a single frame is encoded.",
+    title: "Prompt-to-Video & Script-to-Video workflows",
+    spec: "EXPLAINER · SHORTS · PROMO · DOC · MY SCRIPT",
+    body: "Enter a one-line prompt or paste your own multi-paragraph script. Reclaimed Artistry drafts timed scenes, matches moving footage, and kicks off rendering in one click — then lets you edit any detail via natural-language commands.",
   },
   {
     code: "02",
-    title: "Moving footage only — zero static slideshows",
-    spec: "PEXELS POOL + LIVE PEXELS / PIXABAY VIDEO API",
-    body: "Matches each cue against verified multi-rendition stock video clips so adjacent scenes never repeat the same shot. Swap any clip from the studio bin with live hover playback.",
+    title: "Multi-site stock video search — zero static slideshows",
+    spec: "PEXELS · MIXKIT · WIKIMEDIA · NASA · PIXABAY",
+    body: "Searches live moving HD video clips across Pexels, Mixkit, Wikimedia Commons, and NASA right out of the box (plus full Pexels & Pixabay APIs when keys are added). Hover any clip in the Studio bin to preview before cutting.",
   },
   {
     code: "03",
-    title: "24kHz neural voice booth",
-    spec: `${VOICES.length} PERSONAS · US / UK / AU · 10 LANGUAGES`,
-    body: "Synthesizes natural neural voiceover with per-persona speaking rate and pitch contours, normalized to -16 LUFS broadcast loudness (EBU R128). Supports ElevenLabs and OpenAI keys when configured.",
+    title: "24kHz neural voiceover + ducked music score",
+    spec: `${VOICES.length} NEURAL VOICES · 5 ROYALTY-FREE SCORES · -16 LUFS`,
+    body: "Records natural neural narration across American, British, and Australian accents in 10 languages, locks every cue to exact audio duration so visuals never drift, and mixes a royalty-free music bed gently underneath.",
   },
   {
     code: "04",
-    title: "Server-side FFmpeg H.264 master",
-    spec: "LIBX264 HIGH · LIBASS SUPERS · AAC-LC 160K",
-    body: "Crops and scales source footage to 16:9, 9:16, or 1:1, burns styled ASS subtitles, concatenates scene masters, and writes a fast-start MP4 ready for immediate playback or download.",
+    title: "Word-synced subtitles & H.264 master export",
+    spec: "WORD HIGHLIGHT LIBASS · 240P / 360P / 1080P MP4",
+    body: "Uses neural word-boundary timestamps to burn InVideo-style active-word highlighted captions, clean subtitles, or lower-thirds into a fast-start H.264/AAC MP4 at 240p, 360p, or Full HD 1080p.",
   },
 ];
 
@@ -413,13 +413,19 @@ export default async function HomePage() {
 
             <div className="font-tech flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wider">
               <span className="rounded-[2px] border border-nominal/35 bg-nominal/10 px-2 py-1 text-nominal">
-                Pexels Pool · Ready
+                Pexels · {providers.pexels ? "Live Key" : "Verified Pool"}
+              </span>
+              <span className="rounded-[2px] border border-nominal/35 bg-nominal/10 px-2 py-1 text-nominal">
+                Mixkit · Live
+              </span>
+              <span className="rounded-[2px] border border-nominal/35 bg-nominal/10 px-2 py-1 text-nominal">
+                Wikimedia · Live
+              </span>
+              <span className="rounded-[2px] border border-nominal/35 bg-nominal/10 px-2 py-1 text-nominal">
+                NASA · Live
               </span>
               <span className="rounded-[2px] border border-line bg-panel px-2 py-1 text-stone-ink">
-                Pexels Live · {providers.pexels ? "Key Active" : "Optional Key"}
-              </span>
-              <span className="rounded-[2px] border border-line bg-panel px-2 py-1 text-stone-ink">
-                Pixabay Video · {providers.pixabay ? "Key Active" : "Optional Key"}
+                Pixabay · {providers.pixabay ? "Live Key" : "Optional Key"}
               </span>
             </div>
           </div>

@@ -42,9 +42,8 @@ export async function POST(request: Request, context: Context) {
     return NextResponse.json({ error: "Scene not found" }, { status: 404 });
   }
 
-  const body = (await request.json().catch(() => ({}))) as { tone?: never };
-  const next = regenerateScene(project.script, index, {
-    prompt: body?.tone ? project.prompt : project.prompt,
+  const next = await regenerateScene(project.script, index, {
+    prompt: project.prompt,
     tone: project.tone,
   });
 

@@ -3,17 +3,31 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { synthesizeSpeech } from "./tts";
-import { LOCAL_CATALOG, getLocalAsset, matchLocalAsset, pickSource } from "./stock";
 import { getFontsDir, probeDuration, runFfmpeg } from "./ffmpeg";
+import { defaultMusicForTone, getMusicTrack } from "./music";
 import { getProject, updateProject } from "./projects";
+import {
+  getLocalAsset,
+  matchLocalAsset,
+  pickSource,
+  VIDEO_CATALOG,
+} from "./stock";
 import {
   getProjectScratchDir,
   IS_VERCEL,
   isBlobConfigured,
   saveRenderArtifact,
 } from "./storage";
-import { ASPECTS, RESOLUTIONS, type AspectRatio, type Resolution, type Scene, type Style } from "./types";
+import { estimateWordTimings, synthesizeSpeech, type WordTiming } from "./tts";
+import {
+  ASPECTS,
+  RESOLUTIONS,
+  type AspectRatio,
+  type CaptionMode,
+  type Resolution,
+  type Scene,
+  type Style,
+} from "./types";
 
 export function projectDir(id: string): string {
   return getProjectScratchDir(id);
@@ -34,7 +48,6 @@ export function posterUrl(id: string): string {
 function targetSize(resolution: Resolution, aspect: AspectRatio) {
   const base = RESOLUTIONS[resolution] ?? RESOLUTIONS["1080p"];
   const ratio = ASPECTS[aspect]?.ratio ?? 16 / 9;
-  // The short side of the resolution badge (240 / 360 / 1080) drives the size.
   const short = Math.min(base.width, base.height);
   let width = short;
   let height = short;
@@ -50,10 +63,11 @@ function targetSize(resolution: Resolution, aspect: AspectRatio) {
   return { width, height };
 }
 
-type CaptionStyle = {
+type CaptionStyleConfig = {
   fontname: string;
   fontsize: number;
   primary: string;
+  highlight: string; // ASS &H00BBGGRR
   outlineColour: string;
   backColour: string;
   borderStyle: number;
@@ -70,57 +84,61 @@ function captionStyle(
   style: Style,
   width: number,
   height: number,
-): CaptionStyle {
-  const base: CaptionStyle = {
+  captionMode: CaptionMode,
+): CaptionStyleConfig {
+  const isVertical = height > width;
+  const baseFont = Math.max(
+    14,
+    Math.round(height / (isVertical ? 24 : captionMode === "word-highlight" ? 16 : 18)),
+  );
+  const base: CaptionStyleConfig = {
     fontname: "DejaVu Sans",
-    fontsize: Math.max(14, Math.round(height / 17)),
-    primary: "&H00FFFFFF",
-    outlineColour: "&H00202020",
-    backColour: "&H80000000",
+    fontsize: baseFont,
+    primary: "&H00F2EFE9",
+    highlight: "&H003CA9E5", // Warm tungsten amber (#E5A93C in ASS BGR)
+    outlineColour: "&H00121210",
+    backColour: "&H990B0B0A",
     borderStyle: 1,
-    outline: 2.4,
-    shadow: 1.2,
+    outline: Math.max(1.8, Number((height / 170).toFixed(1))),
+    shadow: Math.max(1.0, Number((height / 320).toFixed(1))),
     alignment: 2,
-    marginL: 40,
-    marginR: 40,
-    marginV: Math.max(14, Math.round(height * 0.09)),
+    marginL: Math.max(20, Math.round(width * 0.06)),
+    marginR: Math.max(20, Math.round(width * 0.06)),
+    marginV: Math.max(16, Math.round(height * (isVertical ? 0.14 : 0.09))),
     bold: true,
   };
   switch (style) {
     case "minimal":
       return {
         ...base,
-        fontsize: Math.max(12, Math.round(height / 20)),
-        outline: 0,
-        shadow: 0,
-        alignment: 1,
-        marginL: Math.max(16, Math.round(width * 0.06)),
-        marginV: Math.max(14, Math.round(height * 0.1)),
+        fontsize: Math.max(12, Math.round(baseFont * 0.88)),
+        highlight: "&H00FFFFFF",
+        outline: Math.max(1.2, base.outline * 0.6),
+        shadow: 0.8,
+        alignment: captionMode === "headline" ? 1 : 2,
       };
     case "cinematic":
       return {
         ...base,
-        fontsize: Math.max(12, Math.round(height / 21)),
-        outline: 3,
-        shadow: 1.6,
+        fontsize: Math.max(12, Math.round(baseFont * 0.9)),
+        highlight: "&H00C4DCE8",
         outlineColour: "&H00000000",
-        marginV: Math.max(14, Math.round(height * 0.12)),
+        marginV: Math.max(16, Math.round(height * 0.11)),
       };
     case "energetic":
       return {
         ...base,
-        primary: "&H0066E0FF",
-        outline: 3,
-        shadow: 1.4,
-        marginV: Math.max(14, Math.round(height * 0.08)),
+        primary: "&H00FFFFFF",
+        highlight: "&H0066E0FF", // Vibrant yellow-gold
+        outline: Math.max(2.2, base.outline * 1.15),
       };
     case "corporate":
       return {
         ...base,
         borderStyle: 3,
-        backColour: "&HCC8A3A1E",
-        outlineColour: "&H00203060",
-        marginV: Math.max(14, Math.round(height * 0.08)),
+        backColour: "&HCC603018",
+        highlight: "&H003CA9E5",
+        outlineColour: "&H00181818",
       };
     default:
       return base;
@@ -143,16 +161,55 @@ function escapeAssText(value: string): string {
     .trim();
 }
 
+/**
+ * Splits spoken word timings into readable 3–5 word subtitle phrases (like
+ * InVideo AI), breaking naturally on punctuation or character budget.
+ */
+function chunkWordTimings(
+  words: WordTiming[],
+  maxChars: number,
+  maxWords: number,
+): WordTiming[][] {
+  const chunks: WordTiming[][] = [];
+  let current: WordTiming[] = [];
+  let currentChars = 0;
+
+  for (const word of words) {
+    const clean = word.text.trim();
+    if (!clean) continue;
+    const projected = currentChars + (current.length > 0 ? 1 : 0) + clean.length;
+    if (
+      current.length > 0 &&
+      (current.length >= maxWords || projected > maxChars)
+    ) {
+      chunks.push(current);
+      current = [];
+      currentChars = 0;
+    }
+    current.push(word);
+    currentChars += (current.length > 1 ? 1 : 0) + clean.length;
+    if (/[.!?]$/.test(clean) && current.length >= 2) {
+      chunks.push(current);
+      current = [];
+      currentChars = 0;
+    }
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
 function buildAssFile(
-  caption: string,
+  scene: Scene,
   duration: number,
+  spokenDuration: number,
+  wordTimings: WordTiming[],
   width: number,
   height: number,
   style: Style,
+  captionMode: CaptionMode,
 ): string {
-  const captionStyleConfig = captionStyle(style, width, height);
-  const text = escapeAssText(caption) || " ";
-  return [
+  const cfg = captionStyle(style, width, height, captionMode);
+  const header = [
     "[Script Info]",
     "ScriptType: v4.00+",
     `PlayResX: ${width}`,
@@ -164,13 +221,13 @@ function buildAssFile(
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     [
       "Style: Caption",
-      captionStyleConfig.fontname,
-      captionStyleConfig.fontsize,
-      captionStyleConfig.primary,
+      cfg.fontname,
+      cfg.fontsize,
+      cfg.primary,
       "&H000000FF",
-      captionStyleConfig.outlineColour,
-      captionStyleConfig.backColour,
-      captionStyleConfig.bold ? "-1" : "0",
+      cfg.outlineColour,
+      cfg.backColour,
+      cfg.bold ? "-1" : "0",
       "0",
       "0",
       "0",
@@ -178,63 +235,157 @@ function buildAssFile(
       "100",
       "0",
       "0",
-      String(captionStyleConfig.borderStyle),
-      String(captionStyleConfig.outline),
-      String(captionStyleConfig.shadow),
-      String(captionStyleConfig.alignment),
-      String(captionStyleConfig.marginL),
-      String(captionStyleConfig.marginR),
-      String(captionStyleConfig.marginV),
+      String(cfg.borderStyle),
+      String(cfg.outline),
+      String(cfg.shadow),
+      String(cfg.alignment),
+      String(cfg.marginL),
+      String(cfg.marginR),
+      String(cfg.marginV),
       "1",
     ].join(","),
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    `Dialogue: 0,0:00:00.00,${assTimestamp(duration + 0.4)},Caption,,0,0,0,,${text}`,
-    "",
-  ].join("\n");
+  ];
+
+  const dialogues: string[] = [];
+
+  if (captionMode === "headline") {
+    const text = escapeAssText(scene.caption || scene.narration) || " ";
+    dialogues.push(
+      `Dialogue: 0,0:00:00.00,${assTimestamp(duration)},Caption,,0,0,0,,${text}`,
+    );
+  } else {
+    const narrationText = (scene.narration || scene.caption || "").trim();
+    const effectiveWords =
+      wordTimings.length > 0
+        ? wordTimings
+        : estimateWordTimings(narrationText, Math.max(1.5, spokenDuration));
+
+    const isVertical = height > width;
+    const chunks = chunkWordTimings(
+      effectiveWords,
+      isVertical ? 22 : 34,
+      isVertical ? 4 : 6,
+    );
+
+    if (chunks.length === 0) {
+      const fallback = escapeAssText(narrationText) || " ";
+      dialogues.push(
+        `Dialogue: 0,0:00:00.00,${assTimestamp(duration)},Caption,,0,0,0,,${fallback}`,
+      );
+    } else if (captionMode === "word-highlight") {
+      for (let cIdx = 0; cIdx < chunks.length; cIdx += 1) {
+        const chunk = chunks[cIdx];
+        const nextChunkStart = chunks[cIdx + 1]?.[0]?.startSec;
+
+        for (let wIdx = 0; wIdx < chunk.length; wIdx += 1) {
+          const activeWord = chunk[wIdx];
+          const start = activeWord.startSec;
+          const nextWordStart = chunk[wIdx + 1]?.startSec;
+          const naturalEnd =
+            nextWordStart ??
+            (nextChunkStart
+              ? Math.min(activeWord.endSec + 0.25, nextChunkStart)
+              : Math.min(duration, activeWord.endSec + 0.35));
+          const end = Math.max(start + 0.08, Math.min(duration, naturalEnd));
+
+          const renderedLine = chunk
+            .map((word, idx) => {
+              const safe = escapeAssText(word.text);
+              if (idx === wIdx) {
+                return `{\\c${cfg.highlight}\\b1}${safe}{\\r}`;
+              }
+              return safe;
+            })
+            .join(" ");
+
+          dialogues.push(
+            `Dialogue: 0,${assTimestamp(start)},${assTimestamp(end)},Caption,,0,0,0,,${renderedLine}`,
+          );
+        }
+      }
+    } else {
+      // Clean broadcast timed subtitle phrases
+      for (let cIdx = 0; cIdx < chunks.length; cIdx += 1) {
+        const chunk = chunks[cIdx];
+        const start = chunk[0].startSec;
+        const lastEnd = chunk[chunk.length - 1].endSec;
+        const nextStart = chunks[cIdx + 1]?.[0]?.startSec;
+        const end = Math.max(
+          start + 0.2,
+          Math.min(duration, nextStart ?? lastEnd + 0.3),
+        );
+        const line = chunk.map((w) => escapeAssText(w.text)).join(" ");
+        dialogues.push(
+          `Dialogue: 0,${assTimestamp(start)},${assTimestamp(end)},Caption,,0,0,0,,${line}`,
+        );
+      }
+    }
+  }
+
+  return [...header, ...dialogues, ""].join("\n");
 }
 
 async function download(url: string, destination: string): Promise<void> {
-  const response = await fetch(url, { redirect: "follow" });
-  if (!response.ok || !response.body) {
-    throw new Error(`Could not download media (${response.status})`);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 35000);
+  try {
+    const response = await fetch(url, {
+      redirect: "follow",
+      signal: ctrl.signal,
+      headers: {
+        "user-agent":
+          "ReclaimedArtistry/1.0 (https://github.com/Reclaimed-Artistry/Ai-video-generator)",
+      },
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Could not download media (${response.status})`);
+    }
+    const stream = Readable.fromWeb(
+      response.body as unknown as WebReadableStream<Uint8Array>,
+    );
+    await pipeline(stream, fs.createWriteStream(destination));
+  } finally {
+    clearTimeout(timer);
   }
-  const stream = Readable.fromWeb(
-    response.body as unknown as WebReadableStream<Uint8Array>,
-  );
-  await pipeline(stream, fs.createWriteStream(destination));
 }
 
-type ResolvedMedia = { url: string; kind: "video" | "generated" };
+type ResolvedMedia = { url: string; fallbackUrl?: string; kind: "video" | "generated" };
 
-/**
- * Scenes always end up with real stock footage — still images are never used
- * for a scene, so a video clip is matched (or swapped in) when needed.
- */
 async function resolveMedia(
   scene: Scene,
   targetHeight: number,
 ): Promise<ResolvedMedia> {
+  const localFallbackAsset =
+    matchLocalAsset(scene.mediaQuery || scene.caption || "city", "video") ??
+    VIDEO_CATALOG[0];
+  const fallbackUrl = localFallbackAsset
+    ? pickSource(localFallbackAsset, targetHeight)?.url
+    : undefined;
+
   if (scene.mediaId) {
     const asset = getLocalAsset(scene.mediaId);
     if (asset && asset.type === "video") {
       const source = pickSource(asset, targetHeight);
-      if (source) return { url: source.url, kind: "video" };
+      if (source) return { url: source.url, fallbackUrl, kind: "video" };
     }
   }
   if (scene.mediaUrl && scene.mediaType !== "photo") {
-    return { url: scene.mediaUrl, kind: "video" };
+    // For Mixkit clips, automatically upgrade 360p preview URL to 720p when rendering 1080p
+    let renderUrl = scene.mediaUrl;
+    if (
+      targetHeight >= 720 &&
+      renderUrl.includes("assets.mixkit.co/videos/") &&
+      renderUrl.endsWith("-360.mp4")
+    ) {
+      renderUrl = renderUrl.replace(/-360\.mp4$/, "-720.mp4");
+    }
+    return { url: renderUrl, fallbackUrl, kind: "video" };
   }
-  const matched = matchLocalAsset(scene.mediaQuery, "video");
-  if (matched) {
-    const source = pickSource(matched, targetHeight);
-    if (source) return { url: source.url, kind: "video" };
-  }
-  const fallback = LOCAL_CATALOG.find((asset) => asset.type === "video");
-  if (fallback) {
-    const source = pickSource(fallback, targetHeight);
-    if (source) return { url: source.url, kind: "video" };
+  if (fallbackUrl) {
+    return { url: fallbackUrl, kind: "video" };
   }
   return { url: "", kind: "generated" };
 }
@@ -242,33 +393,50 @@ async function resolveMedia(
 async function renderSceneVideo(
   scene: Scene,
   index: number,
+  totalScenes: number,
   dir: string,
   width: number,
   height: number,
   style: Style,
+  captionMode: CaptionMode,
   duration: number,
+  spokenDuration: number,
+  wordTimings: WordTiming[],
 ): Promise<string> {
   const output = path.join(dir, `scene-${String(index).padStart(2, "0")}.mp4`);
   const captionFile = path.join(dir, `caption-${String(index).padStart(2, "0")}.ass`);
-  fs.writeFileSync(
-    captionFile,
-    buildAssFile(scene.caption ?? "", duration, width, height, style),
-    "utf8",
-  );
 
-  const fontsDir = getFontsDir();
-  const escapedAss = captionFile.replace(/\\/g, "/").replace(/:/g, "\\:");
-  const escapedFontsDir = fontsDir
-    ? fontsDir.replace(/\\/g, "/").replace(/:/g, "\\:")
-    : null;
-  const captionFilter = escapedFontsDir
-    ? `ass=filename=${escapedAss}:fontsdir=${escapedFontsDir}`
-    : `ass=${escapedAss}`;
+  let captionFilter: string | null = null;
+  if (captionMode !== "off") {
+    fs.writeFileSync(
+      captionFile,
+      buildAssFile(
+        scene,
+        duration,
+        spokenDuration,
+        wordTimings,
+        width,
+        height,
+        style,
+        captionMode,
+      ),
+      "utf8",
+    );
+    const fontsDir = getFontsDir();
+    const escapedAss = captionFile.replace(/\\/g, "/").replace(/:/g, "\\:");
+    const escapedFontsDir = fontsDir
+      ? fontsDir.replace(/\\/g, "/").replace(/:/g, "\\:")
+      : null;
+    captionFilter = escapedFontsDir
+      ? `ass=filename=${escapedAss}:fontsdir=${escapedFontsDir}`
+      : `ass=${escapedAss}`;
+  }
 
   const media = await resolveMedia(scene, height);
 
   if (media.kind === "generated" || !media.url) {
-    const gradient = `gradients=s=${width}x${height}:c0=0x121210:c1=0x262521:x0=0:y0=0:x1=${width}:y1=${height}:d=${Math.ceil(duration)}:r=${30}`;
+    const gradient = `gradients=s=${width}x${height}:c0=0x121210:c1=0x262521:x0=0:y0=0:x1=${width}:y1=${height}:d=${Math.ceil(duration)}:r=30`;
+    const vfParts = captionFilter ? [captionFilter] : ["null"];
     await runFfmpeg([
       "-y",
       "-f",
@@ -276,9 +444,9 @@ async function renderSceneVideo(
       "-i",
       gradient,
       "-t",
-      duration.toFixed(2),
+      duration.toFixed(3),
       "-vf",
-      captionFilter,
+      vfParts.join(","),
       "-c:v",
       "libx264",
       "-preset",
@@ -292,11 +460,31 @@ async function renderSceneVideo(
     return output;
   }
 
-  const extension = media.url.toLowerCase().endsWith(".webm") ? "webm" : "mp4";
-  const mediaFile = path.join(dir, `media-${String(index).padStart(2, "0")}.${extension}`);
-  await download(media.url, mediaFile);
+  let chosenUrl = media.url;
+  const guessExt = (u: string) =>
+    u.toLowerCase().includes(".webm") ? "webm" : "mp4";
+  let mediaFile = path.join(
+    dir,
+    `media-${String(index).padStart(2, "0")}.${guessExt(chosenUrl)}`,
+  );
 
-  const args: string[] = ["-y", "-stream_loop", "-1", "-i", mediaFile];
+  try {
+    await download(chosenUrl, mediaFile);
+  } catch (err) {
+    if (media.fallbackUrl && media.fallbackUrl !== chosenUrl) {
+      console.warn(
+        `Scene ${index + 1} clip download failed (${err instanceof Error ? err.message : err}); using verified fallback clip`,
+      );
+      chosenUrl = media.fallbackUrl;
+      mediaFile = path.join(
+        dir,
+        `media-${String(index).padStart(2, "0")}.${guessExt(chosenUrl)}`,
+      );
+      await download(chosenUrl, mediaFile);
+    } else {
+      throw err;
+    }
+  }
 
   const filters: string[] = [
     `scale=${width}:${height}:force_original_aspect_ratio=increase`,
@@ -304,11 +492,27 @@ async function renderSceneVideo(
     "setsar=1",
     "fps=30",
   ];
-  filters.push(captionFilter);
 
-  args.push(
+  // Subtle scene transitions when enabled
+  if (scene.transition === "fade" || index === 0) {
+    filters.push("fade=t=in:st=0:d=0.32");
+  }
+  if (index === totalScenes - 1 && duration > 1.0) {
+    filters.push(`fade=t=out:st=${Math.max(0, duration - 0.4).toFixed(2)}:d=0.38`);
+  }
+
+  if (captionFilter) {
+    filters.push(captionFilter);
+  }
+
+  const args: string[] = [
+    "-y",
+    "-stream_loop",
+    "-1",
+    "-i",
+    mediaFile,
     "-t",
-    duration.toFixed(2),
+    duration.toFixed(3),
     "-vf",
     filters.join(","),
     "-c:v",
@@ -326,12 +530,11 @@ async function renderSceneVideo(
     ...(IS_VERCEL ? ["-threads", "2"] : []),
     "-an",
     output,
-  );
+  ];
 
   try {
     await runFfmpeg(args);
   } finally {
-    // Free source clip immediately so serverless /tmp stays well below 512MB
     fs.rmSync(/* turbopackIgnore: true */ mediaFile, { force: true });
     fs.rmSync(/* turbopackIgnore: true */ captionFile, { force: true });
   }
@@ -343,32 +546,45 @@ export async function renderProject(projectId: string): Promise<void> {
   if (!project) throw new Error("Project not found");
 
   const dir = projectDir(projectId);
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.mkdirSync(dir, { recursive: true });
+  fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
+  fs.mkdirSync(/* turbopackIgnore: true */ dir, { recursive: true });
 
   const { width, height } = targetSize(project.resolution, project.aspect);
   const scenes = project.script.scenes ?? [];
   if (scenes.length === 0) throw new Error("The script has no scenes");
 
+  const captionMode: CaptionMode =
+    project.script.options?.captionMode ?? "word-highlight";
+  const musicTrackId =
+    project.script.options?.musicTrack ?? defaultMusicForTone(project.tone);
+  const musicVolume = Math.min(
+    0.45,
+    Math.max(0, project.script.options?.musicVolume ?? 0.16),
+  );
+
   await updateProject(projectId, {
     status: "rendering",
-    progress: 2,
-    stage: "Preparing voiceover",
+    progress: 3,
+    stage: "Preparing neural voiceover & script cues",
     error: null,
   });
 
   const sceneFiles: string[] = [];
-  const audioFiles: string[] = [];
+  const sceneAudioSpecs: { file: string; duration: number }[] = [];
+  let totalTargetDuration = 0;
 
   for (let index = 0; index < scenes.length; index += 1) {
     const scene = scenes[index];
     await updateProject(projectId, {
-      progress: Math.round(5 + (index / scenes.length) * 75),
-      stage: `Scene ${index + 1} of ${scenes.length}: generating voiceover`,
+      progress: Math.round(5 + (index / scenes.length) * 72),
+      stage: `Scene ${index + 1} of ${scenes.length}: recording neural voiceover`,
     });
 
+    const speechText = scene.narration?.trim().length
+      ? scene.narration
+      : scene.caption || " ";
     const speech = await synthesizeSpeech(
-      scene.narration?.length ? scene.narration : scene.caption,
+      speechText,
       project.voice,
       project.language,
     );
@@ -377,37 +593,44 @@ export async function renderProject(projectId: string): Promise<void> {
       `audio-${String(index).padStart(2, "0")}.${speech.ext}`,
     );
     fs.writeFileSync(audioFile, speech.data);
-    audioFiles.push(audioFile);
 
-    const spoken = await probeDuration(audioFile);
+    const probed = await probeDuration(audioFile);
+    const spoken = probed > 0 ? probed : speech.durationSec || 3.2;
     const manual = scene.duration ?? 0;
     const duration = Math.min(
       45,
-      Math.max(2.6, spoken + 0.45, manual > 0 ? manual : 0),
+      Math.max(2.6, spoken + 0.42, manual > 0 ? manual : 0),
     );
+    totalTargetDuration += duration;
+    sceneAudioSpecs.push({ file: audioFile, duration });
 
     await updateProject(projectId, {
-      progress: Math.round(5 + ((index + 0.5) / scenes.length) * 75),
-      stage: `Scene ${index + 1} of ${scenes.length}: compositing visuals`,
+      progress: Math.round(5 + ((index + 0.5) / scenes.length) * 72),
+      stage: `Scene ${index + 1} of ${scenes.length}: cutting footage & burning captions`,
     });
 
     const file = await renderSceneVideo(
       scene,
       index,
+      scenes.length,
       dir,
       width,
       height,
       project.style,
+      captionMode,
       duration,
+      spoken,
+      speech.wordTimings,
     );
     sceneFiles.push(file);
   }
 
   await updateProject(projectId, {
-    progress: 85,
-    stage: "Assembling final video",
+    progress: 82,
+    stage: "Mixing voiceover, music bed & assembling master MP4",
   });
 
+  // 1. Concatenate video scenes
   const videoList = path.join(dir, "scenes.txt");
   fs.writeFileSync(
     videoList,
@@ -428,41 +651,91 @@ export async function renderProject(projectId: string): Promise<void> {
     silentVideo,
   ]);
 
+  // 2. Pad each scene's audio to match its exact video duration so narration &
+  //    captions stay locked in frame-accurate sync across every cut!
   const audioInputs: string[] = [];
-  audioFiles.forEach((file) => {
-    audioInputs.push("-i", file);
+  const padChains: string[] = [];
+  sceneAudioSpecs.forEach((spec, index) => {
+    audioInputs.push("-i", spec.file);
+    padChains.push(
+      `[${index}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad=whole_dur=${spec.duration.toFixed(3)},atrim=0:${spec.duration.toFixed(3)}[a${index}]`,
+    );
   });
-  const filter = `${audioFiles
-    .map((_, index) => `[${index}:a]`)
-    .join("")}concat=n=${audioFiles.length}:v=0:a=1,loudnorm=I=-16:TP=-1.5:LRA=11[out]`;
-  const audioTrack = path.join(dir, "audio.m4a");
+
+  const concatInputs = sceneAudioSpecs.map((_, idx) => `[a${idx}]`).join("");
+  const voiceTrack = path.join(dir, "voice.m4a");
   await runFfmpeg([
     "-y",
     ...audioInputs,
     "-filter_complex",
-    filter,
+    `${padChains.join(";")};${concatInputs}concat=n=${sceneAudioSpecs.length}:v=0:a=1,loudnorm=I=-16:TP=-1.5:LRA=11[vo]`,
     "-map",
-    "[out]",
+    "[vo]",
     "-ac",
     "2",
     "-ar",
     "44100",
-    audioTrack,
+    "-c:a",
+    "aac",
+    "-b:a",
+    "160k",
+    voiceTrack,
   ]);
 
+  // 3. Mix optional background music gently ducked underneath the voiceover
+  let finalAudioTrack = voiceTrack;
+  const musicMeta = getMusicTrack(musicTrackId);
+  if (musicMeta.url && musicVolume > 0.01) {
+    const musicFile = path.join(dir, "music.mp3");
+    try {
+      await download(musicMeta.url, musicFile);
+      const mixedTrack = path.join(dir, "audio-mix.m4a");
+      const fadeOutStart = Math.max(0.5, totalTargetDuration - 1.5).toFixed(2);
+      await runFfmpeg([
+        "-y",
+        "-i",
+        voiceTrack,
+        "-stream_loop",
+        "-1",
+        "-i",
+        musicFile,
+        "-filter_complex",
+        `[1:a]atrim=0:${totalTargetDuration.toFixed(2)},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.7,afade=t=out:st=${fadeOutStart}:d=1.4,volume=${musicVolume.toFixed(3)}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95[mix]`,
+        "-map",
+        "[mix]",
+        "-ac",
+        "2",
+        "-ar",
+        "44100",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        mixedTrack,
+      ]);
+      finalAudioTrack = mixedTrack;
+    } catch (err) {
+      console.warn(
+        "Background music mix skipped:",
+        err instanceof Error ? err.message : err,
+      );
+    } finally {
+      fs.rmSync(/* turbopackIgnore: true */ musicFile, { force: true });
+    }
+  }
+
+  // 4. Final MP4 mux (+faststart for instant browser streaming)
   const output = path.join(dir, "output.mp4");
   await runFfmpeg([
     "-y",
     "-i",
     silentVideo,
     "-i",
-    audioTrack,
+    finalAudioTrack,
     "-c:v",
     "copy",
     "-c:a",
-    "aac",
-    "-b:a",
-    "160k",
+    "copy",
     "-shortest",
     "-movflags",
     "+faststart",
@@ -474,7 +747,7 @@ export async function renderProject(projectId: string): Promise<void> {
     await runFfmpeg([
       "-y",
       "-ss",
-      "0.4",
+      "0.5",
       "-i",
       output,
       "-frames:v",
@@ -488,8 +761,6 @@ export async function renderProject(projectId: string): Promise<void> {
   } catch {
     // poster is optional
   }
-
-  const totalDuration = await probeDuration(output);
 
   await updateProject(projectId, {
     progress: 94,
@@ -509,8 +780,6 @@ export async function renderProject(projectId: string): Promise<void> {
     ? await saveRenderArtifact(projectId, "poster.jpg", poster, "image/jpeg")
     : null;
 
-  // On Vercel or when Vercel Blob owns the deliverables, wipe the entire /tmp
-  // scratch directory so warm Fluid Compute instances never fill /tmp.
   if (IS_VERCEL || isBlobConfigured()) {
     fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
   } else {
@@ -523,30 +792,11 @@ export async function renderProject(projectId: string): Promise<void> {
   await updateProject(projectId, {
     status: "done",
     progress: 100,
-    stage: "Ready to share",
+    stage: "Master ready",
     error: null,
     outputPath: savedOutputPath,
     posterPath: savedPosterPath,
   });
-
-  void totalDuration;
-}
-
-export async function runRenderJob(projectId: string): Promise<void> {
-  const jobs = jobMap();
-  jobs.set(projectId, { status: "running", error: null, startedAt: Date.now() });
-  try {
-    await renderProject(projectId);
-    jobs.set(projectId, { status: "done", error: null, startedAt: Date.now() });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Render failed";
-    jobs.set(projectId, { status: "error", error: message, startedAt: Date.now() });
-    await updateProject(projectId, {
-      status: "error",
-      stage: "Render failed",
-      error: message,
-    }).catch(() => undefined);
-  }
 }
 
 type JobState = {
@@ -574,26 +824,27 @@ export function getJobState(projectId: string): JobState {
   );
 }
 
+export async function runRenderJob(projectId: string): Promise<void> {
+  const jobs = jobMap();
+  jobs.set(projectId, { status: "running", error: null, startedAt: Date.now() });
+  try {
+    await renderProject(projectId);
+    jobs.set(projectId, { status: "done", error: null, startedAt: Date.now() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Render failed";
+    jobs.set(projectId, { status: "error", error: message, startedAt: Date.now() });
+    await updateProject(projectId, {
+      status: "error",
+      stage: "Render failed",
+      error: message,
+    }).catch(() => undefined);
+  }
+}
+
 export function startRender(projectId: string): boolean {
   const jobs = jobMap();
   const existing = jobs.get(projectId);
   if (existing?.status === "running") return false;
-  jobs.set(projectId, { status: "running", error: null, startedAt: Date.now() });
-
-  void (async () => {
-    try {
-      await renderProject(projectId);
-      jobs.set(projectId, { status: "done", error: null, startedAt: Date.now() });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Render failed";
-      jobs.set(projectId, { status: "error", error: message, startedAt: Date.now() });
-      await updateProject(projectId, {
-        status: "error",
-        stage: "Render failed",
-        error: message,
-      }).catch(() => undefined);
-    }
-  })();
-
+  void runRenderJob(projectId);
   return true;
 }

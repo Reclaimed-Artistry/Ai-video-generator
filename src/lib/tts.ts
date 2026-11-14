@@ -3,10 +3,18 @@ import path from "node:path";
 import { EdgeTTS } from "@andresaya/edge-tts";
 import { getVoice, resolveNeuralVoice, type TtsProvider } from "./voices";
 
+export type WordTiming = {
+  text: string;
+  startSec: number;
+  endSec: number;
+};
+
 export type Speech = {
   data: Buffer;
   ext: "wav" | "mp3";
   provider: TtsProvider;
+  wordTimings: WordTiming[];
+  durationSec?: number;
 };
 
 function mespeakRoot(): string {
@@ -40,6 +48,33 @@ function mespeakVoiceFile(engineVoice: string): string | null {
   return null;
 }
 
+/**
+ * Fallback word timing estimator when a TTS engine doesn't supply word
+ * boundaries. Weights word durations by character length + punctuation pauses.
+ */
+export function estimateWordTimings(text: string, totalDurationSec: number): WordTiming[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0 || totalDurationSec <= 0) return [];
+  const weights = words.map((w) => {
+    const cleanLen = Math.max(2, w.replace(/[^a-z0-9]/gi, "").length);
+    const pause = /[.!?]$/.test(w) ? 4 : /[,;:—-]$/.test(w) ? 2 : 0;
+    return cleanLen + pause;
+  });
+  const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
+  const usableDuration = Math.max(0.4, totalDurationSec - 0.12);
+  let cursor = 0.05;
+  return words.map((word, idx) => {
+    const dur = (weights[idx] / totalWeight) * usableDuration;
+    const startSec = cursor;
+    cursor += dur;
+    return {
+      text: word,
+      startSec,
+      endSec: Math.min(totalDurationSec, cursor),
+    };
+  });
+}
+
 /** Offline, dependency-free speech synthesis (espeak based) — last resort. */
 function synthesizeBuiltin(text: string, engineVoice: string, rate: number, pitch: number) {
   const mespeak = loadMespeak();
@@ -60,14 +95,14 @@ function synthesizeBuiltin(text: string, engineVoice: string, rate: number, pitc
   return Buffer.from(buffer);
 }
 
-/** Microsoft Edge neural voices — studio quality, no API key required. */
+/** Microsoft Edge neural voices — studio quality + exact word timestamps, no API key required. */
 async function synthesizeEdge(
   text: string,
   voice: string,
   rate: number,
   pitch: number,
-): Promise<Buffer> {
-  const tts = new EdgeTTS({ timeout: 20000 });
+): Promise<{ audio: Buffer; wordTimings: WordTiming[]; durationSec: number }> {
+  const tts = new EdgeTTS({ timeout: 22000 });
   const result = await tts.generate(text, voice, {
     rate: `${rate >= 0 ? "+" : ""}${rate}%`,
     pitch: `${pitch >= 0 ? "+" : ""}${pitch}Hz`,
@@ -75,7 +110,21 @@ async function synthesizeEdge(
   });
   const audio = Buffer.from(result.audio);
   if (audio.length === 0) throw new Error("Neural voice returned no audio");
-  return audio;
+
+  // Microsoft Edge wordBoundary ticks are 100-nanosecond units (10,000,000 ticks/sec)
+  const wordTimings: WordTiming[] = (result.wordBoundaries ?? [])
+    .filter((b) => typeof b.text === "string" && b.text.trim().length > 0)
+    .map((b) => {
+      const startSec = Math.max(0, b.offset / 10_000_000);
+      const endSec = Math.max(startSec + 0.08, (b.offset + b.duration) / 10_000_000);
+      return { text: b.text.trim(), startSec, endSec };
+    });
+
+  return {
+    audio,
+    wordTimings,
+    durationSec: typeof result.duration === "number" ? result.duration : 0,
+  };
 }
 
 async function synthesizeElevenLabs(text: string, voice: string): Promise<Buffer> {
@@ -136,17 +185,28 @@ export async function synthesizeSpeech(
 
   if (process.env.ELEVENLABS_API_KEY) {
     const data = await synthesizeElevenLabs(clean, neuralVoice);
-    return { data, ext: "mp3", provider: "elevenlabs" };
+    return { data, ext: "mp3", provider: "elevenlabs", wordTimings: [] };
   }
 
   if (process.env.OPENAI_API_KEY) {
     const data = await synthesizeOpenAi(clean, neuralVoice);
-    return { data, ext: "mp3", provider: "openai" };
+    return { data, ext: "mp3", provider: "openai", wordTimings: [] };
   }
 
   try {
-    const data = await synthesizeEdge(clean, neuralVoice, voice.rate, voice.pitch);
-    return { data, ext: "mp3", provider: "edge" };
+    const { audio, wordTimings, durationSec } = await synthesizeEdge(
+      clean,
+      neuralVoice,
+      voice.rate,
+      voice.pitch,
+    );
+    return {
+      data: audio,
+      ext: "mp3",
+      provider: "edge",
+      wordTimings,
+      durationSec,
+    };
   } catch (error) {
     console.warn(
       "Neural voice unavailable, using offline engine:",
@@ -155,5 +215,5 @@ export async function synthesizeSpeech(
   }
 
   const data = synthesizeBuiltin(clean, voice.engineVoice, voice.rate + 165, voice.pitch);
-  return { data, ext: "wav", provider: "builtin" };
+  return { data, ext: "wav", provider: "builtin", wordTimings: [] };
 }
