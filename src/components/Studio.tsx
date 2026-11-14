@@ -24,7 +24,7 @@ import {
   AspectGlyph,
   AudioMeter,
   countWords,
-  BrandMark,
+  ReclaimedMark,
   estimateSceneSeconds,
   formatClock,
   formatSmpte,
@@ -525,7 +525,7 @@ export default function Studio({
               <span className="hidden sm:inline">Bin</span>
             </Link>
 
-            <BrandMark className="hidden h-4 w-4 shrink-0 text-stone-ink md:block" />
+            <ReclaimedMark className="hidden h-4 w-4 shrink-0 text-stone-ink md:block" />
 
             <div className="min-w-0">
               <input

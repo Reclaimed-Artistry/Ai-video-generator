@@ -1,6 +1,6 @@
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
-import { BrandMark } from "@/components/BrandMark";
+import { ReclaimedMark } from "@/components/BrandMark";
 
 export default function NotFound() {
   return (
@@ -8,7 +8,7 @@ export default function NotFound() {
       <div className="console-surface w-full max-w-md rounded-[4px]">
         <div className="flex items-center justify-between border-b border-line bg-inset px-4 py-2.5 font-tech text-[10px] uppercase tracking-[0.14em] text-ash">
           <span className="inline-flex items-center gap-2 text-paper">
-            <BrandMark className="h-4 w-4" />
+            <ReclaimedMark className="h-4 w-4" />
             Reclaimed Artistry
           </span>
           <span className="text-tally">ERR 404</span>

@@ -1,6 +1,6 @@
 import type { AspectRatio } from "@/lib/types";
 
-export function BrandMark({ className = "h-5 w-5" }: { className?: string }) {
+export function ReclaimedMark({ className = "h-5 w-5" }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -128,4 +128,19 @@ export function estimateSceneSeconds(narration: string, minDuration?: number | n
   const words = countWords(narration);
   const spoken = words > 0 ? words / 2.6 + 0.55 : 3.2;
   return Math.max(2.6, spoken, minDuration ?? 0);
+}
+
+/**
+ * Brand lockup: "Reclaimed" set in the UI sans, "Artistry" in the editorial
+ * serif italic used for page headlines, so the name reads as one mark.
+ */
+export function Wordmark({ className = "" }: { className?: string }) {
+  return (
+    <span className={`inline-flex items-baseline gap-[0.3em] leading-none ${className}`}>
+      <span className="text-[15px] font-semibold tracking-[-0.02em]">Reclaimed</span>
+      <span className="font-editorial text-[18px] italic tracking-[-0.005em] text-[#e8dcc4]">
+        Artistry
+      </span>
+    </span>
+  );
 }
