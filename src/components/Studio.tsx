@@ -637,7 +637,7 @@ export default function Studio({
 
             {hasMasterFile && render.status !== "rendering" ? (
               <a
-                href={`/api/files/renders/${project.id}/output.mp4`}
+                href={`/api/files/renders/${project.id}/output.mp4?download=1`}
                 download={`cutline-${project.id.slice(0, 8)}-${project.resolution}.mp4`}
                 className="inline-flex items-center gap-1.5 rounded-[3px] border border-nominal/45 bg-nominal/10 px-3 py-1.5 font-tech text-[11px] font-medium text-nominal transition-colors hover:bg-nominal/20"
               >

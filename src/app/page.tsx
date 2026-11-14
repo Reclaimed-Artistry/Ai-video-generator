@@ -243,7 +243,7 @@ export default async function HomePage() {
                     <div className="flex items-center gap-2">
                       {isDone ? (
                         <a
-                          href={`/api/files/renders/${project.id}/output.mp4`}
+                          href={`/api/files/renders/${project.id}/output.mp4?download=1`}
                           download={`cutline-${project.id.slice(0, 8)}.mp4`}
                           className="inline-flex items-center gap-1 rounded-[3px] border border-line bg-inset px-2.5 py-1.5 font-tech text-[11px] text-stone-ink transition-colors hover:border-line-strong hover:text-paper"
                         >

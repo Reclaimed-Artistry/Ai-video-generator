@@ -1,0 +1,4 @@
+DejaVu fonts are derived from Bitstream Vera fonts and are released under a
+free, permissive license (Bitstream Vera License + public domain changes).
+They may be freely used, copied, merged, modified and redistributed, including
+bundled with software. Source and full license: https://dejavu-fonts.github.io/License.html

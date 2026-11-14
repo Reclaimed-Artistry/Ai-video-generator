@@ -232,7 +232,7 @@ export default function ProjectsBin({
                         </Link>
                         {isDone ? (
                           <a
-                            href={`/api/files/renders/${project.id}/output.mp4`}
+                            href={`/api/files/renders/${project.id}/output.mp4?download=1`}
                             download={`cutline-${project.id.slice(0, 8)}.mp4`}
                             className="inline-flex items-center gap-1 rounded-[2px] border border-line bg-panel px-2 py-1 font-tech text-[10px] uppercase text-stone-ink transition-colors hover:border-line-strong hover:text-paper"
                           >

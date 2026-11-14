@@ -1,11 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { getProject } from "@/lib/projects";
+import { STORAGE_DIR, blobDownloadUrl, isRemoteUrl } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const STORAGE_DIR =
-  process.env.STORAGE_DIR ?? path.join(process.cwd(), "storage");
 
 const MIME: Record<string, string> = {
   ".mp4": "video/mp4",
@@ -20,15 +19,37 @@ const MIME: Record<string, string> = {
 
 type Context = { params: Promise<{ file: string[] }> };
 
-export async function GET(request: Request, context: Context) {
-  const { file: segments } = await context.params;
-  const relative = segments.map((segment) => decodeURIComponent(segment)).join("/");
-  const target = path.resolve(STORAGE_DIR, relative);
+/**
+ * On Vercel, masters live in Vercel Blob rather than on disk. Resolve
+ * `renders/<projectId>/output.mp4|poster.jpg` to the stored Blob URL.
+ */
+async function remoteRenderUrl(segments: string[]): Promise<string | null> {
+  if (segments.length !== 3 || segments[0] !== "renders") return null;
+  const [, projectId, fileName] = segments;
+  if (!/^[0-9a-f-]{36}$/i.test(projectId)) return null;
+  const project = await getProject(projectId).catch(() => null);
+  if (!project) return null;
+  if (fileName === "output.mp4" && isRemoteUrl(project.outputPath)) return project.outputPath;
+  if (fileName === "poster.jpg" && isRemoteUrl(project.posterPath)) return project.posterPath;
+  return null;
+}
 
-  if (!target.startsWith(path.resolve(STORAGE_DIR))) {
+export async function GET(request: Request, context: Context) {
+  const { file: rawSegments } = await context.params;
+  const segments = rawSegments.map((segment) => decodeURIComponent(segment));
+  const root = path.resolve(STORAGE_DIR);
+  const target = path.resolve(root, segments.join("/"));
+
+  if (target !== root && !target.startsWith(root + path.sep)) {
     return Response.json({ error: "Invalid path" }, { status: 400 });
   }
+
   if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
+    const remote = await remoteRenderUrl(segments);
+    if (remote) {
+      const wantsDownload = new URL(request.url).searchParams.get("download") === "1";
+      return Response.redirect(wantsDownload ? blobDownloadUrl(remote) : remote, 307);
+    }
     return Response.json({ error: "File not found" }, { status: 404 });
   }
 

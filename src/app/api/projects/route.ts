@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { generateScript } from "@/lib/script";
-import { listProjects, toProject } from "@/lib/projects";
+import { ensureSchema, listProjects, toProject } from "@/lib/projects";
 import type { AspectRatio, Resolution, Style, Tone } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -35,6 +35,7 @@ export async function POST(request: Request) {
   const tone = (body.tone ?? "energetic") as Tone;
   const script = await generateScript({ prompt, duration, tone, language: body.language ?? "en" });
 
+  await ensureSchema();
   const inserted = await db
     .insert(projects)
     .values({
