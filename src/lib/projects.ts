@@ -6,7 +6,7 @@ import { db, ensureSchema, hasDatabaseUrl } from "@/db";
 import { projects, type ProjectRow } from "@/db/schema";
 import { defaultMusicForTone } from "./music";
 import { hydrateSceneMedia } from "./stock";
-import { deleteProjectArtifacts, getStorageRoot } from "./storage";
+import { deleteProjectArtifacts, getStorageRoot, IS_VERCEL } from "./storage";
 import type { AspectRatio, Project, Resolution, Style, Tone, VideoScript } from "./types";
 
 const UUID_RE =
@@ -207,6 +207,10 @@ export async function getProject(id: string): Promise<Project | null> {
 
 export async function listProjects(limit = 24): Promise<Project[]> {
   if (!hasDatabaseUrl()) {
+    // On Vercel each request may hit a different instance, so in-memory
+    // projects listed here often cannot be reopened ("Sequence not found").
+    // Without a database the browser's own saved projects are the source of truth.
+    if (IS_VERCEL) return [];
     return Array.from(readFallbackStore().values())
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
       .slice(0, limit)

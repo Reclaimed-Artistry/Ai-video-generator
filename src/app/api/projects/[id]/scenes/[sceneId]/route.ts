@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getProject, updateProject } from "@/lib/projects";
 import { regenerateScene } from "@/lib/script";
+import { matchSceneToNarration } from "@/lib/narration-match";
 import type { Scene } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -53,10 +54,18 @@ export async function POST(request: Request, context: Context) {
       return NextResponse.json({ error: "Scene not found" }, { status: 404 });
     }
 
-    const next = regenerateScene(project.script, index, {
+    const rewritten = await regenerateScene(project.script, index, {
       prompt: project.prompt,
       tone: project.tone,
     });
+    const otherClipIds = project.script.scenes
+      .filter((_, sceneIndex) => sceneIndex !== index)
+      .map((scene) => scene.mediaId)
+      .filter((clipId): clipId is string => Boolean(clipId));
+    const next = await matchSceneToNarration(
+      { ...rewritten, mediaLocked: false, mediaMatchedFor: null },
+      { excludeIds: otherClipIds, topic: project.prompt },
+    );
 
     const scenes = project.script.scenes.map((scene, sceneIndex) =>
       sceneIndex === index ? { ...next, id: scene.id } : scene,

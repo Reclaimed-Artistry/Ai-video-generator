@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { interpretEditCommand } from "@/lib/command";
 import { getProject, updateProject } from "@/lib/projects";
+import { sceneNarrationText } from "@/lib/fingerprint";
+import { narrationFingerprint, syncScenesToNarration } from "@/lib/narration-match";
 import type { Project } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -41,6 +43,26 @@ export async function POST(request: Request, context: Context) {
         },
         { status: 422 },
       );
+    }
+
+    if (result.patch.script?.scenes) {
+      const before = new Map(project.script.scenes.map((scene) => [scene.id, scene]));
+      const reconciled = result.patch.script.scenes.map((scene) => {
+        const previous = before.get(scene.id);
+        const footageChanged =
+          previous && (previous.mediaId !== scene.mediaId || previous.mediaUrl !== scene.mediaUrl);
+        return footageChanged
+          ? {
+              ...scene,
+              mediaLocked: true,
+              mediaMatchedFor: narrationFingerprint(sceneNarrationText(scene)),
+            }
+          : scene;
+      });
+      result.patch.script = {
+        ...result.patch.script,
+        scenes: (await syncScenesToNarration(reconciled, { topic: project.prompt })).scenes,
+      };
     }
 
     await updateProject(id, {

@@ -8,7 +8,9 @@ import {
   Crosshair,
   Download,
   Film,
+  Link2,
   Loader2,
+  Lock,
   Music,
   Pause,
   Play,
@@ -20,7 +22,9 @@ import {
   Square,
   Terminal,
   Trash2,
+  Unlock,
   Volume2,
+  Wand2,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -35,6 +39,7 @@ import {
   formatSmpte,
 } from "@/components/BrandMark";
 import { saveLocalProject } from "@/lib/client-store";
+import { narrationFingerprint, sceneNarrationText } from "@/lib/fingerprint";
 import { resolveMediaUrl } from "@/lib/media-url";
 import { getMusicTrack, MUSIC_TRACKS } from "@/lib/music";
 import {
@@ -191,6 +196,12 @@ export default function Studio({
   });
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [matchingSceneIds, setMatchingSceneIds] = useState<string[]>([]);
+  const [customUrlDraft, setCustomUrlDraft] = useState("");
+  const [footageError, setFootageError] = useState<string | null>(null);
+  const matchInFlight = useRef<Set<string>>(new Set());
+  const projectRef = useRef(project);
+  const autoRenderRequested = useRef(false);
   const hydrated = useRef(false);
   const saveSeqRef = useRef(0);
 
@@ -263,6 +274,27 @@ export default function Studio({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+
+  // Footage follows the narration: shortly after narration changes, every
+  // unlocked scene whose clip was matched to older text is re-matched.
+  useEffect(() => {
+    const stale = scenes.filter((scene) => {
+      const text = sceneNarrationText(scene);
+      return !scene.mediaLocked && text && scene.mediaMatchedFor !== narrationFingerprint(text);
+    });
+    if (stale.length === 0) return;
+    const timer = setTimeout(() => {
+      void (async () => {
+        for (const scene of stale) await rematchScene(scene.id);
+      })();
+    }, 1400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenes]);
+
   // Multi-scene Storyboard auto-step playback
   useEffect(() => {
     if (!storyboardPlaying || monitorMode !== "storyboard" || scenes.length === 0) {
@@ -293,8 +325,10 @@ export default function Studio({
       }
       try {
         if (ephemeralMode) {
+          // Read the latest project via ref: a captured `project` here would be
+          // stale and could overwrite newer edits in browser storage.
           saveLocalProject({
-            ...project,
+            ...projectRef.current,
             ...(patch as Partial<Project>),
             updatedAt: new Date().toISOString(),
           });
@@ -329,7 +363,7 @@ export default function Studio({
         }
       }
     },
-    [project.id, hasMasterFile],
+    [project.id, hasMasterFile, ephemeralMode],
   );
 
   useEffect(() => {
@@ -379,7 +413,7 @@ export default function Studio({
       }
     }, 1400);
     return () => clearInterval(timer);
-  }, [render.status, project.id]);
+  }, [render.status, project.id, ephemeralMode]);
 
   function updateProjectSetting<K extends keyof Project>(
     key: K,
@@ -525,7 +559,81 @@ export default function Studio({
       mediaCreator: asset.creator,
       mediaProvider: asset.provider,
       mediaQuery: asset.tags.slice(0, 3).join(" "),
+      mediaStart: 0,
+      // A clip chosen by hand is never auto-replaced when narration changes.
+      mediaLocked: true,
+      mediaMatchedFor: narrationFingerprint(sceneNarrationText(activeScene)),
     });
+  }
+
+  /** Re-pick a scene's clip from its narration (skips locked scenes unless forced). */
+  async function rematchScene(sceneId: string, force = false) {
+    const current = projectRef.current.script.scenes.find((scene) => scene.id === sceneId);
+    if (!current || matchInFlight.current.has(sceneId)) return;
+    if (current.mediaLocked && !force) return;
+    const narration = sceneNarrationText(current);
+    if (!narration) return;
+    const requestedFor = narrationFingerprint(narration);
+
+    matchInFlight.current.add(sceneId);
+    setMatchingSceneIds((ids) => [...ids, sceneId]);
+    setFootageError(null);
+    try {
+      const excludeIds = projectRef.current.script.scenes
+        .filter((scene) => scene.id !== sceneId)
+        .map((scene) => scene.mediaId)
+        .filter((clipId): clipId is string => Boolean(clipId));
+      const response = await fetch("/api/media/match", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          narration: current.narration,
+          caption: current.caption,
+          topic: projectRef.current.prompt,
+          excludeIds,
+          currentQuery: current.mediaQuery,
+        }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        media?: Partial<Scene>;
+        error?: string;
+      };
+      if (!response.ok || !data.media) throw new Error(data.error ?? "Could not match footage");
+
+      // Ignore a late answer if the narration changed again or the user locked a clip.
+      const latest = projectRef.current.script.scenes.find((scene) => scene.id === sceneId);
+      if (!latest || (latest.mediaLocked && !force)) return;
+      if (narrationFingerprint(sceneNarrationText(latest)) !== requestedFor) return;
+      updateScene(sceneId, { ...data.media, mediaMatchedFor: requestedFor, mediaLocked: false });
+    } catch (error) {
+      setFootageError(error instanceof Error ? error.message : "Could not match footage");
+    } finally {
+      matchInFlight.current.delete(sceneId);
+      setMatchingSceneIds((ids) => ids.filter((id) => id !== sceneId));
+    }
+  }
+
+  function applyCustomVideoUrl(sceneId: string) {
+    const url = customUrlDraft.trim();
+    if (!/^https?:\/\/\S+$/i.test(url)) {
+      setFootageError("Paste a direct video link starting with https:// (MP4 or WebM).");
+      return;
+    }
+    const target = scenes.find((scene) => scene.id === sceneId);
+    updateScene(sceneId, {
+      mediaId: null,
+      mediaType: "video",
+      mediaUrl: url,
+      mediaThumb: null,
+      mediaTitle: "Your video",
+      mediaCreator: null,
+      mediaProvider: "custom",
+      mediaStart: 0,
+      mediaLocked: true,
+      mediaMatchedFor: target ? narrationFingerprint(sceneNarrationText(target)) : null,
+    });
+    setCustomUrlDraft("");
+    setFootageError(null);
   }
 
   function stopAudio() {
@@ -583,6 +691,21 @@ export default function Studio({
       setPlayingAudioKey(null);
     }
   }
+
+  // Opened with ?autorender=1 (browser-only projects): start the render here,
+  // where the full project snapshot is available to send to the server.
+  useEffect(() => {
+    if (autoRenderRequested.current) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("autorender") !== "1") return;
+    autoRenderRequested.current = true;
+    params.delete("autorender");
+    const query = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    const timer = setTimeout(() => void startMasterRender(), 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function startMasterRender(overrideResolution?: Resolution, overrideProject?: Project) {
     const targetProject = overrideProject ?? project;
@@ -765,6 +888,13 @@ export default function Studio({
   return (
     <div className="flex min-h-screen flex-col bg-canvas text-paper">
       {/* Top NLE Transport & Sequence Bar */}
+      {ephemeralMode ? (
+        <div className="border-b border-amber-cue/30 bg-amber-cue/10 px-4 py-2 text-center font-tech text-[11px] text-[#f0d9a8]">
+          No database connected: this sequence is saved only in this browser. To keep
+          sequences on every device, open Vercel → Storage → create Neon Postgres,
+          connect it to this project and redeploy.
+        </div>
+      ) : null}
       <header className="sticky top-0 z-30 border-b border-line bg-panel">
         <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5">
           <div className="flex min-w-0 items-center gap-3">
@@ -1546,6 +1676,173 @@ export default function Studio({
                   </div>
                 </label>
               </div>
+
+              {/* Scene footage: follows the narration unless the clip is locked */}
+              {(() => {
+                const isMatching = matchingSceneIds.includes(activeScene.id);
+                const inSync =
+                  activeScene.mediaMatchedFor ===
+                  narrationFingerprint(sceneNarrationText(activeScene));
+                const status = isMatching
+                  ? { label: "Matching footage to narration…", tone: "text-amber-cue border-amber-cue/40" }
+                  : activeScene.mediaLocked
+                    ? { label: "Locked · your pick", tone: "text-paper border-line-strong" }
+                    : inSync
+                      ? { label: "Matches narration", tone: "text-nominal border-nominal/40" }
+                      : { label: "Narration changed · re-matching", tone: "text-amber-cue border-amber-cue/40" };
+                return (
+                  <div className="mt-4 rounded-[3px] border border-line bg-inset p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-tech text-[10px] uppercase tracking-[0.14em] text-ash">
+                        Scene Footage
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1.5 rounded-[2px] border px-2 py-0.5 font-tech text-[10px] uppercase tracking-wider ${status.tone}`}
+                      >
+                        {isMatching ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                        {status.label}
+                      </span>
+                    </div>
+
+                    <div className="mt-2.5 grid gap-3 sm:grid-cols-[168px_minmax(0,1fr)]">
+                      <div className="relative aspect-video overflow-hidden rounded-[2px] border border-line bg-black">
+                        {activeScene.mediaUrl ? (
+                          <video
+                            key={`${activeScene.mediaUrl}#${activeScene.mediaStart ?? 0}`}
+                            src={`${activeScene.mediaUrl}#t=${Math.max(0, activeScene.mediaStart ?? 0)}`}
+                            poster={activeScene.mediaThumb ?? undefined}
+                            muted
+                            loop
+                            autoPlay
+                            playsInline
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <div className="grid h-full place-items-center text-ash">
+                            <Film className="h-4 w-4" />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="min-w-0 space-y-2.5">
+                        <div>
+                          <p className="truncate text-xs font-medium text-paper">
+                            {activeScene.mediaTitle || "No clip yet"}
+                          </p>
+                          <p className="truncate font-tech text-[10px] uppercase text-ash">
+                            {activeScene.mediaProvider ?? "stock"}
+                            {activeScene.mediaCreator ? ` · ${activeScene.mediaCreator}` : ""}
+                            {activeScene.mediaQuery ? ` · “${activeScene.mediaQuery}”` : ""}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => void rematchScene(activeScene.id, true)}
+                            disabled={isMatching || !sceneNarrationText(activeScene)}
+                            className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-panel px-2.5 py-1 font-tech text-[11px] text-paper transition-colors hover:border-amber-cue hover:text-amber-cue disabled:opacity-40"
+                          >
+                            <Wand2 className="h-3 w-3" />
+                            Re-match to narration
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateScene(activeScene.id, {
+                                mediaLocked: !activeScene.mediaLocked,
+                                // Unlocking makes the clip follow the narration again.
+                                mediaMatchedFor: activeScene.mediaLocked
+                                  ? null
+                                  : narrationFingerprint(sceneNarrationText(activeScene)),
+                              })
+                            }
+                            title={
+                              activeScene.mediaLocked
+                                ? "Unlock: footage will follow the narration again"
+                                : "Lock: keep this clip even if the narration changes"
+                            }
+                            className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-panel px-2.5 py-1 font-tech text-[11px] text-stone-ink transition-colors hover:border-line-strong hover:text-paper"
+                          >
+                            {activeScene.mediaLocked ? (
+                              <Unlock className="h-3 w-3" />
+                            ) : (
+                              <Lock className="h-3 w-3" />
+                            )}
+                            {activeScene.mediaLocked ? "Unlock clip" : "Lock clip"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTab("media");
+                              const query = activeScene.mediaQuery || sceneNarrationText(activeScene);
+                              setSearch(query);
+                              void searchMedia(query);
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-panel px-2.5 py-1 font-tech text-[11px] text-stone-ink transition-colors hover:border-line-strong hover:text-paper"
+                          >
+                            <Search className="h-3 w-3" />
+                            Browse clips
+                          </button>
+                        </div>
+
+                        <div className="grid gap-2 sm:grid-cols-[120px_minmax(0,1fr)]">
+                          <label className="block">
+                            <span className="font-tech block text-[10px] uppercase tracking-[0.14em] text-ash">
+                              Start at (s)
+                            </span>
+                            <input
+                              type="number"
+                              min={0}
+                              step={0.5}
+                              value={activeScene.mediaStart ?? 0}
+                              onChange={(event) =>
+                                updateScene(activeScene.id, {
+                                  mediaStart: Math.max(0, Number(event.target.value) || 0),
+                                })
+                              }
+                              className="mt-1 w-full rounded-[3px] border border-line bg-panel px-2 py-1.5 font-tech text-[11px] text-paper outline-none focus:border-amber-cue"
+                            />
+                          </label>
+                          <div>
+                            <span className="font-tech block text-[10px] uppercase tracking-[0.14em] text-ash">
+                              Use my own video (direct MP4/WebM link)
+                            </span>
+                            <div className="mt-1 flex gap-1.5">
+                              <input
+                                value={customUrlDraft}
+                                onChange={(event) => setCustomUrlDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") applyCustomVideoUrl(activeScene.id);
+                                }}
+                                placeholder="https://…/clip.mp4"
+                                className="min-w-0 flex-1 rounded-[3px] border border-line bg-panel px-2.5 py-1.5 text-[11px] text-paper outline-none placeholder:text-ash focus:border-amber-cue"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => applyCustomVideoUrl(activeScene.id)}
+                                className="inline-flex items-center gap-1 rounded-[3px] border border-line bg-panel px-2.5 py-1.5 font-tech text-[10px] uppercase tracking-wider text-amber-cue transition-colors hover:border-amber-cue"
+                              >
+                                <Link2 className="h-3 w-3" />
+                                Use
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {footageError ? (
+                      <p className="mt-2 font-tech text-[11px] text-[#f4b4a8]">{footageError}</p>
+                    ) : (
+                      <p className="mt-2 text-[11px] leading-relaxed text-ash">
+                        Edit the narration and this scene&apos;s footage is re-matched to what is said.
+                        Pick a clip yourself (or lock this one) to keep it fixed.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           ) : null}
         </section>

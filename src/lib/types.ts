@@ -32,6 +32,12 @@ export type Scene = {
   mediaTitle?: string | null;
   mediaCreator?: string | null;
   mediaProvider?: string | null;
+  /** In-point (seconds) inside the source clip where playback starts. */
+  mediaStart?: number | null;
+  /** User picked this clip by hand: never auto-replace it. */
+  mediaLocked?: boolean;
+  /** Fingerprint of the narration the current clip was matched to. */
+  mediaMatchedFor?: string | null;
   duration: number | null;
   transition: "fade" | "none";
 };

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { BrandMark } from "@/components/BrandMark";
 import Studio from "@/components/Studio";
-import { loadLocalProject } from "@/lib/client-store";
+import { loadLocalProject, saveLocalProject } from "@/lib/client-store";
 import type { Project } from "@/lib/types";
 
 export default function StudioClientFallback({ id }: { id: string }) {
@@ -13,11 +13,33 @@ export default function StudioClientFallback({ id }: { id: string }) {
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setProject(loadLocalProject(id));
-      setChecked(true);
-    }, 0);
-    return () => clearTimeout(timer);
+    let cancelled = false;
+    void (async () => {
+      // 1. This browser's saved copy (the source of truth without a database).
+      let found = loadLocalProject(id);
+      // 2. Otherwise the server instance may still hold it in memory.
+      if (!found) {
+        try {
+          const response = await fetch(`/api/projects/${id}`, { cache: "no-store" });
+          if (response.ok) {
+            const data = (await response.json()) as { project?: Project };
+            if (data.project?.id === id) {
+              found = data.project;
+              saveLocalProject(found);
+            }
+          }
+        } catch {
+          // Network/instance miss: fall through to the not-found screen.
+        }
+      }
+      if (!cancelled) {
+        setProject(found);
+        setChecked(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   if (!checked) {
@@ -44,9 +66,11 @@ export default function StudioClientFallback({ id }: { id: string }) {
               Sequence not found in bin.
             </h1>
             <p className="mt-2 text-xs leading-relaxed text-stone-ink">
-              This sequence is not in local session storage. Attach Neon
-              PostgreSQL in Vercel Storage to persist sequences across browsers
-              and devices.
+              This site has no database connected, so sequences are saved only
+              in the browser that created them. It may have been made in another
+              browser or device, or this browser&apos;s storage was cleared. Connect a
+              database (Vercel → Storage → Neon Postgres, then redeploy) to keep
+              sequences everywhere.
             </p>
             <div className="mt-5 flex items-center gap-2.5">
               <Link
