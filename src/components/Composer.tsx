@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AspectGlyph } from "@/components/BrandMark";
 import TemplateGallery from "@/components/TemplateGallery";
 import { Notice, Segmented } from "@/components/ui";
+import { readJson, responseError } from "@/lib/http";
 import { MUSIC_TRACKS } from "@/lib/music";
 import { formatClock } from "@/lib/timecode";
 import type { VideoTemplate } from "@/lib/templates";
@@ -37,7 +38,7 @@ import {
   type Tone,
   type Workflow,
 } from "@/lib/types";
-import { DEFAULT_VOICE_ID, VOICES } from "@/lib/voices";
+import { DEFAULT_VOICE_ID, VOICES, type Voice } from "@/lib/voices";
 
 type ClonedVoiceOption = {
   id: string;
@@ -86,7 +87,13 @@ export default function Composer() {
   useEffect(() => {
     let cancelled = false;
     fetch("/api/voices")
-      .then((response) => (response.ok ? response.json() : null))
+      .then((response) =>
+        response.ok
+          ? readJson<{ voices?: Voice[]; clonedVoices?: ClonedVoiceOption[]; provider?: string }>(
+            response,
+          )
+          : Promise.resolve(null),
+      )
       .then((data) => {
         if (!cancelled && data) {
           setCatalog({
@@ -213,10 +220,11 @@ export default function Composer() {
           duration,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Could not start your video");
+      const data = await readJson<{ project?: { id: string }; error?: string }>(response);
+      if (!response.ok) throw new Error(responseError(data, response, "Could not start your video"));
 
-      const projectId: string = data.project.id;
+      const projectId = data?.project?.id;
+      if (!projectId) throw new Error("The server did not return a project.");
       if (autoRender) {
         // FFmpeg encode runs after the HTTP 202, so we can navigate immediately.
         await fetch(`/api/projects/${projectId}/render`, { method: "POST" }).catch(

@@ -28,6 +28,7 @@ import DesignPanel from "@/components/studio/DesignPanel";
 import MediaPanel from "@/components/studio/MediaPanel";
 import VoicePanel from "@/components/studio/VoicePanel";
 import { Badge, Notice, ProgressBar, Segmented, Slider } from "@/components/ui";
+import { readJson, readJsonObject, responseError } from "@/lib/http";
 import { MUSIC_TRACKS } from "@/lib/music";
 import { resolveMediaUrl } from "@/lib/media-url";
 import { countWords, estimateSceneSeconds, formatClock } from "@/lib/timecode";
@@ -148,10 +149,11 @@ export default function Studio({ initialProject }: { initialProject: Project }) 
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Could not save");
-      setProject(data.project as Project);
-      return data.project as Project;
+      const data = await readJson<{ project?: Project; error?: string }>(response);
+      if (!response.ok) throw new Error(responseError(data, response, "Could not save"));
+      if (!data?.project) throw new Error("The server did not return the project.");
+      setProject(data.project);
+      return data.project;
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not save");
       return null;
@@ -191,14 +193,16 @@ export default function Studio({ initialProject }: { initialProject: Project }) 
   const refreshProject = useCallback(async () => {
     const response = await fetch(`/api/projects/${project.id}`).catch(() => null);
     if (!response?.ok) return;
-    const payload = await response.json();
-    setProject(payload.project as Project);
+    const payload = await readJson<{ project?: Project }>(response);
+    if (payload?.project) setProject(payload.project);
   }, [project.id]);
 
   const pollRender = useCallback(async () => {
     const response = await fetch(`/api/projects/${project.id}/render`).catch(() => null);
     if (!response?.ok) return;
-    const data = await response.json();
+    const data = await readJsonObject<{ progress?: number; stage?: string; error?: string | null; status?: string }>(
+      response,
+    );
     setLive({
       progress: data.progress ?? 0,
       stage: data.stage ?? "",
@@ -219,9 +223,9 @@ export default function Studio({ initialProject }: { initialProject: Project }) 
     setBusyAction("render");
     setNotice(null);
     const response = await fetch(`/api/projects/${project.id}/render`, { method: "POST" });
-    const data = await response.json().catch(() => ({}));
+    const data = await readJsonObject<{ error?: string }>(response);
     if (!response.ok) {
-      setNotice(data.error ?? "Could not start the render");
+      setNotice(responseError(data, response, "Could not start the render"));
     } else {
       setLive({ progress: 2, stage: "Starting FFmpeg pipeline", error: null });
       setProject((prev) => ({ ...prev, status: "rendering" }));
@@ -243,10 +247,11 @@ export default function Studio({ initialProject }: { initialProject: Project }) 
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ command: `add a scene about ${project.prompt.slice(0, 60)}` }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Could not add a scene");
-      setProject(data.project as Project);
-      setActiveIndex((data.project as Project).script.scenes.length - 1);
+      const data = await readJson<{ project?: Project; error?: string }>(response);
+      if (!response.ok) throw new Error(responseError(data, response, "Could not add a scene"));
+      if (!data?.project) throw new Error("The server did not return the project.");
+      setProject(data.project);
+      setActiveIndex(data.project.script.scenes.length - 1);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not add a scene");
     } finally {
@@ -286,9 +291,10 @@ export default function Studio({ initialProject }: { initialProject: Project }) 
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ command: text }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Could not apply that command");
-      setProject(data.project as Project);
+      const data = await readJson<{ project?: Project; changes?: string[]; error?: string }>(response);
+      if (!response.ok) throw new Error(responseError(data, response, "Could not apply that command"));
+      if (!data?.project) throw new Error("The server did not return the project.");
+      setProject(data.project);
       setCommand("");
       setCommandFeedback({ tone: "success", text: (data.changes ?? []).join(" · ") });
     } catch (error) {
@@ -858,8 +864,8 @@ export default function Studio({ initialProject }: { initialProject: Project }) 
                           `/api/projects/${project.id}/script`,
                           { method: "POST" },
                         );
-                        const data = await response.json().catch(() => ({}));
-                        if (response.ok) setProject(data.project as Project);
+                        const data = await readJson<{ project?: Project }>(response);
+                        if (response.ok && data?.project) setProject(data.project);
                         setBusyAction(null);
                       }}
                       className="btn btn-secondary flex-1"

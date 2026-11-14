@@ -3,6 +3,8 @@
 import { Check, ImagePlus, Loader2, Search, Sparkles, Video } from "lucide-react";
 import { useState } from "react";
 import { Notice, Spinner } from "@/components/ui";
+import { readJson, readJsonObject, responseError } from "@/lib/http";
+import type { ImageProviderStatus } from "@/lib/imagen";
 import { formatClock } from "@/lib/timecode";
 import type { AspectRatio, Resolution, Scene, StockAsset } from "@/lib/types";
 
@@ -36,7 +38,7 @@ export default function MediaPanel({
   const [status, setStatus] = useState<{ tone: "info" | "success" | "danger"; text: string } | null>(
     null,
   );
-  const [imageStatus, setImageStatus] = useState<{ label: string; configured: boolean; note: string } | null>(
+  const [imageStatus, setImageStatus] = useState<ImageProviderStatus | null>(
     null,
   );
 
@@ -49,7 +51,7 @@ export default function MediaPanel({
       const response = await fetch(
         `/api/media/search?q=${encodeURIComponent(term)}&limit=18`,
       );
-      const data = await response.json();
+      const data = await readJsonObject<{ assets?: StockAsset[] }>(response);
       setAssets(data.assets ?? []);
       if ((data.assets ?? []).length === 0) {
         setStatus({ tone: "info", text: "No clips matched. Try a simpler phrase." });
@@ -77,9 +79,13 @@ export default function MediaPanel({
           primaryColor,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Image generation failed");
-      const image = data.image as GeneratedImage;
+      const data = await readJson<{ image?: GeneratedImage; status?: ImageProviderStatus; error?: string }>(
+        response,
+      );
+      if (!response.ok) throw new Error(responseError(data, response, "Image generation failed"));
+      const image = data?.image;
+      if (!image) throw new Error("The server did not return an image.");
+
       const storedUrl = image.url.startsWith("http") ? image.url : `/api/files/${image.url}`;
       onApply({
         mediaQuery: prompt,
@@ -93,7 +99,7 @@ export default function MediaPanel({
         mediaProvider: image.provider,
         mediaId: null,
       });
-      setImageStatus(data.status ?? null);
+      setImageStatus(data?.status ?? null);
       setStatus({
         tone: image.fallback ? "info" : "success",
         text: image.fallback
@@ -112,7 +118,7 @@ export default function MediaPanel({
 
   async function loadStatus() {
     const response = await fetch("/api/imagen").catch(() => null);
-    const data = response?.ok ? await response.json() : null;
+    const data = response?.ok ? await readJson<{ status?: ImageProviderStatus }>(response) : null;
     if (data?.status) setImageStatus(data.status);
   }
 

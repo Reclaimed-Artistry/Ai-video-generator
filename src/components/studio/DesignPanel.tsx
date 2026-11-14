@@ -3,6 +3,7 @@
 import { Check, ImagePlus, Loader2, Palette, Plus, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ColorField, Field, Notice, Spinner, Toggle } from "@/components/ui";
+import { readJson, responseError } from "@/lib/http";
 import {
   BRAND_FONTS,
   type BrandFontId,
@@ -68,16 +69,22 @@ export default function DesignPanel({
         setBusy(true);
         try {
           const response = await fetch("/api/brand-kits");
-          const data = await response.json();
+          const data = await readJson<{ brandKits?: BrandKit[] }>(response);
           if (cancelled) return;
-          const list: BrandKit[] = data.brandKits ?? [];
+          const list: BrandKit[] = data?.brandKits ?? [];
           setKits(list);
           const active = brandKitId ? list.find((kit) => kit.id === brandKitId) : list[0];
           if (active) applyKit(active);
         } finally {
           if (!cancelled) setBusy(false);
         }
-      })();
+      })().catch(() => {
+        // `fetch` itself rejects when the network is down; without this the
+        // failure escapes as an unhandled promise rejection.
+        if (!cancelled) {
+          setStatus({ tone: "danger", text: "Could not load brand kits." });
+        }
+      });
     }, 0);
     return () => {
       cancelled = true;
@@ -134,8 +141,9 @@ export default function DesignPanel({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: "New brand", isDefault: kits.length === 0 }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Could not create a brand kit");
+      const data = await readJson<{ brandKit?: BrandKit; error?: string }>(response);
+      if (!response.ok) throw new Error(responseError(data, response, "Could not create a brand kit"));
+      if (!data?.brandKit) throw new Error("The server did not return a brand kit.");
       const created: BrandKit = data.brandKit;
       setKits((prev) => [created, ...prev]);
       applyKit(created);
@@ -162,14 +170,20 @@ export default function DesignPanel({
         method: "POST",
         body: form,
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Logo upload failed");
+      const data = await readJson<{ brandKit?: { logoUrl?: string | null }; key?: string; error?: string }>(
+        response,
+      );
+      if (!response.ok) throw new Error(responseError(data, response, "Logo upload failed"));
       // Use the server-resolved `logoUrl` rather than building one from `key`:
       // with Vercel Blob configured, `key` is an absolute https URL and
       // prefixing `/api/files/` onto it would produce a broken path.
       setLogoUrl(
-        data.brandKit?.logoUrl ??
-          (data.key?.startsWith("http") ? data.key : `/api/files/${data.key}?v=${Date.now()}`),
+        data?.brandKit?.logoUrl ??
+          (data?.key?.startsWith("http")
+            ? data.key
+            : data?.key
+              ? `/api/files/${data.key}?v=${Date.now()}`
+              : null),
       );
       setStatus({ tone: "success", text: "Logo uploaded. It will burn into every render." });
     } catch (error) {

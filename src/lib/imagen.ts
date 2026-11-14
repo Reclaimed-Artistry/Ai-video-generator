@@ -35,6 +35,14 @@ export function activeImageProvider(): ImageProvider {
   return "procedural";
 }
 
+/** Status payload returned by `GET /api/imagen` and by image mutations. */
+export type ImageProviderStatus = {
+  provider: ImageProvider;
+  configured: boolean;
+  label: string;
+  note: string;
+};
+
 export function imageProviderStatus(): {
   provider: ImageProvider;
   configured: boolean;

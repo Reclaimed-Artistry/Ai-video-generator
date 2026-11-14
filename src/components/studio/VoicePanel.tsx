@@ -3,6 +3,7 @@
 import { AudioLines, Globe2, Loader2, Square, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Field, Notice, Spinner } from "@/components/ui";
+import { readJson, responseError } from "@/lib/http";
 import { LANGUAGES } from "@/lib/types";
 import { VOICES } from "@/lib/voices";
 
@@ -62,7 +63,15 @@ export default function VoicePanel({
 
   useEffect(() => {
     void fetch("/api/voices")
-      .then((response) => (response.ok ? response.json() : null))
+      .then((response) =>
+        response.ok
+          ? readJson<{
+              clonedVoices?: ClonedVoice[];
+              cloneStatus?: CloneStatus | null;
+              dubStatus?: DubStatus | null;
+            }>(response)
+          : Promise.resolve(null),
+      )
       .then((data) => {
         if (!data) return;
         setCloned(data.clonedVoices ?? []);
@@ -112,17 +121,24 @@ export default function VoicePanel({
       files.slice(0, 5).forEach((file) => form.append("samples", file));
 
       const response = await fetch("/api/voices/clone", { method: "POST", body: form });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Could not create the voice");
+      const data = await readJson<{
+        clonedVoice?: ClonedVoice;
+        neural?: boolean;
+        warning?: string;
+        error?: string;
+      }>(response);
+      if (!response.ok) throw new Error(responseError(data, response, "Could not create the voice"));
+      const created = data?.clonedVoice;
+      if (!created) throw new Error("The server did not return a voice.");
 
-      setCloned((prev) => [data.clonedVoice, ...prev]);
-      onVoiceChange(data.clonedVoice.voiceId);
+      setCloned((prev) => [created, ...prev]);
+      onVoiceChange(created.voiceId);
       setName("");
       setStatus({
-        tone: data.neural ? "success" : "info",
-        text: data.neural
-          ? `“${data.clonedVoice.name}” cloned and selected.`
-          : (data.warning ?? "Saved as a reusable voice preset."),
+        tone: data?.neural ? "success" : "info",
+        text: data?.neural
+          ? `“${created.name}” cloned and selected.`
+          : (data?.warning ?? "Saved as a reusable voice preset."),
       });
     } catch (error) {
       setStatus({
@@ -148,12 +164,17 @@ export default function VoicePanel({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ targetLanguage: dubLanguage, voiceGender: dubGender }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Dubbing failed");
-      onDubbed?.({ language: data.project?.language ?? dubLanguage, changes: data.changes ?? [] });
+      const data = await readJson<{
+        project?: { language?: string };
+        changes?: string[];
+        translated?: boolean;
+        error?: string;
+      }>(response);
+      if (!response.ok) throw new Error(responseError(data, response, "Dubbing failed"));
+      onDubbed?.({ language: data?.project?.language ?? dubLanguage, changes: data?.changes ?? [] });
       setStatus({
-        tone: data.translated ? "success" : "info",
-        text: (data.changes ?? []).join(" · ") || "Dubbing applied.",
+        tone: data?.translated ? "success" : "info",
+        text: (data?.changes ?? []).join(" · ") || "Dubbing applied.",
       });
     } catch (error) {
       setStatus({
