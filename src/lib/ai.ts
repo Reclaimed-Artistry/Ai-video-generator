@@ -68,6 +68,10 @@ export function aiStatus() {
   const video = videoProvider();
   return {
     video,
+    characterLabel:
+      video === "pollinations"
+        ? `Image-to-video: ${imageToVideoModel()} · Lip-sync: ${lipsyncModel()}`
+        : "Not configured: image-to-video and lip-sync need POLLINATIONS_API_KEY",
     videoLabel:
       video === "pollinations"
         ? `Pollinations text-to-video (${videoModel()}, ${videoDuration()}s clips)`
@@ -392,32 +396,35 @@ export class AiVideoUnavailableError extends Error {
   }
 }
 
-/**
- * Generate a short video clip with a text-to-video model. Pollinations
- * returns the finished MP4 in the response, which can take a minute or two.
- */
-export async function generateVideoOnServer(
+/** Model for image-to-video (animate a still). Override with AI_I2V_MODEL. */
+export function imageToVideoModel(): string {
+  return process.env.AI_I2V_MODEL || "alibaba/wan-2.2-fast";
+}
+
+/** Audio-driven model for lip-synced talking characters. Override with AI_LIPSYNC_MODEL. */
+export function lipsyncModel(): string {
+  return process.env.AI_LIPSYNC_MODEL || "alibaba/wan-3.0";
+}
+
+async function requestPollinationsVideo(
   prompt: string,
-  aspect: AspectRatio,
-  seed: number,
+  params: Record<string, string>,
 ): Promise<{ data: Buffer; contentType: string; provider: VideoProvider; model: string }> {
   if (videoProvider() === "none") throw new AiVideoUnavailableError();
-  const model = videoModel();
-  const params = new URLSearchParams({
-    model,
-    duration: String(videoDuration()),
-    aspectRatio: aspect,
-    audio: "false",
-    seed: String(seed),
-  });
+  const query = new URLSearchParams({ audio: "false", ...params });
   const response = await fetchWithTimeout(
-    `${POLLINATIONS_GEN_URL}/video/${encodeURIComponent(prompt)}?${params}`,
+    `${POLLINATIONS_GEN_URL}/video/${encodeURIComponent(prompt)}?${query}`,
     { headers: { authorization: `Bearer ${process.env.POLLINATIONS_API_KEY}` } },
-    280_000,
+    285_000,
   );
   const type = response.headers.get("content-type") ?? "";
   if (response.ok && type.startsWith("video/")) {
-    return { data: Buffer.from(await response.arrayBuffer()), contentType: type, provider: "pollinations", model };
+    return {
+      data: Buffer.from(await response.arrayBuffer()),
+      contentType: type,
+      provider: "pollinations",
+      model: params.model,
+    };
   }
   const body = await response.text().catch(() => "");
   let message = "";
@@ -436,4 +443,67 @@ export async function generateVideoOnServer(
     throw new Error("Pollinations rejected the API key for video generation. Check POLLINATIONS_API_KEY.");
   }
   throw new Error(`Video generation failed (${response.status})${message ? `: ${message}` : ""}`);
+}
+
+/** Text-to-video clip (Pollinations returns the finished MP4 in the response). */
+export async function generateVideoOnServer(
+  prompt: string,
+  aspect: AspectRatio,
+  seed: number,
+): Promise<{ data: Buffer; contentType: string; provider: VideoProvider; model: string }> {
+  return requestPollinationsVideo(prompt, {
+    model: videoModel(),
+    duration: String(videoDuration()),
+    aspectRatio: aspect,
+    seed: String(seed),
+  });
+}
+
+/**
+ * Animate a character image. With `audioUrl` the clip is audio-driven, so the
+ * character lip-syncs to that voiceover; without it, the still is brought to
+ * life with natural motion. Both URLs must be publicly reachable.
+ */
+export async function generateCharacterVideo(args: {
+  prompt: string;
+  imageUrl: string;
+  audioUrl?: string | null;
+  aspect: AspectRatio;
+  seed: number;
+  durationSec: number;
+}): Promise<{ data: Buffer; contentType: string; provider: VideoProvider; model: string }> {
+  const lipsync = Boolean(args.audioUrl);
+  return requestPollinationsVideo(args.prompt, {
+    model: lipsync ? lipsyncModel() : imageToVideoModel(),
+    duration: String(Math.max(2, Math.min(15, Math.ceil(args.durationSec)))),
+    aspectRatio: args.aspect,
+    seed: String(args.seed),
+    image: args.imageUrl,
+    ...(lipsync && args.audioUrl ? { reference_audios: args.audioUrl } : {}),
+  });
+}
+
+/**
+ * Providers fetch reference media themselves, so stored references must be
+ * absolute public URLs. `origin` is the public site URL (PUBLIC_APP_URL or the
+ * incoming request's origin).
+ */
+export function toPublicMediaUrl(reference: string, origin: string): string {
+  if (/^https:\/\//i.test(reference)) return reference;
+  if (reference.startsWith("data:")) {
+    throw new Error(
+      "This media only lives inside the project. Connect Vercel Blob or a Postgres database so the AI service can fetch it.",
+    );
+  }
+  if (reference.startsWith("/")) {
+    const base = origin.replace(/\/$/, "");
+    if (/^https?:\/\/(localhost|127\.|0\.0\.0\.0|\[::1\])/i.test(base)) {
+      throw new Error(
+        "The AI service cannot reach localhost. Deploy the site, set PUBLIC_APP_URL to its public address, or connect Vercel Blob.",
+      );
+    }
+    return `${base}${reference}`;
+  }
+  if (/^http:\/\//i.test(reference)) return reference;
+  throw new Error("Unsupported media reference");
 }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { chatJSON, textProvider } from "./ai";
+import { stickThumbDataUrl, type StickTheme } from "./stickman";
 import { defaultMusicForTone } from "./music";
 import {
   hydrateSceneMedia,
@@ -535,6 +536,10 @@ export type GenerateScriptOptions = {
   title?: string;
   visualMode?: VisualMode;
   aiStyle?: AiStyleId;
+  stickTheme?: StickTheme;
+  progressBar?: boolean;
+  punchZoom?: boolean;
+  sceneSfx?: boolean;
 };
 
 /**
@@ -803,17 +808,39 @@ export async function generateScript(
 ): Promise<VideoScript> {
   const script = (await llmGenerate(options)) ?? (await localGenerate(options));
   const topic = cleanTopic(options.prompt);
+  const visualMode = options.visualMode ?? script.options?.visualMode ?? "stock";
+  const stickTheme = options.stickTheme ?? "whiteboard";
   return {
     ...script,
-    scenes: script.scenes.map((scene) => ({
-      ...scene,
-      aiPrompt: scene.aiPrompt?.trim() || defaultVisualPrompt(scene, topic),
-    })),
+    scenes: script.scenes.map((scene, index) => {
+      const withPrompt = {
+        ...scene,
+        aiPrompt: scene.aiPrompt?.trim() || defaultVisualPrompt(scene, topic),
+      };
+      if (visualMode !== "stickman") return withPrompt;
+      // Built-in stick-figure animation: free, offline, lip-synced at render.
+      return {
+        ...withPrompt,
+        mediaSource: "stickman" as const,
+        mediaType: "video" as const,
+        mediaUrl: null,
+        mediaThumb: stickThumbDataUrl(scene.narration, index, stickTheme),
+        mediaId: `stickman-${index + 1}`,
+        mediaTitle: "Stickman animation",
+        mediaCreator: "Built-in animation engine",
+        mediaProvider: "stickman",
+        mediaLocked: true,
+      };
+    }),
     options: {
       ...script.options,
-      visualMode: options.visualMode ?? script.options?.visualMode ?? "stock",
+      visualMode,
       aiStyle: options.aiStyle ?? script.options?.aiStyle ?? "cinematic",
       scriptEngine: script.options?.scriptEngine ?? "built-in",
+      stickTheme,
+      progressBar: options.progressBar ?? true,
+      punchZoom: options.punchZoom ?? true,
+      sceneSfx: options.sceneSfx ?? true,
     },
   };
 }

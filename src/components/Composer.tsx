@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AspectGlyph, AudioMeter } from "@/components/BrandMark";
 import { saveLocalProject } from "@/lib/client-store";
+import { STICK_THEMES, type StickTheme } from "@/lib/stickman";
 import { MUSIC_TRACKS } from "@/lib/music";
 import {
   ASPECT_ORDER,
@@ -114,6 +115,7 @@ export default function Composer() {
     useState<PeopleRepresentation>("all");
   const [visualMode, setVisualMode] = useState<VisualMode>("stock");
   const [aiStyle, setAiStyle] = useState<AiStyleId>("cinematic");
+  const [stickTheme, setStickTheme] = useState<StickTheme>("whiteboard");
   const [duration, setDuration] = useState<number>(30);
   const [loadingMode, setLoadingMode] = useState<"render" | "draft" | null>(null);
   const [auditioning, setAuditioning] = useState(false);
@@ -215,6 +217,7 @@ export default function Composer() {
           duration,
           visualMode,
           aiStyle,
+          stickTheme,
         }),
       });
       const raw = await response.text();
@@ -539,7 +542,9 @@ export default function Composer() {
             <span className="font-tech text-[10px] text-ash">
               {visualMode === "ai-video"
                 ? "A text-to-video clip generated for every scene"
-                : visualMode === "ai-image"
+                : visualMode === "stickman"
+                  ? "Free animated stick figure, lip-synced to the voiceover"
+                  : visualMode === "ai-image"
                   ? "AI images for every scene, animated with camera moves"
                   : "Real stock video matched to every line"}
             </span>
@@ -551,6 +556,7 @@ export default function Composer() {
                   ["stock", "Stock video"],
                   ["ai-video", "AI video"],
                   ["ai-image", "AI images"],
+                  ["stickman", "Stickman"],
                 ] as const
               ).map(([id, label]) => {
                 const active = visualMode === id;
@@ -572,7 +578,20 @@ export default function Composer() {
                 );
               })}
             </div>
-            {visualMode !== "stock" ? (
+            {visualMode === "stickman" ? (
+              <select
+                aria-label="Stickman theme"
+                value={stickTheme}
+                onChange={(event) => setStickTheme(event.target.value as StickTheme)}
+                className="rounded-[3px] border border-line bg-canvas px-2.5 py-1 text-xs text-paper outline-none focus:border-amber-cue"
+              >
+                {(Object.keys(STICK_THEMES) as StickTheme[]).map((id) => (
+                  <option key={id} value={id} className="bg-panel">
+                    {STICK_THEMES[id]}
+                  </option>
+                ))}
+              </select>
+            ) : visualMode !== "stock" ? (
               <select
                 aria-label="AI art style"
                 value={aiStyle}

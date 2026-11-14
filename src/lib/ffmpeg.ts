@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -108,4 +108,76 @@ export async function probeDuration(file: string): Promise<number> {
       },
     );
   });
+}
+
+/**
+ * Run FFmpeg with raw RGBA frames streamed to stdin (used by the stickman
+ * animation engine). Respects pipe backpressure so memory stays flat.
+ */
+export async function runFfmpegFrames(
+  args: string[],
+  frameCount: number,
+  renderFrame: (index: number) => Uint8Array,
+): Promise<void> {
+  const fontconfig = ensureFontconfigPath();
+  const env = fontconfig ? { ...process.env, FONTCONFIG_FILE: fontconfig } : process.env;
+  const child = spawn(FFMPEG_BIN, args, { env, stdio: ["pipe", "ignore", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr = (stderr + chunk.toString()).slice(-4000);
+  });
+  const exited = new Promise<number>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve(code ?? 1));
+  });
+  // A broken pipe (FFmpeg exited early) is reported via the exit code below.
+  child.stdin.on("error", () => undefined);
+
+  for (let i = 0; i < frameCount; i += 1) {
+    if (child.exitCode !== null) break;
+    const ok = child.stdin.write(Buffer.from(renderFrame(i)));
+    if (!ok) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          child.stdin.off("drain", done);
+          child.off("close", done);
+          resolve();
+        };
+        child.stdin.once("drain", done);
+        child.once("close", done);
+      });
+    }
+  }
+  child.stdin.end();
+  const code = await exited;
+  if (code !== 0) {
+    throw new Error(`FFmpeg failed while encoding animation: ${stderr.split("\n").slice(-4).join(" ").trim()}`);
+  }
+}
+
+/**
+ * Loudness of an audio file sampled `fps` times per second (RMS in dBFS).
+ * Drives audio-synced mouth movement for the stickman engine.
+ */
+export async function audioLoudnessPerFrame(file: string, fps = 30): Promise<number[]> {
+  const rate = 16000;
+  const samplesPerFrame = Math.round(rate / fps);
+  const stderr = await runFfmpeg([
+    "-hide_banner",
+    "-nostats",
+    "-i",
+    file,
+    "-af",
+    `aresample=${rate},aformat=channel_layouts=mono,asetnsamples=n=${samplesPerFrame}:p=0,astats=metadata=1:reset=1,ametadata=mode=print:key=lavfi.astats.Overall.RMS_level`,
+    "-f",
+    "null",
+    "-",
+  ]);
+  const values: number[] = [];
+  const re = /lavfi\.astats\.Overall\.RMS_level=(-?inf|-?[0-9.]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(stderr)) !== null) {
+    values.push(match[1].includes("inf") ? -120 : Number(match[1]));
+  }
+  return values;
 }

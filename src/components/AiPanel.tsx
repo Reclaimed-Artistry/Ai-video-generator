@@ -5,6 +5,9 @@ import {
   Clapperboard,
   ImagePlus,
   Loader2,
+  Mic,
+  PersonStanding,
+  Upload,
   RefreshCw,
   Sparkles,
   Square,
@@ -21,6 +24,13 @@ import {
   type AiStatus,
   type GenerateIntent,
 } from "@/lib/ai-client";
+import {
+  STICK_ACTIONS,
+  STICK_THEMES,
+  stickThumbDataUrl,
+  type StickAction,
+  type StickTheme,
+} from "@/lib/stickman";
 import {
   AI_MOTIONS,
   AI_STYLE_ORDER,
@@ -41,7 +51,10 @@ type Props = {
   onRevertToStock: (sceneId: string) => void;
   onRewriteScene: (sceneId: string, instruction: string) => Promise<string | null>;
   onSelectScene: (sceneId: string) => void;
+  onUpdateOptions: (patch: Partial<NonNullable<Project["script"]["options"]>>) => void;
 };
+
+type PanelKind = AiKind | "stickman";
 
 type GenerateOptions = {
   kind: AiKind;
@@ -73,14 +86,22 @@ export default function AiPanel({
   onRevertToStock,
   onRewriteScene,
   onSelectScene,
+  onUpdateOptions,
 }: Props) {
   const scenes = project.script.scenes;
   const defaultStyle: AiStyleId = project.script.options?.aiStyle ?? "cinematic";
 
   const [status, setStatus] = useState<AiStatus | null>(null);
-  const [kind, setKind] = useState<AiKind>(
-    aiKindForMode(project.script.options?.visualMode) ?? "video",
+  const [kind, setKind] = useState<PanelKind>(
+    project.script.options?.visualMode === "stickman"
+      ? "stickman"
+      : aiKindForMode(project.script.options?.visualMode) ?? "video",
   );
+  const stickTheme: StickTheme = project.script.options?.stickTheme ?? "whiteboard";
+  const [stickAction, setStickAction] = useState<StickAction | "auto">("auto");
+  const [characterUrl, setCharacterUrl] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [animating, setAnimating] = useState<"motion" | "lipsync" | null>(null);
   const [prompt, setPrompt] = useState(activeScene?.aiPrompt ?? "");
   const [style, setStyle] = useState<AiStyleId>(activeScene?.aiStyle ?? defaultStyle);
   const [motion, setMotion] = useState<AiMotion>(
@@ -217,6 +238,129 @@ export default function AiPanel({
     [generateFor],
   );
 
+  const applyStickman = useCallback(
+    (scene: Scene, action: StickAction | "auto") => {
+      const index = scenes.findIndex((s) => s.id === scene.id);
+      onApplyVisual(scene.id, {
+        mediaSource: "stickman",
+        mediaType: "video",
+        mediaUrl: null,
+        mediaThumb: stickThumbDataUrl(scene.narration, index, stickTheme, action === "auto" ? null : action),
+        mediaId: `stickman-${index + 1}`,
+        mediaTitle: "Stickman animation",
+        mediaCreator: "Built-in animation engine",
+        mediaProvider: "stickman",
+        mediaLocked: true,
+        aiLipsync: null,
+        stickAction: action === "auto" ? null : action,
+      });
+    },
+    [scenes, stickTheme, onApplyVisual],
+  );
+
+  const applyStickmanAll = useCallback(() => {
+    scenes.forEach((scene) => applyStickman(scene, "auto"));
+    setNotice("Every scene now uses the built-in stickman animation (lip-synced to the voiceover at render).");
+  }, [scenes, applyStickman]);
+
+  async function uploadCharacter(file: File) {
+    setUploading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/media/upload?projectId=${encodeURIComponent(project.id)}`, {
+        method: "POST",
+        headers: { "content-type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      const data = (await response.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (!response.ok || !data.url) throw new Error(data.error ?? "Upload failed");
+      setCharacterUrl(data.url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const animateCharacter = useCallback(
+    async (scene: Scene, mode: "motion" | "lipsync", imageOverride?: string | null) => {
+      const imageUrl =
+        imageOverride ??
+        characterUrl ??
+        (scene.mediaSource === "ai" && scene.mediaType !== "video" ? scene.mediaUrl : null);
+      if (!imageUrl) {
+        setError("Upload a character image or generate an AI image for this scene first.");
+        return;
+      }
+      singleAbort.current?.abort();
+      const ctrl = new AbortController();
+      singleAbort.current = ctrl;
+      setAnimating(mode);
+      setBusySceneId(scene.id);
+      setBusyKind("video");
+      setError(null);
+      try {
+        const clip = await withRetry(
+          async () => {
+            const response = await fetch("/api/ai/animate", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              signal: ctrl.signal,
+              body: JSON.stringify({
+                mode,
+                imageUrl,
+                prompt: prompt.trim() || scene.aiPrompt || "",
+                aspect: project.aspect,
+                projectId: project.id,
+                narration: scene.narration,
+                voice: project.voice,
+                language: project.language,
+              }),
+            });
+            const data = (await response.json().catch(() => ({}))) as {
+              url?: string;
+              thumbUrl?: string | null;
+              seed?: number;
+              model?: string;
+              error?: string;
+              retryAfter?: number;
+            };
+            if (response.status === 429) {
+              const { RateLimitError } = await import("@/lib/ai-client");
+              throw new RateLimitError(data.error ?? "The video service is busy.", data.retryAfter ?? 30);
+            }
+            if (!response.ok || !data.url) throw new Error(data.error ?? "Animation failed");
+            return data as { url: string; thumbUrl?: string | null; seed?: number; model?: string };
+          },
+          setWaitSeconds,
+          ctrl.signal,
+        );
+        onApplyVisual(scene.id, {
+          mediaSource: "ai",
+          mediaType: "video",
+          mediaUrl: clip.url,
+          mediaThumb: clip.thumbUrl ?? imageUrl,
+          mediaId: `ai-${mode}-${clip.seed ?? 0}`,
+          mediaTitle: `${mode === "lipsync" ? "Talking character" : "Animated image"} · ${shortModel(clip.model ?? "")}`,
+          mediaCreator: "Pollinations",
+          mediaProvider: "ai",
+          mediaLocked: true,
+          mediaSpeed: null,
+          mediaStart: null,
+          aiLipsync: mode === "lipsync",
+          aiSeed: clip.seed ?? null,
+        });
+      } catch (err) {
+        if (!ctrl.signal.aborted) setError(err instanceof Error ? err.message : "Animation failed");
+      } finally {
+        setAnimating(null);
+        setBusySceneId(null);
+        setWaitSeconds(0);
+      }
+    },
+    [characterUrl, prompt, project.aspect, project.id, project.voice, project.language, onApplyVisual],
+  );
+
   const runBatch = useCallback(
     async (onlyMissing: boolean, batchKind: AiKind, promptOverride?: string | null) => {
       const targets = scenes.filter((s) => !onlyMissing || s.mediaSource !== "ai");
@@ -262,9 +406,30 @@ export default function AiPanel({
   const intentHandler = useRef<(intent: GenerateIntent) => void>(() => undefined);
   useEffect(() => {
     intentHandler.current = (intent: GenerateIntent) => {
-      setKind(intent.kind);
+      if (intent.kind === "stickman") {
+        setKind("stickman");
+        if (intent.target === "all") {
+          applyStickmanAll();
+        } else {
+          const target = typeof intent.target === "number" ? scenes[intent.target] : activeScene;
+          if (target) {
+            onSelectScene(target.id);
+            applyStickman(target, "auto");
+          }
+        }
+        return;
+      }
+      if (intent.kind === "lipsync") {
+        const target = typeof intent.target === "number" ? scenes[intent.target] : activeScene;
+        if (!target) return;
+        onSelectScene(target.id);
+        void animateCharacter(target, "lipsync");
+        return;
+      }
+      const genKind: AiKind = intent.kind;
+      setKind(genKind);
       if (intent.target === "all") {
-        void runBatch(false, intent.kind, intent.prompt);
+        void runBatch(false, genKind, intent.prompt);
         return;
       }
       const scene =
@@ -278,7 +443,7 @@ export default function AiPanel({
       setPrompt(scenePrompt);
       const index = scenes.findIndex((s) => s.id === scene.id);
       void generateSingle(scene, {
-        kind: intent.kind,
+        kind: genKind,
         prompt: scenePrompt,
         style: scene.aiStyle ?? defaultStyle,
         motion: scene.aiMotion ?? MOTION_ORDER[index % MOTION_ORDER.length],
@@ -369,12 +534,13 @@ export default function AiPanel({
       <div
         role="radiogroup"
         aria-label="What to generate"
-        className="grid grid-cols-2 rounded-[3px] border border-line bg-canvas p-0.5"
+        className="grid grid-cols-3 rounded-[3px] border border-line bg-canvas p-0.5"
       >
         {(
           [
             ["video", "AI video", Clapperboard],
             ["image", "AI image", ImagePlus],
+            ["stickman", "Stickman", PersonStanding],
           ] as const
         ).map(([id, label, Icon]) => {
           const active = kind === id;
@@ -410,7 +576,15 @@ export default function AiPanel({
               Scene {String(activeIndex + 1).padStart(2, "0")}
             </h3>
             <span className="font-tech text-[10px] text-stone-ink">
-              {activeIsAiVideo ? "AI video" : activeIsAiImage ? "AI image" : "Stock video"}
+              {activeScene.mediaSource === "stickman"
+                ? "Stickman"
+                : activeScene.aiLipsync
+                  ? "Talking character"
+                  : activeIsAiVideo
+                    ? "AI video"
+                    : activeIsAiImage
+                      ? "AI image"
+                      : "Stock video"}
             </span>
           </div>
 
@@ -440,6 +614,58 @@ export default function AiPanel({
             </div>
           ) : null}
 
+          {kind === "stickman" ? (
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="font-tech mb-1 block text-[9px] uppercase tracking-[0.12em] text-ash">
+                    Action
+                  </span>
+                  <select
+                    value={stickAction}
+                    onChange={(event) => setStickAction(event.target.value as StickAction | "auto")}
+                    className="w-full rounded-[3px] border border-line bg-canvas px-2 py-1.5 text-xs text-paper outline-none focus:border-amber-cue"
+                  >
+                    <option value="auto" className="bg-panel">Auto (from narration)</option>
+                    {(Object.keys(STICK_ACTIONS) as StickAction[]).map((id) => (
+                      <option key={id} value={id} className="bg-panel">
+                        {STICK_ACTIONS[id]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="font-tech mb-1 block text-[9px] uppercase tracking-[0.12em] text-ash">
+                    Theme (all scenes)
+                  </span>
+                  <select
+                    value={stickTheme}
+                    onChange={(event) => onUpdateOptions({ stickTheme: event.target.value as StickTheme })}
+                    className="w-full rounded-[3px] border border-line bg-canvas px-2 py-1.5 text-xs text-paper outline-none focus:border-amber-cue"
+                  >
+                    {(Object.keys(STICK_THEMES) as StickTheme[]).map((id) => (
+                      <option key={id} value={id} className="bg-panel">
+                        {STICK_THEMES[id]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <button
+                type="button"
+                onClick={() => applyStickman(activeScene, stickAction)}
+                className="inline-flex items-center gap-1.5 rounded-[3px] bg-amber-cue px-3 py-1.5 font-tech text-[11px] font-semibold uppercase tracking-[0.06em] text-[#14110A] transition-colors hover:bg-amber-hover"
+              >
+                <PersonStanding className="h-3 w-3" />
+                <span>{activeScene.mediaSource === "stickman" ? "Update stickman" : "Use stickman animation"}</span>
+              </button>
+              <p className="font-tech text-[10px] leading-relaxed text-ash">
+                Free and instant. The stick figure gestures, blinks and moves smoothly, and its mouth is
+                lip-synced to the real voiceover when the video renders.
+              </p>
+            </div>
+          ) : (
+            <>
           <textarea
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
@@ -498,7 +724,7 @@ export default function AiPanel({
               type="button"
               onClick={() =>
                 void generateSingle(activeScene, {
-                  kind,
+                  kind: kind as AiKind,
                   prompt: prompt.trim() || activeScene.aiPrompt || activeScene.narration,
                   style,
                   motion,
@@ -537,7 +763,7 @@ export default function AiPanel({
                 <span>Cancel</span>
               </button>
             ) : null}
-            {activeScene.mediaSource === "ai" ? (
+            {activeScene.mediaSource === "ai" || activeScene.mediaSource === "stickman" ? (
               <button
                 type="button"
                 onClick={() => onRevertToStock(activeScene.id)}
@@ -549,6 +775,74 @@ export default function AiPanel({
               </button>
             ) : null}
           </div>
+            </>
+          )}
+        </section>
+      ) : null}
+
+      {/* Character: image-to-video + lip-sync */}
+      {activeScene && kind !== "stickman" ? (
+        <section className="space-y-2 border-t border-line pt-3">
+          <h3 className="font-tech text-[10px] uppercase tracking-[0.14em] text-ash">
+            Character · image-to-video &amp; lip-sync
+          </h3>
+          <p className="text-[11px] leading-relaxed text-stone-ink">
+            Bring a character image to life with smooth movement, or make it speak this scene&apos;s
+            narration with lip-sync.
+          </p>
+          <div className="flex items-center gap-2">
+            <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-[3px] border border-line bg-black">
+              {characterUrl ||
+              (activeScene.mediaSource === "ai" && activeScene.mediaType !== "video" && activeScene.mediaUrl) ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={(characterUrl ?? activeScene.mediaUrl) as string}
+                  alt="Character"
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <span className="grid h-full place-items-center font-tech text-[9px] text-ash">none</span>
+              )}
+            </div>
+            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-[3px] border border-line bg-inset px-2.5 py-1.5 font-tech text-[11px] text-stone-ink transition-colors hover:border-line-strong hover:text-paper">
+              {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+              <span>{uploading ? "Uploading…" : "Upload character"}</span>
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="sr-only"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void uploadCharacter(file);
+                  event.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => void animateCharacter(activeScene, "motion")}
+              disabled={Boolean(busySceneId)}
+              className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-elevated px-3 py-1.5 font-tech text-[11px] text-paper transition-colors hover:border-amber-cue hover:text-amber-cue disabled:opacity-45"
+            >
+              {animating === "motion" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Clapperboard className="h-3 w-3" />}
+              <span>{animating === "motion" ? busyLabel : "Animate image"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void animateCharacter(activeScene, "lipsync")}
+              disabled={Boolean(busySceneId) || !activeScene.narration.trim()}
+              className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-elevated px-3 py-1.5 font-tech text-[11px] text-paper transition-colors hover:border-amber-cue hover:text-amber-cue disabled:opacity-45"
+            >
+              {animating === "lipsync" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Mic className="h-3 w-3" />}
+              <span>{animating === "lipsync" ? busyLabel : "Make it talk (lip-sync)"}</span>
+            </button>
+          </div>
+          <p className="font-tech text-[10px] leading-relaxed text-ash">
+            {status?.characterLabel ?? "…"}
+            {videoReady ? " · Needs a public site URL (deploy, or set PUBLIC_APP_URL / Vercel Blob)." : ""}
+          </p>
         </section>
       ) : null}
 
@@ -588,21 +882,23 @@ export default function AiPanel({
           <div className="flex flex-wrap gap-1.5">
             <button
               type="button"
-              onClick={() => void runBatch(true, kind)}
-              disabled={Boolean(busySceneId) || aiCount === scenes.length}
+              onClick={() => (kind === "stickman" ? applyStickmanAll() : void runBatch(true, kind))}
+              disabled={Boolean(busySceneId) || (kind !== "stickman" && aiCount === scenes.length)}
               className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-elevated px-3 py-1.5 font-tech text-[11px] text-paper transition-colors hover:border-amber-cue hover:text-amber-cue disabled:opacity-45"
             >
               <Sparkles className="h-3 w-3" />
               <span>
-                {aiCount === 0
-                  ? `Generate ${kind === "video" ? "videos" : "images"} for every scene`
-                  : `Fill remaining scenes with ${kind === "video" ? "video" : "images"}`}
+                {kind === "stickman"
+                  ? "Use stickman for every scene"
+                  : aiCount === 0
+                    ? `Generate ${kind === "video" ? "videos" : "images"} for every scene`
+                    : `Fill remaining scenes with ${kind === "video" ? "video" : "images"}`}
               </span>
             </button>
             {aiCount > 0 ? (
               <button
                 type="button"
-                onClick={() => void runBatch(false, kind)}
+                onClick={() => (kind === "stickman" ? applyStickmanAll() : void runBatch(false, kind))}
                 disabled={Boolean(busySceneId)}
                 className="inline-flex items-center gap-1 rounded-[3px] border border-line bg-inset px-2.5 py-1.5 font-tech text-[11px] text-stone-ink transition-colors hover:text-paper disabled:opacity-45"
               >

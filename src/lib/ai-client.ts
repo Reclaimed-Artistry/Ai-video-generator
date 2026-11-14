@@ -13,6 +13,7 @@ export type AiStatus = {
   image: string;
   video: "pollinations" | "none";
   videoLabel: string;
+  characterLabel: string;
   imageMode: "server";
   freeTier: boolean;
   textLabel: string;
@@ -168,7 +169,8 @@ export function generateWithRetry(
 // ─── Natural-language generation requests ("generate a video of …") ─────────
 
 export type GenerateIntent = {
-  kind: AiKind;
+  /** "stickman" = built-in animation; "lipsync" = make the scene character talk. */
+  kind: AiKind | "stickman" | "lipsync";
   /** "active" scene, "all" scenes, or a zero-based scene index. */
   target: "active" | "all" | number;
   prompt: string | null;
@@ -188,8 +190,25 @@ const INTENT_RE = new RegExp(
  * "make AI images for every scene". Ordinary edits ("make the video shorter")
  * do not match and still go to the edit-command engine.
  */
+function intentTarget(text: string): GenerateIntent["target"] {
+  if (/\b(?:all|every|each)\s+(?:of\s+the\s+)?scenes?\b/i.test(text)) return "all";
+  const sceneNum = /\bscene\s*#?\s*(\d{1,2})\b/i.exec(text);
+  return sceneNum ? Math.max(0, Number(sceneNum[1]) - 1) : "active";
+}
+
 export function parseGenerateIntent(input: string): GenerateIntent | null {
   const text = input.trim();
+  // "make the character talk", "lip-sync scene 2"
+  if (/\blip[\s-]?sync\b|\bmake\s+(?:it|him|her|them|the\s+(?:character|person|avatar))\s+(?:talk|speak)\b/i.test(text)) {
+    return { kind: "lipsync", target: intentTarget(text), prompt: null };
+  }
+  // "use stickman animation for every scene", "make a stick figure video of …"
+  if (
+    /\bstick\s?(?:man|men|figures?)\b/i.test(text) &&
+    /\b(?:use|switch|turn|make|generate|create|animate|convert|change)\b/i.test(text)
+  ) {
+    return { kind: "stickman", target: intentTarget(text), prompt: null };
+  }
   const match = INTENT_RE.exec(text);
   if (!match) return null;
   const noun = match[1].toLowerCase();

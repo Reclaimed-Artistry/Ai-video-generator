@@ -149,6 +149,8 @@ export async function deleteProjectArtifacts(
 const MAX_INLINE_IMAGE_BYTES = 1_500_000;
 
 function mediaExtension(contentType: string): string {
+  if (contentType.includes("audio/mpeg") || contentType.includes("mp3")) return "mp3";
+  if (contentType.includes("wav")) return "wav";
   if (contentType.includes("mp4")) return "mp4";
   if (contentType.includes("webm")) return "webm";
   if (contentType.includes("png")) return "png";
@@ -215,10 +217,14 @@ export async function saveGeneratedMedia(
     return `/api/files/${key}`;
   }
 
-  if (data.length > MAX_INLINE_IMAGE_BYTES || contentType.startsWith("video/")) {
+  if (
+    data.length > MAX_INLINE_IMAGE_BYTES ||
+    contentType.startsWith("video/") ||
+    contentType.startsWith("audio/")
+  ) {
     throw new Error(
-      contentType.startsWith("video/")
-        ? "AI video clips need storage on Vercel. Connect Vercel Blob or a Postgres database (Storage tab), then redeploy."
+      contentType.startsWith("video/") || contentType.startsWith("audio/")
+        ? "AI video and voice clips need storage on Vercel. Connect Vercel Blob or a Postgres database (Storage tab), then redeploy."
         : "This image is too large to keep without storage. Connect Vercel Blob or a Postgres database.",
     );
   }

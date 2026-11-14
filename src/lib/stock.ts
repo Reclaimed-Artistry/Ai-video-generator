@@ -658,8 +658,9 @@ export function hydrateSceneMedia(
   scene: Scene,
   peopleRepresentation: PeopleRepresentation = "all",
 ): Scene {
-  // Generated (AI) visuals are owned by the scene; never swap them for stock.
-  if (scene.mediaSource === "ai" && scene.mediaUrl) {
+  // Generated (AI) visuals and stickman animation are owned by the scene;
+  // never swap them for stock footage.
+  if ((scene.mediaSource === "ai" && scene.mediaUrl) || scene.mediaSource === "stickman") {
     return { ...scene, mediaLocked: true };
   }
 

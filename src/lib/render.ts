@@ -2,7 +2,22 @@ import fs from "node:fs";
 import path from "node:path";
 import { once } from "node:events";
 import { finished } from "node:stream/promises";
-import { getFontsDir, probeDuration, runFfmpeg } from "./ffmpeg";
+import {
+  audioLoudnessPerFrame,
+  getFontsDir,
+  probeDuration,
+  runFfmpeg,
+  runFfmpegFrames,
+} from "./ffmpeg";
+import {
+  chooseStickPerformance,
+  estimatedMouth,
+  mouthFromLoudness,
+  rasterizeStickFrame,
+  stickBackground,
+  stickFrameShapes,
+  type StickTheme,
+} from "./stickman";
 import { defaultMusicForTone, getMusicTrack } from "./music";
 import { getProject, updateProject } from "./projects";
 import {
@@ -401,6 +416,109 @@ async function download(url: string, destination: string): Promise<void> {
   }
 }
 
+export type SceneRenderExtras = {
+  audioFile: string | null;
+  stickTheme: StickTheme;
+  progressBar: boolean;
+  punchZoom: boolean;
+};
+
+/**
+ * Story-style segmented progress bar: finished scenes full, the current one
+ * filling in small timed steps (drawbox widths are not animatable per frame).
+ */
+function progressBarFilters(
+  index: number,
+  total: number,
+  width: number,
+  height: number,
+  duration: number,
+): string[] {
+  if (total < 2) return [];
+  const margin = Math.round(width * 0.04);
+  const gap = Math.max(3, Math.round(width * 0.006));
+  const barH = Math.max(3, Math.round(height * 0.007));
+  const y = Math.round(height * 0.025);
+  const segW = (width - margin * 2 - gap * (total - 1)) / total;
+  const filters: string[] = [];
+  for (let i = 0; i < total; i += 1) {
+    const x = Math.round(margin + i * (segW + gap));
+    const w = Math.max(2, Math.round(segW));
+    // Dark track + brand-amber fill: readable on whiteboard, dark themes and footage.
+    const color = i < index ? "0xE5A93C@0.98" : "black@0.28";
+    filters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${barH}:color=${color}:t=fill`);
+  }
+  const x0 = Math.round(margin + index * (segW + gap));
+  const steps = 30;
+  for (let step = 1; step <= steps; step += 1) {
+    const start = ((step - 1) / steps) * duration;
+    const end = step === steps ? duration + 1 : (step / steps) * duration;
+    const w = Math.max(2, Math.round((segW * step) / steps));
+    filters.push(
+      `drawbox=x=${x0}:y=${y}:w=${w}:h=${barH}:color=0xE5A93C@0.98:t=fill:enable='between(t,${start.toFixed(3)},${end.toFixed(3)})'`,
+    );
+  }
+  return filters;
+}
+
+/** Render a stickman scene: frames are drawn in-process and streamed to FFmpeg. */
+async function renderStickmanScene(
+  scene: Scene,
+  index: number,
+  output: string,
+  width: number,
+  height: number,
+  duration: number,
+  extras: SceneRenderExtras,
+  finishing: string[],
+): Promise<void> {
+  const perf = chooseStickPerformance(scene.narration || scene.caption, index);
+  let mouth = estimatedMouth(scene.narration, duration);
+  if (extras.audioFile && fs.existsSync(/* turbopackIgnore: true */ extras.audioFile)) {
+    const loudness = await audioLoudnessPerFrame(extras.audioFile, 30).catch(() => []);
+    if (loudness.length > 0) mouth = mouthFromLoudness(loudness, 30);
+  }
+  const spec = {
+    width,
+    height,
+    duration,
+    action: scene.stickAction ?? perf.action,
+    expression: perf.expression,
+    theme: extras.stickTheme,
+    seed: index + 1,
+    mouth,
+  };
+  const background = stickBackground(width, height, extras.stickTheme);
+  const frame = new Uint8Array(background.length);
+  const frameCount = Math.max(1, Math.ceil(duration * 30));
+  await runFfmpegFrames(
+    [
+      "-y",
+      "-f", "rawvideo",
+      "-pix_fmt", "rgba",
+      "-s", `${width}x${height}`,
+      "-r", "30",
+      "-i", "pipe:0",
+      "-t", duration.toFixed(3),
+      ...(finishing.length ? ["-vf", finishing.join(",")] : []),
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-crf", "21",
+      "-pix_fmt", "yuv420p",
+      "-r", "30",
+      ...(IS_VERCEL ? ["-threads", "2"] : []),
+      "-an",
+      output,
+    ],
+    frameCount,
+    (i) => {
+      frame.set(background);
+      rasterizeStickFrame(frame, width, height, stickFrameShapes(spec, i / 30));
+      return frame;
+    },
+  );
+}
+
 const MOTION_CYCLE: AiMotion[] = ["push-in", "pan-right", "pull-out", "pan-left"];
 
 function defaultMotion(index: number): AiMotion {
@@ -540,6 +658,7 @@ async function renderSceneVideo(
   topicContext: string,
   peopleRepresentation: PeopleRepresentation,
   usedIds: string[],
+  extras: SceneRenderExtras,
 ): Promise<string> {
   const output = path.join(dir, `scene-${String(index).padStart(2, "0")}.mp4`);
   const captionFile = path.join(dir, `caption-${String(index).padStart(2, "0")}.ass`);
@@ -569,6 +688,26 @@ async function renderSceneVideo(
     captionFilter = escapedFontsDir
       ? `ass=filename=${escapedAss}:fontsdir=${escapedFontsDir}`
       : `ass=${escapedAss}`;
+  }
+
+  const sceneProgress = extras.progressBar
+    ? progressBarFilters(index, totalScenes, width, height, duration)
+    : [];
+
+  if (scene.mediaSource === "stickman") {
+    const finishing: string[] = [];
+    if (scene.transition === "fade" || index === 0) finishing.push("fade=t=in:st=0:d=0.32");
+    if (index === totalScenes - 1 && duration > 1.0) {
+      finishing.push(`fade=t=out:st=${Math.max(0, duration - 0.4).toFixed(2)}:d=0.38`);
+    }
+    finishing.push(...sceneProgress);
+    if (captionFilter) finishing.push(captionFilter);
+    try {
+      await renderStickmanScene(scene, index, output, width, height, duration, extras, finishing);
+    } finally {
+      fs.rmSync(/* turbopackIgnore: true */ captionFile, { force: true });
+    }
+    return output;
   }
 
   const media = await resolveMedia(
@@ -645,7 +784,7 @@ async function renderSceneVideo(
   // AI video clips are short (~5s): ease them into slow motion to fill the
   // scene instead of visibly looping (loops only beyond a 0.6x slowdown).
   const isAiVideo = scene.mediaSource === "ai" && !isImage && chosenUrl === media.url;
-  if (isAiVideo && typeof scene.mediaSpeed !== "number") {
+  if (isAiVideo && !scene.aiLipsync && typeof scene.mediaSpeed !== "number") {
     const clipLength = await probeDuration(mediaFile).catch(() => 0);
     if (clipLength > 0 && clipLength < duration) {
       clipSpeed = Math.max(0.6, clipLength / duration);
@@ -666,9 +805,15 @@ async function renderSceneVideo(
     filters.push(
       `scale=${width}:${height}:force_original_aspect_ratio=increase`,
       `crop=${width}:${height}`,
-      "setsar=1",
-      "fps=30",
     );
+    if (extras.punchZoom && !scene.aiLipsync) {
+      // Slow punch-in (MoneyPrinterTurbo-style zoom) that keeps shots alive.
+      filters.push(
+        `scale=w='trunc(${width}*(1+0.09*t/${Math.max(duration, 0.5).toFixed(2)})/2)*2':h=-2:eval=frame`,
+        `crop=${width}:${height}`,
+      );
+    }
+    filters.push("setsar=1", "fps=30");
   }
 
   const colorGrade = ffmpegColorFilter(scene.mediaFilter);
@@ -684,6 +829,7 @@ async function renderSceneVideo(
     filters.push(`fade=t=out:st=${Math.max(0, duration - 0.4).toFixed(2)}:d=0.38`);
   }
 
+  filters.push(...sceneProgress);
   if (captionFilter) {
     filters.push(captionFilter);
   }
@@ -856,6 +1002,12 @@ async function renderProjectInternal(
       project.prompt || project.title,
       project.script.options?.peopleRepresentation ?? "all",
       usedIds,
+      {
+        audioFile,
+        stickTheme: project.script.options?.stickTheme ?? "whiteboard",
+        progressBar: Boolean(project.script.options?.progressBar),
+        punchZoom: Boolean(project.script.options?.punchZoom),
+      },
     );
     sceneFiles.push(file);
   }
@@ -917,8 +1069,43 @@ async function renderProjectInternal(
     voiceTrack,
   ]);
 
+  // 2b. Optional whoosh on every scene change (synthesised: no audio assets,
+  //     no licensing). Lands just before each cut so it leads into the scene.
+  let voiceWithSfx = voiceTrack;
+  if (project.script.options?.sceneSfx && sceneAudioSpecs.length > 1) {
+    const whoosh = path.join(dir, "whoosh.wav");
+    const sfxTrack = path.join(dir, "voice-sfx.m4a");
+    try {
+      await runFfmpeg([
+        "-y", "-f", "lavfi", "-i", "anoisesrc=d=0.55:c=pink:r=44100:a=0.7",
+        "-af", "highpass=f=350,lowpass=f=6000,afade=t=in:st=0:d=0.24,afade=t=out:st=0.24:d=0.31,volume=2.4",
+        "-ac", "2", whoosh,
+      ]);
+      const cuts: number[] = [];
+      let cursor = 0;
+      for (let i = 0; i < sceneAudioSpecs.length - 1; i += 1) {
+        cursor += sceneAudioSpecs[i].duration;
+        cuts.push(Math.max(0, cursor - 0.28));
+      }
+      const inputs = cuts.flatMap(() => ["-i", whoosh]);
+      const delays = cuts
+        .map((at, i) => `[${i + 1}:a]adelay=${Math.round(at * 1000)}|${Math.round(at * 1000)},volume=0.55[w${i}]`)
+        .join(";");
+      const mixIns = `[0:a]${cuts.map((_, i) => `[w${i}]`).join("")}`;
+      await runFfmpeg([
+        "-y", "-i", voiceTrack, ...inputs,
+        "-filter_complex",
+        `${delays};${mixIns}amix=inputs=${cuts.length + 1}:duration=first:normalize=0,alimiter=limit=0.95[out]`,
+        "-map", "[out]", "-c:a", "aac", "-b:a", "160k", sfxTrack,
+      ]);
+      voiceWithSfx = sfxTrack;
+    } catch (error) {
+      console.warn("Scene SFX skipped:", error instanceof Error ? error.message : error);
+    }
+  }
+
   // 3. Mix optional background music gently ducked underneath the voiceover
-  let finalAudioTrack = voiceTrack;
+  let finalAudioTrack = voiceWithSfx;
   const musicMeta = getMusicTrack(musicTrackId);
   if (musicMeta.url && musicVolume > 0.01) {
     const musicFile = path.join(dir, "music.mp3");
@@ -929,7 +1116,7 @@ async function renderProjectInternal(
       await runFfmpeg([
         "-y",
         "-i",
-        voiceTrack,
+        voiceWithSfx,
         "-stream_loop",
         "-1",
         "-i",

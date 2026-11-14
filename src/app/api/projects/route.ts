@@ -50,6 +50,10 @@ export async function POST(request: Request) {
       peopleRepresentation?: PeopleRepresentation;
       visualMode?: VisualMode;
       aiStyle?: AiStyleId;
+      stickTheme?: "whiteboard" | "chalkboard" | "pop";
+      progressBar?: boolean;
+      punchZoom?: boolean;
+      sceneSfx?: boolean;
     };
 
     const prompt = (body.prompt ?? "").trim();
@@ -74,12 +78,19 @@ export async function POST(request: Request) {
       peopleRepresentation,
       title: body.title,
       visualMode:
-        body.visualMode === "ai-video" || body.visualMode === "ai-image"
+        body.visualMode === "ai-video" ||
+        body.visualMode === "ai-image" ||
+        body.visualMode === "stickman"
           ? body.visualMode
           : body.visualMode === "ai"
             ? "ai-image"
             : "stock",
       aiStyle: body.aiStyle && body.aiStyle in AI_STYLES ? body.aiStyle : undefined,
+      stickTheme:
+        body.stickTheme === "chalkboard" || body.stickTheme === "pop" ? body.stickTheme : "whiteboard",
+      progressBar: typeof body.progressBar === "boolean" ? body.progressBar : undefined,
+      punchZoom: typeof body.punchZoom === "boolean" ? body.punchZoom : undefined,
+      sceneSfx: typeof body.sceneSfx === "boolean" ? body.sceneSfx : undefined,
     });
 
     const project = await createProject({

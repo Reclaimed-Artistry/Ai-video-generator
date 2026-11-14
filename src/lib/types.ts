@@ -1,3 +1,4 @@
+import type { StickAction, StickTheme } from "./stickman";
 export type MediaType = "video" | "photo";
 export type Resolution = "240p" | "360p" | "1080p";
 export type AspectRatio = "16:9" | "9:16" | "1:1";
@@ -148,8 +149,12 @@ export type Scene = {
   mediaSpeed?: number | null; // 0.75x .. 1.5x
   mediaFilter?: MediaFilter | null;
   mediaLocked?: boolean;
-  /** "ai" when the visual is a generated image (rendered with camera motion). */
-  mediaSource?: "stock" | "ai" | null;
+  /** "ai" = generated image/video; "stickman" = built-in stick-figure animation. */
+  mediaSource?: "stock" | "ai" | "stickman" | null;
+  /** Stickman performance for this scene (auto-picked from the narration when unset). */
+  stickAction?: StickAction | null;
+  /** True for audio-driven talking-character clips (never time-stretched). */
+  aiLipsync?: boolean | null;
   /** Text-to-image prompt for this scene (written by the AI script writer). */
   aiPrompt?: string | null;
   aiStyle?: AiStyleId | null;
@@ -173,6 +178,13 @@ export type ProductionOptions = {
   aiStyle?: AiStyleId;
   /** Which engine wrote the script (shown in the studio for transparency). */
   scriptEngine?: string;
+  stickTheme?: StickTheme;
+  /** Story-style segmented progress bar across the top (retention). */
+  progressBar?: boolean;
+  /** Slow punch-in zoom on stock / AI video shots. */
+  punchZoom?: boolean;
+  /** Whoosh sound effect on every scene change. */
+  sceneSfx?: boolean;
 };
 
 export type VideoScript = {
@@ -421,7 +433,7 @@ export const MIN_SCENES = 3;
 // ─── Generative AI ─────────────────────────────────────────────────────────
 
 /** "ai" is the legacy value from before AI video existed (= AI images). */
-export type VisualMode = "stock" | "ai-video" | "ai-image" | "ai";
+export type VisualMode = "stock" | "ai-video" | "ai-image" | "stickman" | "ai";
 export type AiKind = "video" | "image";
 
 export function aiKindForMode(mode: VisualMode | undefined): AiKind | null {
@@ -437,7 +449,9 @@ export type AiStyleId =
   | "3d"
   | "anime"
   | "watercolor"
-  | "product";
+  | "product"
+  | "3d-animation"
+  | "stick-figure";
 
 export const AI_STYLES: Record<AiStyleId, { label: string; suffix: string }> = {
   cinematic: {
@@ -464,6 +478,14 @@ export const AI_STYLES: Record<AiStyleId, { label: string; suffix: string }> = {
     label: "Watercolor",
     suffix: "watercolor painting, loose brush strokes, paper texture, soft washes of color",
   },
+  "3d-animation": {
+    label: "3D animation",
+    suffix: "3D animated feature film still, Pixar-style stylized characters with expressive faces, soft global illumination, vibrant colors, cinematic lighting",
+  },
+  "stick-figure": {
+    label: "Stick figure",
+    suffix: "simple black stick figure doodle on a clean white background, thick hand-drawn lines, minimal flat explainer style",
+  },
   product: {
     label: "Product studio",
     suffix: "premium product photography, seamless studio backdrop, softbox lighting, crisp reflections",
@@ -472,6 +494,8 @@ export const AI_STYLES: Record<AiStyleId, { label: string; suffix: string }> = {
 
 export const AI_STYLE_ORDER: AiStyleId[] = [
   "cinematic",
+  "3d-animation",
+  "stick-figure",
   "documentary",
   "illustration",
   "3d",

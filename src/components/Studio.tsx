@@ -43,6 +43,8 @@ import {
   formatSmpte,
 } from "@/components/BrandMark";
 import AiPanel from "@/components/AiPanel";
+import StickmanPreview from "@/components/StickmanPreview";
+import { STICK_THEMES, type StickTheme } from "@/lib/stickman";
 import { AI_GENERATE_EVENT, parseGenerateIntent } from "@/lib/ai-client";
 import {
   loadLocalVideoBlob,
@@ -840,6 +842,8 @@ export default function Studio({
       mediaCreator: null,
       mediaProvider: null,
       mediaLocked: false,
+      stickAction: null,
+      aiLipsync: null,
     });
     void matchSceneToNarration(sceneId, scene.narration, scene.caption, true);
   }
@@ -1632,7 +1636,18 @@ export default function Studio({
                         : "items-end"
                   } ${monitorFrameClass}`}
                 >
-                  {activeScene?.mediaSource === "ai" &&
+                  {activeScene?.mediaSource === "stickman" ? (
+                    <StickmanPreview
+                      key={`${activeScene.id}-${project.script.options?.stickTheme ?? "whiteboard"}-${activeScene.stickAction ?? "auto"}`}
+                      narration={activeScene.narration}
+                      sceneIndex={activeIndex}
+                      action={activeScene.stickAction}
+                      theme={project.script.options?.stickTheme ?? "whiteboard"}
+                      duration={sceneTimings[activeIndex]?.duration ?? 5}
+                      aspect={project.aspect}
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
+                  ) : activeScene?.mediaSource === "ai" &&
                   activeScene.mediaType !== "video" &&
                   activeScene.mediaUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
@@ -2682,6 +2697,61 @@ export default function Studio({
               <div className="space-y-4">
                 <div>
                   <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
+                    Viral finishing
+                  </span>
+                  <div className="space-y-1.5">
+                    {(
+                      [
+                        ["progressBar", "Progress bar", "Story-style segments across the top keep viewers watching"],
+                        ["punchZoom", "Punch-in zoom", "Slow zoom on every video shot so nothing feels static"],
+                        ["sceneSfx", "Scene whooshes", "A whoosh sound effect on every scene change"],
+                      ] as const
+                    ).map(([key, label, hint]) => {
+                      const on = Boolean(project.script.options?.[key]);
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          role="switch"
+                          aria-checked={on}
+                          onClick={() => updateScriptOptions({ [key]: !on })}
+                          className={`flex w-full items-center justify-between gap-3 rounded-[3px] border px-3 py-2 text-left transition-colors ${
+                            on ? "border-amber-cue/60 bg-elevated" : "border-line bg-inset hover:border-line-strong"
+                          }`}
+                        >
+                          <span>
+                            <span className="block font-tech text-xs font-semibold text-paper">{label}</span>
+                            <span className="block text-[11px] text-stone-ink">{hint}</span>
+                          </span>
+                          <span
+                            className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${on ? "bg-amber-cue" : "bg-line-strong"}`}
+                          >
+                            <span
+                              className={`absolute top-0.5 h-3 w-3 rounded-full bg-canvas transition-all ${on ? "left-3.5" : "left-0.5"}`}
+                            />
+                          </span>
+                        </button>
+                      );
+                    })}
+                    <label className="flex items-center justify-between gap-3 rounded-[3px] border border-line bg-inset px-3 py-2">
+                      <span className="font-tech text-xs font-semibold text-paper">Stickman theme</span>
+                      <select
+                        value={project.script.options?.stickTheme ?? "whiteboard"}
+                        onChange={(event) => updateScriptOptions({ stickTheme: event.target.value as StickTheme })}
+                        className="rounded-[3px] border border-line bg-canvas px-2 py-1 text-xs text-paper outline-none focus:border-amber-cue"
+                      >
+                        {(Object.keys(STICK_THEMES) as StickTheme[]).map((id) => (
+                          <option key={id} value={id} className="bg-panel">
+                            {STICK_THEMES[id]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
                     Subtitle / Caption Mode
                   </span>
                   <div className="space-y-1.5">
@@ -2938,6 +3008,7 @@ export default function Studio({
                   setActiveSceneId(sceneId);
                   setMonitorMode("storyboard");
                 }}
+                onUpdateOptions={updateScriptOptions}
               />
             </div>
           </div>
