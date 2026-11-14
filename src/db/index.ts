@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
@@ -64,6 +65,55 @@ function createPool(): Pool {
   });
 }
 
+/** True when `dir` can be created and written to. */
+function isWritableDir(dir: string): boolean {
+  try {
+    fs.mkdirSync(/* turbopackIgnore: true */ dir, { recursive: true });
+  } catch {
+    return false; // cannot even create it — a read-only application directory
+  }
+
+  const probe = path.join(/* turbopackIgnore: true */ dir, ".write-probe");
+  try {
+    fs.writeFileSync(/* turbopackIgnore: true */ probe, "1");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    // Cleanup is best-effort: failing to remove the probe must never make us
+    // abandon a directory that actually works (that would strand local data).
+    try {
+      fs.rmSync(/* turbopackIgnore: true */ probe, { force: true });
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Picks a data directory PGlite can actually use.
+ *
+ * The project-local `.pglite/` directory is preferred because it survives
+ * restarts in dev and on a mounted volume. Serverless runtimes (Vercel,
+ * Netlify, Cloud Run) ship a read-only application directory, so writing there
+ * fails — and PGlite then throws on first use, which turns every page into a
+ * 500. Falling back to the OS temp directory keeps the embedded database
+ * working (ephemerally) instead of taking the whole app down.
+ */
+function pickPgliteDir(): string {
+  const preferred =
+    process.env.PGLITE_DIR || path.join(/* turbopackIgnore: true */ process.cwd(), ".pglite");
+  if (isWritableDir(preferred)) return preferred;
+
+  const fallback = path.join(
+    /* turbopackIgnore: true */ os.tmpdir(),
+    "reclaimed-artistry-pglite",
+  );
+  if (isWritableDir(fallback)) return fallback;
+
+  return preferred;
+}
+
 /**
  * Zero-setup embedded PostgreSQL (real Postgres compiled to WASM) used when no
  * `DATABASE_URL` is configured, so `npm run dev` works out of the box. Data
@@ -73,14 +123,7 @@ function createPgliteClient(): PgliteLike {
   const { PGlite } = require("@electric-sql/pglite") as {
     PGlite: new (dataDir?: string) => PgliteLike;
   };
-  const dataDir =
-    process.env.PGLITE_DIR || path.join(/* turbopackIgnore: true */ process.cwd(), ".pglite");
-  try {
-    fs.mkdirSync(/* turbopackIgnore: true */ dataDir, { recursive: true });
-  } catch {
-    // Best effort — PGlite also supports in-memory when a directory is unavailable.
-  }
-  return new PGlite(dataDir);
+  return new PGlite(pickPgliteDir());
 }
 
 function getPgliteClient(): PgliteLike {

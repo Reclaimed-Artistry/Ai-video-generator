@@ -1,6 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { db, ensureSchema } from "@/db";
 import { brandKits, type BrandKitRow } from "@/db/schema";
+import { isUuidLike } from "./id";
 import { resolveMediaUrl } from "./media-url";
 import type { BrandFontId, BrandKit } from "./types";
 
@@ -52,6 +53,7 @@ export async function listBrandKits(): Promise<BrandKit[]> {
 }
 
 export async function getBrandKit(id: string): Promise<BrandKit | null> {
+  if (!isUuidLike(id)) return null;
   await ensureSchema();
   const rows = await db.select().from(brandKits).where(eq(brandKits.id, id)).limit(1);
   return rows[0] ? toBrandKit(rows[0]) : null;

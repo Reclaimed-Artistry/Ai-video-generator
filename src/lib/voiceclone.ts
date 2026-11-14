@@ -1,6 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { db, ensureSchema } from "@/db";
 import { clonedVoices, type ClonedVoiceRow } from "@/db/schema";
+import { isUuidLike } from "./id";
 import { getVoice } from "./voices";
 import type { ClonedVoice } from "./types";
 
@@ -227,6 +228,7 @@ export async function createClonedVoice(
 }
 
 export async function deleteClonedVoice(id: string): Promise<ClonedVoice | null> {
+  if (!isUuidLike(id)) return null;
   await ensureSchema();
   const deleted = await db.delete(clonedVoices).where(eq(clonedVoices.id, id)).returning();
   if (deleted.length === 0) return null;

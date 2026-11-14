@@ -2,6 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { db, ensureSchema } from "@/db";
 import { projects, type ProjectRow } from "@/db/schema";
 import { getBrandKit, getDefaultBrandKit } from "./brandkit";
+import { isUuidLike } from "./id";
 import { defaultMusicForTone } from "./music";
 import { hydrateSceneMedia } from "./stock";
 import { deleteProjectArtifacts } from "./storage";
@@ -53,6 +54,7 @@ export function toProject(row: ProjectRow): Project {
 }
 
 export async function getProject(id: string): Promise<Project | null> {
+  if (!isUuidLike(id)) return null;
   await ensureSchema();
   const rows = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
   return rows[0] ? toProject(rows[0]) : null;
