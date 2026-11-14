@@ -25,6 +25,7 @@ import {
   Terminal,
   Trash2,
   Unlock,
+  Users,
   Volume2,
   Wand2,
   X,
@@ -56,6 +57,7 @@ import {
   MAX_SCENES,
   MEDIA_FILTERS,
   MEDIA_SPEEDS,
+  PEOPLE_REPRESENTATIONS,
   RESOLUTION_ORDER,
   RESOLUTIONS,
   STYLES,
@@ -65,6 +67,7 @@ import {
   type CaptionPosition,
   type MediaFilter,
   type MusicTrackId,
+  type PeopleRepresentation,
   type Project,
   type Resolution,
   type Scene,
@@ -97,12 +100,12 @@ const QUICK_TOPICS = [
 ];
 
 const COMMAND_EXAMPLES = [
+  "Use African American cast",
+  "Switch to African only",
   "Change voice to British male",
   "Switch to 9:16 vertical",
-  "Replace scene 2 with ocean waves",
-  "Add cinematic music",
+  "Replace scene 2 with coffee",
   "Make it 1080p",
-  "Turn off captions",
 ];
 
 function pickPreviewUrl(asset: StockAsset): string | null {
@@ -230,6 +233,8 @@ export default function Studio({
     project.script.options?.captionPosition ?? "bottom";
   const voiceRateOffset = project.script.options?.voiceRateOffset ?? 0;
   const autoMatchMedia = project.script.options?.autoMatchMedia ?? true;
+  const peopleRepresentation: PeopleRepresentation =
+    project.script.options?.peopleRepresentation ?? "all";
   const musicTrackId: MusicTrackId =
     project.script.options?.musicTrack ?? "cinematic";
   const musicVolume = project.script.options?.musicVolume ?? 0.16;
@@ -258,11 +263,15 @@ export default function Studio({
   const hasMasterFile = Boolean(inlineBlobUrl) || Boolean(project.outputPath) || render.status === "done";
 
   const searchMedia = useCallback(
-    async (query: string, provider: StockProvider = providerFilter) => {
+    async (
+      query: string,
+      provider: StockProvider = providerFilter,
+      peopleOverride: PeopleRepresentation = peopleRepresentation,
+    ) => {
       setSearching(true);
       try {
         const response = await fetch(
-          `/api/media/search?q=${encodeURIComponent(query)}&provider=${provider}&limit=24`,
+          `/api/media/search?q=${encodeURIComponent(query)}&provider=${provider}&people=${encodeURIComponent(peopleOverride)}&limit=24`,
         );
         const data = await response.json().catch(() => ({}));
         if (response.ok) {
@@ -273,12 +282,14 @@ export default function Studio({
         setSearching(false);
       }
     },
-    [providerFilter],
+    [providerFilter, peopleRepresentation],
   );
 
   useEffect(() => {
     let active = true;
     const firstQuery = initialProject.script.scenes[0]?.mediaQuery ?? "";
+    const initialPeople =
+      initialProject.script.options?.peopleRepresentation ?? "all";
 
     // Always mirror into client-store so navigating back / reloading never loses the project
     saveLocalProject(initialProject);
@@ -291,7 +302,7 @@ export default function Studio({
       .catch(() => undefined);
 
     fetch(
-      `/api/media/search?q=${encodeURIComponent(firstQuery)}&provider=all&limit=24`,
+      `/api/media/search?q=${encodeURIComponent(firstQuery)}&provider=all&people=${encodeURIComponent(initialPeople)}&limit=24`,
     )
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -548,6 +559,7 @@ export default function Studio({
             topicContext: project.prompt || project.title,
             excludeIds,
             provider: providerFilter,
+            peopleRepresentation,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -574,7 +586,14 @@ export default function Studio({
         setMatchingSceneId((curr) => (curr === sceneId ? null : curr));
       }
     },
-    [project.script.scenes, project.prompt, project.title, providerFilter, hasMasterFile],
+    [
+      project.script.scenes,
+      project.prompt,
+      project.title,
+      providerFilter,
+      peopleRepresentation,
+      hasMasterFile,
+    ],
   );
 
   function handleNarrationEdit(scene: Scene, nextNarration: string) {
@@ -587,9 +606,13 @@ export default function Studio({
     }, 1150);
   }
 
-  async function syncAllScenesToNarration(overrideScenes?: Scene[]) {
+  async function syncAllScenesToNarration(
+    overrideScenes?: Scene[],
+    overridePeople?: PeopleRepresentation,
+  ) {
     const list = overrideScenes ?? scenes;
     if (list.length === 0 || syncingAllMedia) return;
+    const effectivePeople = overridePeople ?? peopleRepresentation;
     setSyncingAllMedia(true);
     setMonitorMode("storyboard");
     try {
@@ -599,6 +622,7 @@ export default function Studio({
         body: JSON.stringify({
           topicContext: project.prompt || project.title,
           provider: providerFilter,
+          peopleRepresentation: effectivePeople,
           scenes: list.map((s) => ({
             id: s.id,
             narration: s.narration,
@@ -2139,6 +2163,36 @@ export default function Studio({
             {/* TAB 1: MULTI-SITE MOVING STOCK VIDEO BIN */}
             {tab === "media" ? (
               <div className="space-y-3">
+                {/* People / Cast Filter for B-Roll Bin + Live Re-Sync */}
+                <div className="rounded-[3px] border border-line bg-inset/70 p-2">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="font-tech inline-flex items-center gap-1 text-[9px] uppercase tracking-[0.12em] text-stone-ink">
+                      <Users className="h-2.5 w-2.5 text-amber-cue" />
+                      <span>People / Cast</span>
+                    </span>
+                    <span className="font-tech text-[9px] text-ash">
+                      No abstract media
+                    </span>
+                  </div>
+                  <select
+                    aria-label="People representation filter"
+                    value={peopleRepresentation}
+                    onChange={(event) => {
+                      const nextPeople = event.target.value as PeopleRepresentation;
+                      updateScriptOptions({ peopleRepresentation: nextPeople });
+                      void searchMedia(search, providerFilter, nextPeople);
+                      void syncAllScenesToNarration(scenes, nextPeople);
+                    }}
+                    className="w-full rounded-[2px] border border-line bg-canvas px-2 py-1.5 text-xs font-medium text-paper outline-none focus:border-amber-cue"
+                  >
+                    {PEOPLE_REPRESENTATIONS.map((opt) => (
+                      <option key={opt.id} value={opt.id} className="bg-panel text-paper">
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="flex flex-wrap items-center gap-1">
                   {(
                     [
@@ -2604,6 +2658,44 @@ export default function Studio({
                         </button>
                       ))}
                     </div>
+                  </div>
+                </div>
+
+                <div>
+                  <span className="font-tech mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.14em] text-ash">
+                    <span className="inline-flex items-center gap-1">
+                      <Users className="h-3 w-3 text-amber-cue" />
+                      People / Cast Representation
+                    </span>
+                    <span>Real footage only</span>
+                  </span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {PEOPLE_REPRESENTATIONS.map((opt) => {
+                      const active = peopleRepresentation === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            updateScriptOptions({ peopleRepresentation: opt.id });
+                            void searchMedia(search, providerFilter, opt.id);
+                            void syncAllScenesToNarration(scenes, opt.id);
+                          }}
+                          className={`rounded-[3px] border px-2.5 py-2 text-left transition-colors ${
+                            active
+                              ? "border-amber-cue bg-elevated text-paper"
+                              : "border-line bg-inset text-stone-ink hover:border-line-strong hover:text-paper"
+                          }`}
+                        >
+                          <span className="font-tech block text-[11px] font-semibold">
+                            {opt.shortLabel}
+                          </span>
+                          <span className="block truncate text-[10px] text-ash">
+                            {opt.description}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 

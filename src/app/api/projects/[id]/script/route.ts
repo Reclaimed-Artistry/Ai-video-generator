@@ -24,6 +24,11 @@ export async function POST(request: Request, context: Context) {
       duration: project.duration,
       tone: project.tone,
       language: project.language,
+      workflow: project.script.options?.workflow,
+      musicTrack: project.script.options?.musicTrack,
+      musicVolume: project.script.options?.musicVolume,
+      captionMode: project.script.options?.captionMode,
+      peopleRepresentation: project.script.options?.peopleRepresentation ?? "all",
     });
 
     await updateProject(id, {

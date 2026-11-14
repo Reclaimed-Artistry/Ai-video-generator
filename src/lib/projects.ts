@@ -62,10 +62,13 @@ function writeFallbackStore(map: Map<string, Project>): void {
 }
 
 function hydrateProject(project: Project): Project {
-  const scenes = Array.isArray(project.script?.scenes)
-    ? project.script.scenes.map((scene) => hydrateSceneMedia(scene))
-    : [];
   const opts = project.script?.options;
+  const peopleRepresentation = opts?.peopleRepresentation ?? "all";
+  const scenes = Array.isArray(project.script?.scenes)
+    ? project.script.scenes.map((scene) =>
+        hydrateSceneMedia(scene, peopleRepresentation),
+      )
+    : [];
   return {
     ...project,
     script: {
@@ -81,6 +84,7 @@ function hydrateProject(project: Project): Project {
         voiceRateOffset:
           typeof opts?.voiceRateOffset === "number" ? opts.voiceRateOffset : 0,
         autoMatchMedia: opts?.autoMatchMedia ?? true,
+        peopleRepresentation,
       },
     },
   };
@@ -88,8 +92,11 @@ function hydrateProject(project: Project): Project {
 
 export function toProject(row: ProjectRow): Project {
   const script = (row.script ?? {}) as Partial<VideoScript>;
+  const peopleRepresentation = script.options?.peopleRepresentation ?? "all";
   const scenes = Array.isArray(script.scenes)
-    ? script.scenes.map((scene) => hydrateSceneMedia(scene))
+    ? script.scenes.map((scene) =>
+        hydrateSceneMedia(scene, peopleRepresentation),
+      )
     : [];
 
   return {
@@ -127,6 +134,7 @@ export function toProject(row: ProjectRow): Project {
             ? script.options.voiceRateOffset
             : 0,
         autoMatchMedia: script.options?.autoMatchMedia ?? true,
+        peopleRepresentation,
       },
     },
     outputPath: row.outputPath,

@@ -6,16 +6,20 @@ import {
   matchVideoForNarration,
   previewUrlForAsset,
 } from "./stock";
-import type {
-  CaptionMode,
-  MusicTrackId,
-  Scene,
-  StockAsset,
-  Tone,
-  VideoScript,
-  Workflow,
+import {
+  getPeopleRepresentation,
+  MAX_SCENES,
+  MIN_SCENES,
+  WORKFLOWS,
+  type CaptionMode,
+  type MusicTrackId,
+  type PeopleRepresentation,
+  type Scene,
+  type StockAsset,
+  type Tone,
+  type VideoScript,
+  type Workflow,
 } from "./types";
-import { MAX_SCENES, MIN_SCENES, WORKFLOWS } from "./types";
 
 type Category = {
   key: string;
@@ -40,11 +44,11 @@ const CATEGORIES: Category[] = [
       "prompt", "prompts", "support", "workflow", "platform",
     ],
     visuals: [
-      "technology data network",
-      "software developer laptop coding",
-      "futuristic digital connections",
-      "modern tech office team",
-      "glowing neural network animation",
+      "software developer typing laptop office",
+      "tech team collaborating computer desk",
+      "engineer working modern office",
+      "support specialist laptop headset",
+      "startup founder analytics office",
     ],
     painPoint: "Teams lose hours every week to manual handoffs and slow legacy workflows",
     craft: "Intelligent automation handles the repetitive queue in seconds while keeping humans in control of every decision",
@@ -102,7 +106,7 @@ const CATEGORIES: Category[] = [
     words: [
       "lion", "lions", "safari", "savanna", "elephant", "tiger", "wildlife",
       "animal", "animals", "dog", "dogs", "puppy", "cat", "bird", "whale",
-      "shark", "species", "habitat", "predator", "africa",
+      "shark", "species", "habitat", "predator",
     ],
     visuals: [
       "lion wildlife african savanna",
@@ -233,11 +237,11 @@ const CATEGORIES: Category[] = [
       "newsletter", "brand awareness", "video", "content", "podcast",
     ],
     visuals: [
-      "vibrant neon light trails",
-      "creative studio production desk",
-      "dynamic abstract motion lights",
-      "social creator filming camera",
-      "modern workspace editing laptop",
+      "creator filming smartphone studio",
+      "marketing team collaborating office",
+      "social media strategist laptop desk",
+      "brand founder presenting office",
+      "creative team working studio",
     ],
     painPoint: "You have three seconds before a viewer scrolls past — weak openings kill even brilliant ideas",
     craft: "Lead with visual contrast, deliver the core payoff immediately, and pair crisp pacing with readable captions",
@@ -524,6 +528,7 @@ export type GenerateScriptOptions = {
   musicTrack?: MusicTrackId;
   musicVolume?: number;
   captionMode?: CaptionMode;
+  peopleRepresentation?: PeopleRepresentation;
   title?: string;
 };
 
@@ -559,8 +564,10 @@ async function scriptToVideoGenerate(
   }
 
   blocks = blocks.slice(0, MAX_SCENES);
-  const topicContext = extractVisualKeywords(raw, "cinematic");
+  const peopleRepresentation = options.peopleRepresentation ?? "all";
+  const topicContext = extractVisualKeywords(raw, "office people");
   const usedAssets: string[] = [];
+  const usedDemographics: PeopleRepresentation[] = [];
   const scenes: Scene[] = [];
 
   for (let idx = 0; idx < blocks.length; idx += 1) {
@@ -576,8 +583,15 @@ async function scriptToVideoGenerate(
       caption,
       topicContext,
       excludeIds: usedAssets,
+      peopleRepresentation,
+      usedDemographics,
     });
-    if (matched) usedAssets.push(matched.id);
+    if (matched) {
+      usedAssets.push(matched.id);
+      if (matched.demographics?.length) {
+        usedDemographics.push(...matched.demographics);
+      }
+    }
 
     scenes.push(
       sceneFromAsset(
@@ -607,6 +621,7 @@ async function scriptToVideoGenerate(
       musicTrack: options.musicTrack ?? defaultMusicForTone(options.tone),
       musicVolume: options.musicVolume ?? 0.16,
       captionMode: options.captionMode ?? "word-highlight",
+      peopleRepresentation,
     },
   };
 }
@@ -617,11 +632,13 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
     return scriptToVideoGenerate(options);
   }
 
+  const peopleRepresentation = options.peopleRepresentation ?? "all";
   const topic = cleanTopic(options.prompt);
   const category = detectCategory(options.prompt);
   const count = sceneCountFor(options.duration, workflow);
   const beats = beatSequence(count);
   const usedAssets: string[] = [];
+  const usedDemographics: PeopleRepresentation[] = [];
   const scenes: Scene[] = [];
 
   for (let index = 0; index < beats.length; index += 1) {
@@ -636,14 +653,21 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
     );
     const caption = buildBeatCaption(beat, topic);
 
-    // Match each scene's footage directly from its own spoken narration + video topic
+    // Match each scene's real-world footage directly to its spoken narration + race option
     const { asset: matched, mediaQuery } = await matchVideoForNarration({
       narration,
       caption,
       topicContext: topic,
       excludeIds: usedAssets,
+      peopleRepresentation,
+      usedDemographics,
     });
-    if (matched) usedAssets.push(matched.id);
+    if (matched) {
+      usedAssets.push(matched.id);
+      if (matched.demographics?.length) {
+        usedDemographics.push(...matched.demographics);
+      }
+    }
 
     scenes.push(
       sceneFromAsset(
@@ -674,6 +698,7 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
       musicTrack: options.musicTrack ?? wfMeta.defaultMusic ?? defaultMusicForTone(options.tone),
       musicVolume: options.musicVolume ?? 0.16,
       captionMode: options.captionMode ?? wfMeta.defaultCaptionMode,
+      peopleRepresentation,
     },
   };
 }
@@ -704,7 +729,7 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
           },
           {
             role: "user",
-            content: `Write a ${count}-scene ${wfMeta.label} video script in language "${options.language}" about: "${options.prompt}". Tone: ${options.tone}. Target total duration: ${options.duration}s. Each scene narration should be 1-2 natural spoken sentences. Each scene needs a concise caption (max 5 words) and a concrete stock-video search query (2-3 visual keywords). Return JSON: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string}]}`,
+            content: `Write a ${count}-scene ${wfMeta.label} video script in language "${options.language}" about: "${options.prompt}". Tone: ${options.tone}. Target total duration: ${options.duration}s. Cast / people representation: "${getPeopleRepresentation(options.peopleRepresentation).label}". Each scene narration should be 1-2 natural spoken sentences. Each scene needs a concise caption (max 5 words) and a concrete, real-world stock-video search query (2-4 filmable visual keywords showing real people or real places — NEVER abstract, neon, 3D, or motion-graphic animations). Return JSON: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string}]}`,
           },
         ],
       }),
@@ -722,8 +747,10 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
     };
     if (!parsed.scenes?.length) return null;
 
+    const peopleRepresentation = options.peopleRepresentation ?? "all";
     const topic = cleanTopic(options.prompt);
     const usedAssets: string[] = [];
+    const usedDemographics: PeopleRepresentation[] = [];
     const scenes: Scene[] = [];
     for (let idx = 0; idx < parsed.scenes.length; idx += 1) {
       const scene = parsed.scenes[idx];
@@ -734,15 +761,22 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
         caption,
         topicContext: topic,
         excludeIds: usedAssets,
+        peopleRepresentation,
+        usedDemographics,
       });
-      if (matched) usedAssets.push(matched.id);
+      if (matched) {
+        usedAssets.push(matched.id);
+        if (matched.demographics?.length) {
+          usedDemographics.push(...matched.demographics);
+        }
+      }
       scenes.push(
         sceneFromAsset(
           {
             id: randomUUID(),
             narration,
             caption,
-            mediaQuery: scene.mediaQuery?.trim() || mediaQuery,
+            mediaQuery: mediaQuery || scene.mediaQuery?.trim() || topic,
             duration: null,
             transition: idx === 0 ? "fade" : "none",
           },
@@ -760,6 +794,7 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
         musicTrack: options.musicTrack ?? wfMeta.defaultMusic ?? defaultMusicForTone(options.tone),
         musicVolume: options.musicVolume ?? 0.16,
         captionMode: options.captionMode ?? wfMeta.defaultCaptionMode,
+        peopleRepresentation,
       },
     };
   } catch {
@@ -778,10 +813,12 @@ export async function generateScript(
 export async function regenerateScene(
   script: VideoScript,
   sceneIndex: number,
-  options: { prompt: string; tone: Tone },
+  options: { prompt: string; tone: Tone; peopleRepresentation?: PeopleRepresentation },
 ): Promise<Scene> {
   const scene = script.scenes[sceneIndex];
   const workflow = script.options?.workflow ?? "explainer";
+  const peopleRepresentation =
+    options.peopleRepresentation ?? script.options?.peopleRepresentation ?? "all";
   const category = detectCategory(options.prompt);
   const topic = cleanTopic(options.prompt);
   const beats = beatSequence(Math.max(MIN_SCENES, script.scenes.length));
@@ -804,8 +841,10 @@ export async function regenerateScene(
     caption,
     topicContext: topic,
     excludeIds,
+    peopleRepresentation,
   });
-  const matched = liveMatch ?? matchLocalAsset(mediaQuery, "video", excludeIds);
+  const matched =
+    liveMatch ?? matchLocalAsset(mediaQuery, "video", excludeIds, peopleRepresentation);
 
   return sceneFromAsset(
     {

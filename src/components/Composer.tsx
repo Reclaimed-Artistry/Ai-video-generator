@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, FileText, Loader2, Music, Play, Square, Volume2 } from "lucide-react";
+import { ArrowRight, FileText, Loader2, Music, Play, Square, Users, Volume2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AspectGlyph, AudioMeter } from "@/components/BrandMark";
@@ -10,6 +10,7 @@ import {
   ASPECT_ORDER,
   ASPECTS,
   CAPTION_MODES,
+  PEOPLE_REPRESENTATIONS,
   RESOLUTION_ORDER,
   RESOLUTIONS,
   TONES,
@@ -18,6 +19,7 @@ import {
   type AspectRatio,
   type CaptionMode,
   type MusicTrackId,
+  type PeopleRepresentation,
   type Resolution,
   type Tone,
   type Workflow,
@@ -104,6 +106,8 @@ export default function Composer() {
   const [voice, setVoice] = useState<string>("ava");
   const [musicTrack, setMusicTrack] = useState<MusicTrackId>("corporate");
   const [captionMode, setCaptionMode] = useState<CaptionMode>("word-highlight");
+  const [peopleRepresentation, setPeopleRepresentation] =
+    useState<PeopleRepresentation>("all");
   const [duration, setDuration] = useState<number>(30);
   const [loadingMode, setLoadingMode] = useState<"render" | "draft" | null>(null);
   const [auditioning, setAuditioning] = useState(false);
@@ -201,6 +205,7 @@ export default function Composer() {
           voice,
           musicTrack,
           captionMode,
+          peopleRepresentation,
           duration,
         }),
       });
@@ -514,6 +519,45 @@ export default function Composer() {
               ))}
             </select>
           </label>
+        </div>
+
+        {/* Row 3: People / Cast Representation (Real-world footage only) */}
+        <div className="mt-3 rounded-[3px] border border-line bg-inset/60 p-2.5">
+          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+            <span className="font-tech inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-stone-ink">
+              <Users className="h-3 w-3 text-amber-cue" />
+              <span>People / Cast in Video</span>
+            </span>
+            <span className="font-tech text-[10px] text-ash">
+              Real-world clips only · Zero abstract media · Matched to narration
+            </span>
+          </div>
+          <div
+            role="radiogroup"
+            aria-label="People representation in video"
+            className="flex flex-wrap gap-1.5"
+          >
+            {PEOPLE_REPRESENTATIONS.map((opt) => {
+              const active = peopleRepresentation === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setPeopleRepresentation(opt.id)}
+                  title={opt.description}
+                  className={`rounded-[2px] border px-2.5 py-1 font-tech text-[10px] uppercase tracking-[0.06em] transition-colors ${
+                    active
+                      ? "border-amber-cue bg-amber-cue font-semibold text-[#14110A]"
+                      : "border-line bg-canvas text-stone-ink hover:border-line-strong hover:text-paper"
+                  }`}
+                >
+                  {opt.shortLabel}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Action row: Primary 1-Click Generate Video + Secondary Edit Script First */}

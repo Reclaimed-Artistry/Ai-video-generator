@@ -5,6 +5,7 @@ import type {
   AspectRatio,
   CaptionMode,
   MusicTrackId,
+  PeopleRepresentation,
   Resolution,
   Style,
   Tone,
@@ -43,6 +44,7 @@ export async function POST(request: Request) {
       musicTrack?: MusicTrackId;
       musicVolume?: number;
       captionMode?: CaptionMode;
+      peopleRepresentation?: PeopleRepresentation;
     };
 
     const prompt = (body.prompt ?? "").trim();
@@ -54,6 +56,7 @@ export async function POST(request: Request) {
     const tone = (body.tone ?? "cinematic") as Tone;
     const workflow = (body.workflow ?? "explainer") as Workflow;
     const language = body.language ?? "en";
+    const peopleRepresentation = (body.peopleRepresentation ?? "all") as PeopleRepresentation;
     const script = await generateScript({
       prompt,
       duration,
@@ -63,6 +66,7 @@ export async function POST(request: Request) {
       musicTrack: body.musicTrack,
       musicVolume: body.musicVolume,
       captionMode: body.captionMode,
+      peopleRepresentation,
       title: body.title,
     });
 

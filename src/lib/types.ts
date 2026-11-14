@@ -23,6 +23,99 @@ export type StockProvider =
 export type MediaFilter = "none" | "warm" | "cool" | "vivid" | "noir";
 export type CaptionPosition = "bottom" | "center" | "top";
 
+export type PeopleRepresentation =
+  | "all"
+  | "african-american"
+  | "african"
+  | "hispanic"
+  | "east-asian"
+  | "south-asian"
+  | "middle-eastern"
+  | "caucasian";
+
+export const PEOPLE_REPRESENTATIONS: {
+  id: PeopleRepresentation;
+  label: string;
+  shortLabel: string;
+  description: string;
+  searchPrefix: string;
+  slugPrefixes: string[];
+}[] = [
+  {
+    id: "all",
+    label: "All Races (Diverse)",
+    shortLabel: "All Races",
+    description: "Diverse multiracial people & global real-world footage",
+    searchPrefix: "",
+    slugPrefixes: [],
+  },
+  {
+    id: "african-american",
+    label: "African American",
+    shortLabel: "African American",
+    description: "African American / Black American cast across scenes",
+    searchPrefix: "african american",
+    slugPrefixes: ["african-american", "black"],
+  },
+  {
+    id: "african",
+    label: "African Only",
+    shortLabel: "African Only",
+    description: "African people, entrepreneurs & settings across Africa",
+    searchPrefix: "african",
+    slugPrefixes: ["african", "africa"],
+  },
+  {
+    id: "hispanic",
+    label: "Hispanic / Latino",
+    shortLabel: "Hispanic",
+    description: "Hispanic & Latino cast across scenes",
+    searchPrefix: "hispanic latino",
+    slugPrefixes: ["hispanic", "latino"],
+  },
+  {
+    id: "east-asian",
+    label: "East Asian",
+    shortLabel: "East Asian",
+    description: "East Asian cast across scenes",
+    searchPrefix: "east asian",
+    slugPrefixes: ["asian", "east-asian"],
+  },
+  {
+    id: "south-asian",
+    label: "South Asian",
+    shortLabel: "South Asian",
+    description: "South Asian / Indian cast across scenes",
+    searchPrefix: "indian south asian",
+    slugPrefixes: ["indian", "south-asian"],
+  },
+  {
+    id: "middle-eastern",
+    label: "Middle Eastern",
+    shortLabel: "Middle Eastern",
+    description: "Middle Eastern / Arab cast across scenes",
+    searchPrefix: "middle eastern arab",
+    slugPrefixes: ["arab", "middle-eastern"],
+  },
+  {
+    id: "caucasian",
+    label: "White / Caucasian",
+    shortLabel: "Caucasian",
+    description: "White / European / Caucasian cast across scenes",
+    searchPrefix: "caucasian",
+    slugPrefixes: ["caucasian", "european"],
+  },
+];
+
+export function getPeopleRepresentation(
+  id?: string | null,
+): (typeof PEOPLE_REPRESENTATIONS)[number] {
+  return (
+    PEOPLE_REPRESENTATIONS.find((item) => item.id === id) ??
+    PEOPLE_REPRESENTATIONS[0]
+  );
+}
+
 export const MEDIA_FILTERS: { id: MediaFilter; label: string; css: string }[] = [
   { id: "none", label: "Natural", css: "none" },
   { id: "warm", label: "Cinema Warm", css: "sepia(0.18) saturate(1.18) contrast(1.06)" },
@@ -67,6 +160,7 @@ export type ProductionOptions = {
   captionPosition?: CaptionPosition;
   voiceRateOffset?: number; // -20 to +25 (%)
   autoMatchMedia?: boolean;
+  peopleRepresentation?: PeopleRepresentation;
 };
 
 export type VideoScript = {
@@ -95,6 +189,8 @@ export type StockAsset = {
   thumb: string;
   duration?: number;
   portrait?: boolean;
+  hasPeople?: boolean;
+  demographics?: PeopleRepresentation[];
   sources: StockSource[];
 };
 
