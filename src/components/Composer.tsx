@@ -67,6 +67,13 @@ function computeRaster(resolution: Resolution, aspect: AspectRatio): string {
   return `${width}×${height}`;
 }
 
+const GENERATION_STEPS = [
+  "AI is writing your script…",
+  "Structuring scenes and captions…",
+  "Picking stock footage for each scene…",
+  "Almost there — opening the studio…",
+];
+
 export default function Composer() {
   const router = useRouter();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -79,6 +86,14 @@ export default function Composer() {
   const [voice, setVoice] = useState<string>("ava");
   const [duration, setDuration] = useState<number>(30);
   const [loading, setLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(0);
+
+  useEffect(() => {
+    if (!loading) return;
+    setLoadingStep(0);
+    const timer = setInterval(() => setLoadingStep((step) => Math.min(step + 1, GENERATION_STEPS.length - 1)), 6000);
+    return () => clearInterval(timer);
+  }, [loading]);
   const [auditioning, setAuditioning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -154,7 +169,8 @@ export default function Composer() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Failed to draft sequence");
-      router.push(`/studio/${data.project.id}`);
+      // Land in the studio and start rendering immediately (prompt → finished video).
+      router.push(`/studio/${data.project.id}?autorender=1`);
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not initialize sequence.",
@@ -406,12 +422,12 @@ export default function Composer() {
               {loading ? (
                 <>
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  <span>Building Rundown…</span>
+                  <span>{GENERATION_STEPS[loadingStep]}</span>
                 </>
               ) : (
                 <>
                   <Play className="h-3 w-3 fill-current" />
-                  <span>Draft Cut in Studio</span>
+                  <span>Generate Video</span>
                   <ArrowRight className="h-3.5 w-3.5" />
                 </>
               )}

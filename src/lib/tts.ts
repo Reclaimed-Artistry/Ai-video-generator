@@ -3,10 +3,15 @@ import path from "node:path";
 import { EdgeTTS } from "@andresaya/edge-tts";
 import { getVoice, resolveNeuralVoice, type TtsProvider } from "./voices";
 
+/** A spoken word and when it is heard, in seconds from the start of the clip. */
+export type SpokenWord = { text: string; start: number; end: number };
+
 export type Speech = {
   data: Buffer;
   ext: "wav" | "mp3";
   provider: TtsProvider;
+  /** Word timings (Edge neural voices only) for word-synced subtitles. */
+  words?: SpokenWord[];
 };
 
 function mespeakRoot(): string {
@@ -66,7 +71,7 @@ async function synthesizeEdge(
   voice: string,
   rate: number,
   pitch: number,
-): Promise<Buffer> {
+): Promise<{ audio: Buffer; words: SpokenWord[] }> {
   const tts = new EdgeTTS({ timeout: 20000 });
   const result = await tts.generate(text, voice, {
     rate: `${rate >= 0 ? "+" : ""}${rate}%`,
@@ -75,7 +80,15 @@ async function synthesizeEdge(
   });
   const audio = Buffer.from(result.audio);
   if (audio.length === 0) throw new Error("Neural voice returned no audio");
-  return audio;
+  // Edge reports offsets/durations in 100-nanosecond ticks.
+  const words: SpokenWord[] = (result.wordBoundaries ?? [])
+    .filter((word) => word.text?.trim())
+    .map((word) => ({
+      text: word.text,
+      start: word.offset / 10_000_000,
+      end: (word.offset + word.duration) / 10_000_000,
+    }));
+  return { audio, words };
 }
 
 async function synthesizeElevenLabs(text: string, voice: string): Promise<Buffer> {
@@ -145,8 +158,8 @@ export async function synthesizeSpeech(
   }
 
   try {
-    const data = await synthesizeEdge(clean, neuralVoice, voice.rate, voice.pitch);
-    return { data, ext: "mp3", provider: "edge" };
+    const { audio, words } = await synthesizeEdge(clean, neuralVoice, voice.rate, voice.pitch);
+    return { data: audio, ext: "mp3", provider: "edge", words };
   } catch (error) {
     console.warn(
       "Neural voice unavailable, using offline engine:",

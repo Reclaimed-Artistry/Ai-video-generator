@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { getProject, updateProject } from "@/lib/projects";
-import { regenerateScene } from "@/lib/script";
+import { regenerateSceneAi } from "@/lib/script";
 import type { Scene } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 type Context = { params: Promise<{ id: string; sceneId: string }> };
 
@@ -30,7 +31,7 @@ export async function PATCH(request: Request, context: Context) {
   return NextResponse.json({ project: updated });
 }
 
-export async function POST(request: Request, context: Context) {
+export async function POST(_request: Request, context: Context) {
   const { id, sceneId } = await context.params;
   const project = await getProject(id);
   if (!project) {
@@ -42,10 +43,11 @@ export async function POST(request: Request, context: Context) {
     return NextResponse.json({ error: "Scene not found" }, { status: 404 });
   }
 
-  const body = (await request.json().catch(() => ({}))) as { tone?: never };
-  const next = regenerateScene(project.script, index, {
-    prompt: body?.tone ? project.prompt : project.prompt,
+  const next = await regenerateSceneAi(project.script, index, {
+    prompt: project.prompt,
     tone: project.tone,
+    language: project.language,
+    duration: project.duration,
   });
 
   const scenes = project.script.scenes.map((scene, sceneIndex) =>

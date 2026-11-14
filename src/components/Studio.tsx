@@ -9,10 +9,12 @@ import {
   Download,
   Film,
   Loader2,
+  Music2,
   Play,
   Plus,
   RefreshCw,
   Search,
+  Send,
   Sliders,
   Square,
   Trash2,
@@ -48,8 +50,35 @@ import {
   type Tone,
 } from "@/lib/types";
 import type { Voice } from "@/lib/voices";
+import {
+  resolveSettings,
+  type MusicChoice,
+  type TransitionChoice,
+  type VideoSettings,
+} from "@/lib/types";
 
-type RightTab = "media" | "voices" | "settings";
+const MUSIC_OPTIONS: { id: MusicChoice; label: string; mood: string }[] = [
+  { id: "auto", label: "Auto", mood: "Matches the script tone" },
+  { id: "energetic", label: "Upbeat electronic", mood: "Energetic, driving" },
+  { id: "friendly", label: "Chill beat", mood: "Warm, relaxed" },
+  { id: "professional", label: "Soft ambient", mood: "Neutral, corporate" },
+  { id: "cinematic", label: "Orchestral", mood: "Grand, cinematic" },
+  { id: "minimal", label: "Lo-fi", mood: "Calm, minimal" },
+  { id: "none", label: "No music", mood: "Voiceover only" },
+];
+
+const COMMAND_SUGGESTIONS = [
+  "Make it shorter",
+  "Make the intro more catchy",
+  "Use a British male voice",
+  "Switch to vertical 9:16",
+  "Add calm background music",
+  "Render in 1080p",
+];
+
+type CommandEntry = { role: "user" | "ai"; text: string };
+
+type RightTab = "media" | "voices" | "audio" | "settings";
 type MonitorMode = "storyboard" | "master";
 
 type RenderState = {
@@ -95,6 +124,11 @@ export default function Studio({
     initialProject.script.scenes[0]?.id ?? "",
   );
   const [tab, setTab] = useState<RightTab>("media");
+  const [commandText, setCommandText] = useState("");
+  const [commandBusy, setCommandBusy] = useState(false);
+  const [commandLog, setCommandLog] = useState<CommandEntry[]>([]);
+  const [playingMusic, setPlayingMusic] = useState<string | null>(null);
+  const musicAudioRef = useRef<HTMLAudioElement | null>(null);
   const [monitorMode, setMonitorMode] = useState<MonitorMode>(
     initialProject.status === "done" ? "master" : "storyboard",
   );
@@ -228,6 +262,19 @@ export default function Studio({
     },
     [project.id, hasMasterFile],
   );
+
+  // Prompt → finished video: start rendering as soon as the studio opens.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("autorender") !== "1") return;
+    params.delete("autorender");
+    const query = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    if (initialProject.status !== "rendering" && initialProject.status !== "done") {
+      void startMasterRender(initialProject);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Debounced autosave for script & title edits
   useEffect(() => {
@@ -436,7 +483,76 @@ export default function Studio({
     }
   }
 
-  async function startMasterRender() {
+  const settings = resolveSettings(project.script.settings);
+
+  function updateSettings(patch: VideoSettings) {
+    setProject((curr) => ({
+      ...curr,
+      script: {
+        ...curr.script,
+        settings: { ...resolveSettings(curr.script.settings), ...patch },
+      },
+    }));
+    if (hasMasterFile) setHasUnrenderedEdits(true);
+  }
+
+  function toggleMusicPreview(id: MusicChoice) {
+    const trackId = id === "auto" ? (project.tone === "professional" ? "professional" : project.tone) : id;
+    if (playingMusic === id) {
+      musicAudioRef.current?.pause();
+      setPlayingMusic(null);
+      return;
+    }
+    if (id === "none") return;
+    if (!musicAudioRef.current) musicAudioRef.current = new Audio();
+    musicAudioRef.current.src = `/api/music/${trackId}`;
+    musicAudioRef.current.volume = 0.6;
+    musicAudioRef.current.onended = () => setPlayingMusic(null);
+    void musicAudioRef.current.play().catch(() => setPlayingMusic(null));
+    setPlayingMusic(id);
+  }
+
+  /** invideo-style natural-language editing, followed by an automatic re-render. */
+  async function runCommand(raw: string) {
+    const command = raw.trim();
+    if (!command || commandBusy || render.status === "rendering") return;
+    setCommandBusy(true);
+    setCommandText("");
+    setCommandLog((log) => [...log, { role: "user", text: command }]);
+    try {
+      // Save pending edits first so the AI works on the latest script.
+      await fetch(`/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ script: project.script, title: project.title }),
+      }).catch(() => undefined);
+      const response = await fetch(`/api/projects/${project.id}/command`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setCommandLog((log) => [...log, { role: "ai", text: data.error ?? "That edit failed — please try again." }]);
+        return;
+      }
+      setCommandLog((log) => [...log, { role: "ai", text: data.reply ?? "Done." }]);
+      if (data.project && Array.isArray(data.applied) && data.applied.length > 0) {
+        const next = data.project as Project;
+        setProject(next);
+        if (!next.script.scenes.some((scene) => scene.id === activeSceneId)) {
+          setActiveSceneId(next.script.scenes[0]?.id ?? "");
+        }
+        setMonitorMode("storyboard");
+        void startMasterRender(next);
+      }
+    } finally {
+      setCommandBusy(false);
+    }
+  }
+
+  async function startMasterRender(override?: Project) {
+    const source = override ?? project;
     setRender({
       status: "rendering",
       progress: 2,
@@ -448,15 +564,15 @@ export default function Studio({
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        title: project.title,
-        script: project.script,
-        voice: project.voice,
-        resolution: project.resolution,
-        aspect: project.aspect,
-        tone: project.tone,
-        style: project.style,
-        language: project.language,
-        duration: project.duration,
+        title: source.title,
+        script: source.script,
+        voice: source.voice,
+        resolution: source.resolution,
+        aspect: source.aspect,
+        tone: source.tone,
+        style: source.style,
+        language: source.language,
+        duration: source.duration,
       }),
     }).catch(() => undefined);
 
@@ -779,6 +895,65 @@ export default function Studio({
 
         {/* CENTER PANE: Program Monitor + Timeline Strip + Cue Sheet Editor */}
         <section className="flex min-w-0 flex-col bg-canvas xl:max-h-[calc(100vh-57px)] xl:overflow-y-auto">
+          {/* AI command bar — edit the whole video in plain English */}
+          <div className="border-b border-line bg-panel px-4 py-3">
+            {commandLog.length > 0 ? (
+              <div className="scroll-thin mb-2.5 max-h-28 space-y-1.5 overflow-y-auto">
+                {commandLog.slice(-6).map((entry, index) => (
+                  <p
+                    key={`${index}-${entry.text}`}
+                    className={`text-xs leading-relaxed ${entry.role === "user" ? "text-paper" : "text-stone-ink"}`}
+                  >
+                    <span className={`font-tech mr-2 text-[10px] uppercase ${entry.role === "user" ? "text-amber-cue" : "text-nominal"}`}>
+                      {entry.role === "user" ? "You" : "AI"}
+                    </span>
+                    {entry.text}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void runCommand(commandText);
+              }}
+              className="flex items-center gap-2"
+            >
+              <input
+                value={commandText}
+                onChange={(event) => setCommandText(event.target.value)}
+                disabled={commandBusy || render.status === "rendering"}
+                placeholder={
+                  render.status === "rendering"
+                    ? "Rendering… you can give the next instruction when it finishes"
+                    : "Tell the AI what to change — e.g. “make it shorter and use a British voice”"
+                }
+                className="min-w-0 flex-1 rounded-[3px] border border-line bg-canvas px-3 py-2 text-sm text-paper outline-none transition-colors placeholder:text-ash focus:border-amber-cue disabled:opacity-60"
+              />
+              <button
+                type="submit"
+                disabled={commandBusy || !commandText.trim() || render.status === "rendering"}
+                className="inline-flex items-center gap-1.5 rounded-[3px] bg-amber-cue px-3 py-2 font-tech text-[11px] font-semibold uppercase tracking-[0.08em] text-[#14110A] transition-colors hover:bg-amber-hover disabled:cursor-not-allowed disabled:bg-elevated disabled:text-ash"
+              >
+                {commandBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                <span>{commandBusy ? "Editing…" : "Apply"}</span>
+              </button>
+            </form>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {COMMAND_SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  disabled={commandBusy || render.status === "rendering"}
+                  onClick={() => void runCommand(suggestion)}
+                  className="rounded-[2px] border border-line bg-inset px-2 py-0.5 font-tech text-[10px] text-stone-ink transition-colors hover:border-line-strong hover:text-paper disabled:opacity-40"
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Monitor Bezel Header */}
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-inset px-4 py-2">
             <div className="flex items-center gap-2">
@@ -1144,12 +1319,13 @@ export default function Studio({
 
         {/* RIGHT PANE: B-Roll Footage Bin / Neural Voice Booth / Master Settings */}
         <section className="flex flex-col border-t border-line bg-panel xl:max-h-[calc(100vh-57px)] xl:border-l xl:border-t-0">
-          <div className="grid grid-cols-3 border-b border-line bg-inset">
+          <div className="grid grid-cols-4 border-b border-line bg-inset">
             {(
               [
-                ["media", "B-Roll Bin", Film],
-                ["voices", "VO Booth", Volume2],
-                ["settings", "Master Specs", Sliders],
+                ["media", "B-Roll", Film],
+                ["voices", "Voice", Volume2],
+                ["audio", "Music & Subs", Music2],
+                ["settings", "Specs", Sliders],
               ] as const
             ).map(([key, label, Icon]) => {
               const active = tab === key;
@@ -1410,6 +1586,114 @@ export default function Studio({
             ) : null}
 
             {/* TAB 3: MASTER SEQUENCE SPECS */}
+            {tab === "audio" ? (
+              <div className="space-y-4">
+                <div>
+                  <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
+                    Background Music (royalty-free, auto-ducked under the voice)
+                  </span>
+                  <div className="divide-y divide-line rounded-[3px] border border-line">
+                    {MUSIC_OPTIONS.map((option) => {
+                      const selected = settings.music === option.id;
+                      return (
+                        <div
+                          key={option.id}
+                          className={`flex items-center justify-between gap-2 px-3 py-2 ${
+                            selected ? "bg-elevated" : "hover:bg-inset/60"
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => updateSettings({ music: option.id })}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <span className={`text-xs font-semibold ${selected ? "text-amber-cue" : "text-paper"}`}>
+                              {option.label}
+                            </span>
+                            <span className="ml-2 font-tech text-[10px] text-ash">{option.mood}</span>
+                          </button>
+                          {option.id !== "none" ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleMusicPreview(option.id)}
+                              className="inline-flex h-6 items-center gap-1 rounded-[2px] border border-line bg-canvas px-2 font-tech text-[10px] text-stone-ink hover:border-amber-cue hover:text-paper"
+                            >
+                              {playingMusic === option.id ? (
+                                <>
+                                  <AudioMeter active />
+                                  <Square className="h-2.5 w-2.5 fill-current text-amber-cue" />
+                                </>
+                              ) : (
+                                <>
+                                  <Play className="h-2.5 w-2.5 fill-current" />
+                                  <span>Play</span>
+                                </>
+                              )}
+                            </button>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <label className="block">
+                  <span className="font-tech mb-1.5 flex justify-between text-[10px] uppercase tracking-[0.14em] text-ash">
+                    <span>Music Volume</span>
+                    <span>{Math.round(settings.musicVolume * 100)}%</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={5}
+                    max={100}
+                    step={5}
+                    value={Math.round(settings.musicVolume * 100)}
+                    disabled={settings.music === "none"}
+                    onChange={(event) => updateSettings({ musicVolume: Number(event.target.value) / 100 })}
+                    className="w-full accent-[#E5A93C] disabled:opacity-40"
+                  />
+                </label>
+
+                <div className="space-y-2 rounded-[3px] border border-line bg-inset p-3">
+                  {(
+                    [
+                      ["subtitles", "Word-synced subtitles", "Narration appears word by word as it is spoken"],
+                      ["headlines", "Scene titles", "Each scene's caption shows briefly at the top"],
+                    ] as const
+                  ).map(([key, label, hint]) => (
+                    <label key={key} className="flex cursor-pointer items-start justify-between gap-3">
+                      <span>
+                        <span className="block text-xs font-semibold text-paper">{label}</span>
+                        <span className="block font-tech text-[10px] text-ash">{hint}</span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={settings[key]}
+                        onChange={(event) => updateSettings({ [key]: event.target.checked })}
+                        className="mt-0.5 h-4 w-4 accent-[#E5A93C]"
+                      />
+                    </label>
+                  ))}
+                </div>
+
+                <label className="block">
+                  <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
+                    Scene Transitions
+                  </span>
+                  <select
+                    value={settings.transition}
+                    onChange={(event) => updateSettings({ transition: event.target.value as TransitionChoice })}
+                    className="w-full rounded-[3px] border border-line bg-canvas px-3 py-2 text-xs font-medium text-paper outline-none focus:border-amber-cue"
+                  >
+                    <option value="auto" className="bg-panel">Auto (matches style)</option>
+                    <option value="fade" className="bg-panel">Crossfade</option>
+                    <option value="slide" className="bg-panel">Slide</option>
+                    <option value="none" className="bg-panel">Hard cuts</option>
+                  </select>
+                </label>
+              </div>
+            ) : null}
+
             {tab === "settings" ? (
               <div className="space-y-4">
                 <div>

@@ -20,10 +20,41 @@ export type Scene = {
   transition: "fade" | "none";
 };
 
+export type MusicChoice = "auto" | "none" | "energetic" | "friendly" | "professional" | "cinematic" | "minimal";
+export type TransitionChoice = "auto" | "fade" | "slide" | "none";
+
+/**
+ * Per-video production settings. Stored inside the script JSON so no
+ * database migration is needed; every field is optional with safe defaults.
+ */
+export type VideoSettings = {
+  music?: MusicChoice;
+  /** 0–1, background music level before voice ducking. */
+  musicVolume?: number;
+  /** Word-timed narration subtitles (invideo-style). */
+  subtitles?: boolean;
+  /** Scene title shown briefly at the top of each scene. */
+  headlines?: boolean;
+  transition?: TransitionChoice;
+};
+
+export const DEFAULT_SETTINGS: Required<VideoSettings> = {
+  music: "auto",
+  musicVolume: 0.3,
+  subtitles: true,
+  headlines: true,
+  transition: "auto",
+};
+
+export function resolveSettings(settings?: VideoSettings | null): Required<VideoSettings> {
+  return { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
+}
+
 export type VideoScript = {
   title: string;
   summary: string;
   scenes: Scene[];
+  settings?: VideoSettings;
 };
 
 export type StockSource = {

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Scene, Tone, VideoScript } from "./types";
 import { MAX_SCENES, MIN_SCENES } from "./types";
-import { hydrateSceneMedia, matchLocalAsset, previewUrlForAsset } from "./stock";
+import { hydrateSceneMedia, matchLocalAsset, previewUrlForAsset, searchLocalCatalog } from "./stock";
+import { llmJson } from "./llm";
 
 type Category = {
   key: string;
@@ -499,72 +500,87 @@ function localGenerate(options: GenerateScriptOptions): VideoScript {
   };
 }
 
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: "English", es: "Spanish", fr: "French", de: "German", pt: "Portuguese",
+  it: "Italian", nl: "Dutch", pl: "Polish", tr: "Turkish", ru: "Russian",
+};
+
+type AiScene = { narration?: string; caption?: string; mediaQuery?: string };
+type AiScript = { title?: string; summary?: string; scenes?: AiScene[] };
+
+/** Turn AI scene text into a full Scene with a matched (unused) stock clip. */
+export function sceneFromText(
+  scene: AiScene,
+  fallbackQuery: string,
+  usedAssets: string[],
+  id: string = randomUUID(),
+): Scene {
+  const mediaQuery = (scene.mediaQuery ?? "").replace(/\s+/g, " ").trim() || fallbackQuery;
+  // Prefer clips matching the scene's own keywords, then the video's topic,
+  // and only then any unused clip (never an unrelated alphabetical default).
+  const pick = (query: string) =>
+    searchLocalCatalog(query, { type: "video", limit: 24 }).find((asset) => !usedAssets.includes(asset.id));
+  const matched =
+    pick(mediaQuery) ??
+    pick(`${scene.narration ?? ""} ${scene.caption ?? ""}`) ??
+    pick(fallbackQuery) ??
+    matchLocalAsset(mediaQuery, "video", usedAssets);
+  if (matched) usedAssets.push(matched.id);
+  return hydrateSceneMedia({
+    id,
+    narration: (scene.narration ?? "").trim(),
+    caption: (scene.caption ?? "").trim().slice(0, 60),
+    mediaQuery,
+    mediaId: matched?.id ?? null,
+    mediaType: "video",
+    mediaUrl: matched ? previewUrlForAsset(matched) : null,
+    mediaThumb: matched?.thumb ?? null,
+    mediaTitle: matched?.title ?? null,
+    mediaCreator: matched?.creator ?? null,
+    mediaProvider: matched?.provider ?? "pexels",
+    duration: null,
+    transition: "fade",
+  });
+}
+
+export function scriptWritingRules(options: { tone: Tone; language: string; duration: number }): string {
+  const language = LANGUAGE_NAMES[options.language] ?? "English";
+  const words = Math.round(options.duration * 2.5);
+  return [
+    `Write in ${language}.`,
+    `Tone: ${options.tone}.`,
+    `The whole narration should be about ${words} words in total (≈${options.duration} seconds spoken).`,
+    "Each scene: narration of 1-2 natural spoken sentences that move the story forward (no filler, no 'in this video').",
+    "Open with a strong hook, end with a clear takeaway or call to action.",
+    "caption: a punchy on-screen title, max 6 words.",
+    "mediaQuery: 2-4 concrete, filmable English stock-footage keywords describing what is visible (e.g. 'woman jogging park sunrise'), never abstract ideas.",
+  ].join(" ");
+}
+
 async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript | null> {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) return null;
   const count = sceneCountFor(options.duration);
-  try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${key}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        temperature: 0.8,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a senior video scriptwriter for short-form video. Return JSON only.",
-          },
-          {
-            role: "user",
-            content: `Write a ${count}-scene video script about: "${options.prompt}". Tone: ${options.tone}. Each scene narration must be 2 sentences max. Each scene needs a punchy caption (max 6 words) and a short stock media search query (2-3 keywords). Return JSON: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string}]}`,
-          },
-        ],
-      }),
-    });
-    if (!response.ok) return null;
-    const data = (await response.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) return null;
-    const parsed = JSON.parse(content) as {
-      title?: string;
-      summary?: string;
-      scenes?: { narration?: string; caption?: string; mediaQuery?: string }[];
-    };
-    if (!parsed.scenes?.length) return null;
-    return {
-      title: parsed.title ?? cleanTopic(options.prompt),
-      summary: parsed.summary ?? `${parsed.scenes.length} scenes`,
-      scenes: parsed.scenes.map((scene) => {
-        const mediaQuery = scene.mediaQuery ?? options.prompt;
-        const matched = matchLocalAsset(mediaQuery, "video");
-        return hydrateSceneMedia({
-          id: randomUUID(),
-          narration: scene.narration ?? "",
-          caption: scene.caption ?? "",
-          mediaQuery,
-          mediaId: matched?.id ?? null,
-          mediaType: "video",
-          mediaUrl: matched ? previewUrlForAsset(matched) : null,
-          mediaThumb: matched?.thumb ?? null,
-          mediaTitle: matched?.title ?? null,
-          mediaCreator: matched?.creator ?? null,
-          mediaProvider: matched?.provider ?? "pexels",
-          duration: null,
-          transition: "none" as const,
-        });
-      }),
-    };
-  } catch {
-    return null;
-  }
+  const parsed = await llmJson<AiScript>([
+    {
+      role: "system",
+      content: "You are an award-winning short-form video scriptwriter. Reply with a single JSON object only.",
+    },
+    {
+      role: "user",
+      content: `Create a ${count}-scene video script for: "${options.prompt}". ${scriptWritingRules(options)} JSON shape: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string}]}`,
+    },
+  ]);
+  const scenes = (parsed?.scenes ?? []).filter((scene) => scene?.narration?.trim());
+  if (!parsed || scenes.length === 0) return null;
+
+  const used: string[] = [];
+  const category = detectCategory(options.prompt);
+  return {
+    title: (parsed.title ?? cleanTopic(options.prompt)).slice(0, 90),
+    summary: parsed.summary ?? `${scenes.length} scenes · ${options.tone} tone`,
+    scenes: scenes.slice(0, MAX_SCENES).map((scene, index) =>
+      sceneFromText(scene, `${options.prompt} ${buildMediaQuery("context", category, index)}`, used),
+    ),
+  };
 }
 
 export async function generateScript(
@@ -606,4 +622,35 @@ export function regenerateScene(
     mediaCreator: matched?.creator ?? scene.mediaCreator,
     mediaProvider: matched?.provider ?? scene.mediaProvider,
   });
+}
+
+/** Rewrite one scene with the LLM, keeping the story around it coherent. */
+export async function regenerateSceneAi(
+  script: VideoScript,
+  sceneIndex: number,
+  options: { prompt: string; tone: Tone; language: string; duration: number },
+): Promise<Scene> {
+  const scene = script.scenes[sceneIndex];
+  const outline = script.scenes
+    .map((item, index) => `${index + 1}. ${item.narration}`)
+    .join("\n");
+  const parsed = await llmJson<AiScene>(
+    [
+      { role: "system", content: "You are a video scriptwriter. Reply with a single JSON object only." },
+      {
+        role: "user",
+        content: `Video topic: "${options.prompt}". Current script:\n${outline}\n\nRewrite scene ${sceneIndex + 1} so it is fresher and more engaging while fitting between its neighbours. ${scriptWritingRules({ ...options, duration: Math.max(4, Math.round(options.duration / Math.max(1, script.scenes.length))) })} JSON: {"narration": string, "caption": string, "mediaQuery": string}`,
+      },
+    ],
+    { timeoutMs: 35_000 },
+  );
+  if (!parsed?.narration?.trim()) {
+    return regenerateScene(script, sceneIndex, options);
+  }
+  const used = script.scenes
+    .filter((_, index) => index !== sceneIndex)
+    .map((item) => item.mediaId)
+    .filter((id): id is string => Boolean(id));
+  const next = sceneFromText(parsed, scene.mediaQuery, used, scene.id);
+  return { ...next, duration: scene.duration };
 }

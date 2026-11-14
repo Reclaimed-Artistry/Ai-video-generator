@@ -46,6 +46,26 @@ PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react
 | `/api/tts/preview` | `POST` | Synthesize live voice audition audio |
 | `/api/files/[...file]` | `GET` | Byte-range MP4 & poster streaming |
 
+## How it compares to invideo.ai
+
+| invideo.ai feature | Reclaimed Artistry |
+| --- | --- |
+| Prompt → finished video | Type a prompt, the AI writes the script, picks footage, and rendering starts automatically |
+| AI-written, topic-specific scripts | LLM scripts (OpenAI if `OPENAI_API_KEY`, otherwise free Pollinations; template engine as last-resort fallback) |
+| Edit with plain-English commands | AI command bar: "make it shorter", "use a British male voice", "switch to vertical", "add calm music", "translate to Spanish"… then auto re-render |
+| Stock footage matched to every scene | 90 verified Pexels video clips bundled (26 topics) + live Pexels / Pixabay search with API keys |
+| Natural AI voiceover | 14 Microsoft neural voices, 10 languages (ElevenLabs / OpenAI optional) |
+| Animated subtitles | Word-synced karaoke subtitles from the voice engine's word timings, 5 caption styles |
+| Background music | 5 bundled CC0 tracks (auto-picked by tone), ducked under the voice, loudness-normalised to -16 LUFS |
+| Transitions | Crossfade / slide transitions with voice kept in sync |
+| 240p / 360p / 1080p, 16:9 / 9:16 / 1:1 | Yes |
+
+**AI reliability:** without any key, scripts and AI commands use Pollinations' free
+tier, limited to about one reply per 45 seconds per IP. When the limit is hit the
+app still works (template script; settings commands like voice/format/music are
+handled instantly without AI). For dependable AI on Vercel set a free
+`POLLINATIONS_TOKEN` (https://enter.pollinations.ai) or `OPENAI_API_KEY`.
+
 ## Deploy on Vercel (One-Click or GitHub Import)
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FReclaimed-Artistry%2FAi-video-generator&env=DATABASE_URL&project-name=reclaimed-artistry)

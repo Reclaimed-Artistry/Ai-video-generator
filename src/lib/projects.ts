@@ -30,6 +30,8 @@ export function toProject(row: ProjectRow): Project {
       title: script.title ?? row.title,
       summary: script.summary ?? "",
       scenes,
+      // Music / subtitle / transition choices live inside the script JSON.
+      ...(script.settings ? { settings: script.settings } : {}),
     },
     outputPath: row.outputPath,
     posterPath: row.posterPath,

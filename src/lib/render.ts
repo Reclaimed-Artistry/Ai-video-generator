@@ -3,9 +3,10 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { synthesizeSpeech } from "./tts";
+import { synthesizeSpeech, type SpokenWord } from "./tts";
 import { LOCAL_CATALOG, getLocalAsset, matchLocalAsset, pickSource } from "./stock";
 import { getFontsDir, probeDuration, runFfmpeg } from "./ffmpeg";
+import { musicFilePath, resolveMusicTrack } from "./music";
 import { getProject, updateProject } from "./projects";
 import {
   getProjectScratchDir,
@@ -13,7 +14,17 @@ import {
   isBlobConfigured,
   saveRenderArtifact,
 } from "./storage";
-import { ASPECTS, RESOLUTIONS, type AspectRatio, type Resolution, type Scene, type Style } from "./types";
+import {
+  ASPECTS,
+  RESOLUTIONS,
+  resolveSettings,
+  type AspectRatio,
+  type Resolution,
+  type Scene,
+  type Style,
+  type Tone,
+  type VideoSettings,
+} from "./types";
 
 export function projectDir(id: string): string {
   return getProjectScratchDir(id);
@@ -39,10 +50,8 @@ function targetSize(resolution: Resolution, aspect: AspectRatio) {
   let width = short;
   let height = short;
   if (ratio >= 1) {
-    height = short;
     width = Math.round(short * ratio);
   } else {
-    width = short;
     height = Math.round(short / ratio);
   }
   width = Math.max(64, Math.round(width / 2) * 2);
@@ -50,84 +59,57 @@ function targetSize(resolution: Resolution, aspect: AspectRatio) {
   return { width, height };
 }
 
-type CaptionStyle = {
-  fontname: string;
+/* ────────────────────────── Subtitles (ASS) ────────────────────────── */
+
+type SubStyle = {
   fontsize: number;
-  primary: string;
-  outlineColour: string;
-  backColour: string;
+  /** Colour a word turns once it has been spoken (karaoke highlight). */
+  spoken: string;
+  /** Colour of words not yet spoken. */
+  upcoming: string;
+  outline: string;
+  back: string;
   borderStyle: number;
-  outline: number;
+  outlineWidth: number;
   shadow: number;
   alignment: number;
-  marginL: number;
-  marginR: number;
   marginV: number;
-  bold: boolean;
+  marginH: number;
+  uppercase: boolean;
 };
 
-function captionStyle(
-  style: Style,
-  width: number,
-  height: number,
-): CaptionStyle {
-  const base: CaptionStyle = {
-    fontname: "DejaVu Sans",
-    fontsize: Math.max(14, Math.round(height / 17)),
-    primary: "&H00FFFFFF",
-    outlineColour: "&H00202020",
-    backColour: "&H80000000",
+function subtitleStyle(style: Style, width: number, height: number): SubStyle {
+  const minDim = Math.min(width, height);
+  const vertical = height > width;
+  const base: SubStyle = {
+    fontsize: Math.max(13, Math.round(minDim / (vertical ? 12 : 14))),
+    spoken: "&H0000D7FF", // gold (ASS colours are &HAABBGGRR)
+    upcoming: "&H00FFFFFF",
+    outline: "&H00101010",
+    back: "&H90000000",
     borderStyle: 1,
-    outline: 2.4,
-    shadow: 1.2,
+    outlineWidth: Math.max(1.5, minDim / 220),
+    shadow: Math.max(0.8, minDim / 500),
     alignment: 2,
-    marginL: 40,
-    marginR: 40,
-    marginV: Math.max(14, Math.round(height * 0.09)),
-    bold: true,
+    marginV: Math.round(height * (vertical ? 0.2 : 0.09)),
+    marginH: Math.round(width * 0.07),
+    uppercase: false,
   };
   switch (style) {
-    case "minimal":
-      return {
-        ...base,
-        fontsize: Math.max(12, Math.round(height / 20)),
-        outline: 0,
-        shadow: 0,
-        alignment: 1,
-        marginL: Math.max(16, Math.round(width * 0.06)),
-        marginV: Math.max(14, Math.round(height * 0.1)),
-      };
-    case "cinematic":
-      return {
-        ...base,
-        fontsize: Math.max(12, Math.round(height / 21)),
-        outline: 3,
-        shadow: 1.6,
-        outlineColour: "&H00000000",
-        marginV: Math.max(14, Math.round(height * 0.12)),
-      };
     case "energetic":
-      return {
-        ...base,
-        primary: "&H0066E0FF",
-        outline: 3,
-        shadow: 1.4,
-        marginV: Math.max(14, Math.round(height * 0.08)),
-      };
+      return { ...base, fontsize: Math.round(base.fontsize * 1.12), spoken: "&H0033FF66", uppercase: true };
+    case "cinematic":
+      return { ...base, fontsize: Math.round(base.fontsize * 0.88), spoken: "&H00FFFFFF", outlineWidth: base.outlineWidth * 0.8 };
     case "corporate":
-      return {
-        ...base,
-        borderStyle: 3,
-        backColour: "&HCC8A3A1E",
-        outlineColour: "&H00203060",
-        marginV: Math.max(14, Math.round(height * 0.08)),
-      };
+      return { ...base, borderStyle: 3, back: "&H40552A12", outline: "&H40552A12", spoken: "&H00FFD9A6", outlineWidth: Math.max(4, minDim / 90), shadow: 0 };
+    case "minimal":
+      return { ...base, fontsize: Math.round(base.fontsize * 0.9), spoken: "&H00FFFFFF", upcoming: "&H00D0D0D0", outlineWidth: 0, shadow: Math.max(1, minDim / 300), alignment: 1 };
     default:
       return base;
   }
 }
 
-function assTimestamp(seconds: number): string {
+function assTime(seconds: number): string {
   const total = Math.max(0, seconds);
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
@@ -135,87 +117,168 @@ function assTimestamp(seconds: number): string {
   return `${hours}:${String(minutes).padStart(2, "0")}:${secs.toFixed(2).padStart(5, "0")}`;
 }
 
-function escapeAssText(value: string): string {
-  return value
-    .replace(/\\/g, "")
-    .replace(/[{}]/g, "")
-    .replace(/\r?\n/g, "\\N")
-    .trim();
+function cleanAssText(value: string): string {
+  return value.replace(/\\/g, "").replace(/[{}]/g, "").replace(/\r?\n/g, " ").trim();
 }
 
-function buildAssFile(
-  caption: string,
-  duration: number,
-  width: number,
-  height: number,
-  style: Style,
-): string {
-  const captionStyleConfig = captionStyle(style, width, height);
-  const text = escapeAssText(caption) || " ";
+/** Estimate word timings when the voice engine does not report them. */
+function estimateWords(narration: string, spokenSeconds: number): SpokenWord[] {
+  const tokens = narration.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return [];
+  const weights = tokens.map((token) => token.length + 2);
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  const usable = Math.max(0.5, spokenSeconds - 0.1);
+  let cursor = 0.05;
+  return tokens.map((token, index) => {
+    const span = (weights[index] / total) * usable;
+    const word = { text: token, start: cursor, end: cursor + span * 0.92 };
+    cursor += span;
+    return word;
+  });
+}
+
+/** Group words into short readable lines, breaking on pauses and length. */
+function chunkWords(words: SpokenWord[], maxWords: number, maxChars: number): SpokenWord[][] {
+  const chunks: SpokenWord[][] = [];
+  let current: SpokenWord[] = [];
+  let chars = 0;
+  words.forEach((word, index) => {
+    const previous = words[index - 1];
+    const pause = previous ? word.start - previous.end : 0;
+    const sentenceEnd = previous ? /[.!?…:;]$/.test(previous.text) : false;
+    if (
+      current.length > 0 &&
+      (current.length >= maxWords || chars + word.text.length > maxChars || pause > 0.38 || sentenceEnd)
+    ) {
+      chunks.push(current);
+      current = [];
+      chars = 0;
+    }
+    current.push(word);
+    chars += word.text.length + 1;
+  });
+  if (current.length) chunks.push(current);
+  return chunks;
+}
+
+function buildSceneAss(options: {
+  scene: Scene;
+  words: SpokenWord[];
+  sceneSeconds: number;
+  width: number;
+  height: number;
+  style: Style;
+  subtitles: boolean;
+  headlines: boolean;
+}): string {
+  const { scene, words, sceneSeconds, width, height, style } = options;
+  const sub = subtitleStyle(style, width, height);
+  const minDim = Math.min(width, height);
+  const vertical = height > width;
+  const headSize = Math.max(11, Math.round(minDim / (vertical ? 18 : 20)));
+  const styleLine = (name: string, s: Partial<SubStyle> & { fontsize: number }) =>
+    [
+      `Style: ${name}`,
+      "DejaVu Sans",
+      s.fontsize,
+      s.spoken ?? sub.spoken,
+      s.upcoming ?? sub.upcoming,
+      s.outline ?? sub.outline,
+      s.back ?? sub.back,
+      "-1",
+      "0",
+      "0",
+      "0",
+      "100",
+      "100",
+      "0",
+      "0",
+      String(s.borderStyle ?? sub.borderStyle),
+      String(s.outlineWidth ?? sub.outlineWidth),
+      String(s.shadow ?? sub.shadow),
+      String(s.alignment ?? sub.alignment),
+      String(s.marginH ?? sub.marginH),
+      String(s.marginH ?? sub.marginH),
+      String(s.marginV ?? sub.marginV),
+      "1",
+    ].join(",");
+
+  const events: string[] = [];
+
+  if (options.headlines && scene.caption?.trim()) {
+    const headText = cleanAssText(scene.caption);
+    const end = Math.min(2.4, Math.max(1.2, sceneSeconds - 0.3));
+    events.push(`Dialogue: 1,${assTime(0.15)},${assTime(end)},Head,,0,0,0,,{\\fad(250,350)}${headText}`);
+  }
+
+  if (options.subtitles && words.length) {
+    const chunks = chunkWords(words, vertical ? 3 : 6, vertical ? 18 : 34);
+    chunks.forEach((chunk, index) => {
+      const start = chunk[0].start;
+      const nextStart = chunks[index + 1]?.[0].start;
+      const end = Math.min(sceneSeconds, nextStart ?? chunk[chunk.length - 1].end + 0.35);
+      const text = chunk
+        .map((word, wordIndex) => {
+          const next = chunk[wordIndex + 1];
+          const centis = Math.max(1, Math.round(((next ? next.start : word.end) - word.start) * 100));
+          const label = cleanAssText(sub.uppercase ? word.text.toUpperCase() : word.text);
+          return `{\\k${centis}}${label}`;
+        })
+        .join(" ");
+      events.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Sub,,0,0,0,,${text}`);
+    });
+  } else if (!options.headlines && scene.caption?.trim()) {
+    // Subtitles off and no headline: keep the caption visible for the scene.
+    events.push(`Dialogue: 0,${assTime(0)},${assTime(sceneSeconds)},Sub,,0,0,0,,${cleanAssText(scene.caption)}`);
+  }
+
   return [
     "[Script Info]",
     "ScriptType: v4.00+",
     `PlayResX: ${width}`,
     `PlayResY: ${height}`,
-    "WrapStyle: 2",
+    "WrapStyle: 0",
     "ScaledBorderAndShadow: yes",
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    [
-      "Style: Caption",
-      captionStyleConfig.fontname,
-      captionStyleConfig.fontsize,
-      captionStyleConfig.primary,
-      "&H000000FF",
-      captionStyleConfig.outlineColour,
-      captionStyleConfig.backColour,
-      captionStyleConfig.bold ? "-1" : "0",
-      "0",
-      "0",
-      "0",
-      "100",
-      "100",
-      "0",
-      "0",
-      String(captionStyleConfig.borderStyle),
-      String(captionStyleConfig.outline),
-      String(captionStyleConfig.shadow),
-      String(captionStyleConfig.alignment),
-      String(captionStyleConfig.marginL),
-      String(captionStyleConfig.marginR),
-      String(captionStyleConfig.marginV),
-      "1",
-    ].join(","),
+    styleLine("Sub", { fontsize: sub.fontsize }),
+    styleLine("Head", {
+      fontsize: headSize,
+      spoken: "&H00FFFFFF",
+      upcoming: "&H00FFFFFF",
+      back: "&H66000000",
+      outline: "&H66000000",
+      borderStyle: 3,
+      outlineWidth: Math.max(3, minDim / 80),
+      shadow: 0,
+      alignment: style === "minimal" ? 7 : 8,
+      marginV: Math.round(height * (vertical ? 0.1 : 0.07)),
+      marginH: Math.round(width * 0.06),
+    }),
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    `Dialogue: 0,0:00:00.00,${assTimestamp(duration + 0.4)},Caption,,0,0,0,,${text}`,
+    ...events,
     "",
   ].join("\n");
 }
+
+/* ─────────────────────────── Media helpers ─────────────────────────── */
 
 async function download(url: string, destination: string): Promise<void> {
   const response = await fetch(url, { redirect: "follow" });
   if (!response.ok || !response.body) {
     throw new Error(`Could not download media (${response.status})`);
   }
-  const stream = Readable.fromWeb(
-    response.body as unknown as WebReadableStream<Uint8Array>,
-  );
+  const stream = Readable.fromWeb(response.body as unknown as WebReadableStream<Uint8Array>);
   await pipeline(stream, fs.createWriteStream(destination));
 }
 
 type ResolvedMedia = { url: string; kind: "video" | "generated" };
 
-/**
- * Scenes always end up with real stock footage — still images are never used
- * for a scene, so a video clip is matched (or swapped in) when needed.
- */
-async function resolveMedia(
-  scene: Scene,
-  targetHeight: number,
-): Promise<ResolvedMedia> {
+/** Scenes always end up with real stock video footage. */
+async function resolveMedia(scene: Scene, targetHeight: number): Promise<ResolvedMedia> {
   if (scene.mediaId) {
     const asset = getLocalAsset(scene.mediaId);
     if (asset && asset.type === "video") {
@@ -239,104 +302,80 @@ async function resolveMedia(
   return { url: "", kind: "generated" };
 }
 
-async function renderSceneVideo(
-  scene: Scene,
-  index: number,
-  dir: string,
-  width: number,
-  height: number,
-  style: Style,
-  duration: number,
-): Promise<string> {
-  const output = path.join(dir, `scene-${String(index).padStart(2, "0")}.mp4`);
-  const captionFile = path.join(dir, `caption-${String(index).padStart(2, "0")}.ass`);
-  fs.writeFileSync(
-    captionFile,
-    buildAssFile(scene.caption ?? "", duration, width, height, style),
-    "utf8",
-  );
+function escapeFilterPath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'");
+}
+
+async function renderSceneVideo(options: {
+  scene: Scene;
+  index: number;
+  dir: string;
+  width: number;
+  height: number;
+  seconds: number;
+  ass: string;
+}): Promise<string> {
+  const { scene, index, dir, width, height, seconds } = options;
+  const tag = String(index).padStart(2, "0");
+  const output = path.join(dir, `scene-${tag}.mp4`);
+  const captionFile = path.join(dir, `subs-${tag}.ass`);
+  fs.writeFileSync(captionFile, options.ass, "utf8");
 
   const fontsDir = getFontsDir();
-  const escapedAss = captionFile.replace(/\\/g, "/").replace(/:/g, "\\:");
-  const escapedFontsDir = fontsDir
-    ? fontsDir.replace(/\\/g, "/").replace(/:/g, "\\:")
-    : null;
-  const captionFilter = escapedFontsDir
-    ? `ass=filename=${escapedAss}:fontsdir=${escapedFontsDir}`
-    : `ass=${escapedAss}`;
+  const captionFilter = fontsDir
+    ? `ass=filename=${escapeFilterPath(captionFile)}:fontsdir=${escapeFilterPath(fontsDir)}`
+    : `ass=${escapeFilterPath(captionFile)}`;
+  const encode = [
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+    "-r", "30", ...(IS_VERCEL ? ["-threads", "2"] : []), "-an", output,
+  ];
 
   const media = await resolveMedia(scene, height);
-
-  if (media.kind === "generated" || !media.url) {
-    const gradient = `gradients=s=${width}x${height}:c0=0x121210:c1=0x262521:x0=0:y0=0:x1=${width}:y1=${height}:d=${Math.ceil(duration)}:r=${30}`;
-    await runFfmpeg([
-      "-y",
-      "-f",
-      "lavfi",
-      "-i",
-      gradient,
-      "-t",
-      duration.toFixed(2),
-      "-vf",
-      captionFilter,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-pix_fmt",
-      "yuv420p",
-      "-r",
-      "30",
-      output,
-    ]);
-    return output;
-  }
-
-  const extension = media.url.toLowerCase().endsWith(".webm") ? "webm" : "mp4";
-  const mediaFile = path.join(dir, `media-${String(index).padStart(2, "0")}.${extension}`);
-  await download(media.url, mediaFile);
-
-  const args: string[] = ["-y", "-stream_loop", "-1", "-i", mediaFile];
-
-  const filters: string[] = [
-    `scale=${width}:${height}:force_original_aspect_ratio=increase`,
-    `crop=${width}:${height}`,
-    "setsar=1",
-    "fps=30",
-  ];
-  filters.push(captionFilter);
-
-  args.push(
-    "-t",
-    duration.toFixed(2),
-    "-vf",
-    filters.join(","),
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "23",
-    "-pix_fmt",
-    "yuv420p",
-    "-profile:v",
-    "high",
-    "-r",
-    "30",
-    ...(IS_VERCEL ? ["-threads", "2"] : []),
-    "-an",
-    output,
-  );
-
   try {
-    await runFfmpeg(args);
+    if (media.kind === "generated" || !media.url) {
+      await runFfmpeg([
+        "-y", "-f", "lavfi",
+        "-i", `gradients=s=${width}x${height}:c0=0x121210:c1=0x262521:d=${Math.ceil(seconds)}:r=30`,
+        "-t", seconds.toFixed(3), "-vf", captionFilter, ...encode,
+      ]);
+      return output;
+    }
+
+    const extension = media.url.toLowerCase().includes(".webm") ? "webm" : "mp4";
+    const mediaFile = path.join(dir, `media-${tag}.${extension}`);
+    await download(media.url, mediaFile);
+    try {
+      await runFfmpeg([
+        "-y", "-stream_loop", "-1", "-i", mediaFile,
+        "-t", seconds.toFixed(3),
+        "-vf", [
+          `scale=${width}:${height}:force_original_aspect_ratio=increase`,
+          `crop=${width}:${height}`,
+          "setsar=1",
+          "fps=30",
+          captionFilter,
+        ].join(","),
+        ...encode,
+      ]);
+    } finally {
+      fs.rmSync(/* turbopackIgnore: true */ mediaFile, { force: true });
+    }
+    return output;
   } finally {
-    // Free source clip immediately so serverless /tmp stays well below 512MB
-    fs.rmSync(/* turbopackIgnore: true */ mediaFile, { force: true });
     fs.rmSync(/* turbopackIgnore: true */ captionFile, { force: true });
   }
-  return output;
 }
+
+function transitionFor(settings: Required<VideoSettings>, style: Style, tone: Tone) {
+  if (settings.transition === "none") return null;
+  if (settings.transition === "slide") return { name: "slideleft", seconds: 0.45 };
+  if (settings.transition === "fade") return { name: "fade", seconds: 0.5 };
+  if (style === "energetic" || tone === "energetic") return { name: "smoothleft", seconds: 0.4 };
+  if (style === "cinematic" || tone === "cinematic") return { name: "fade", seconds: 0.7 };
+  return { name: "fade", seconds: 0.5 };
+}
+
+/* ─────────────────────────── Main pipeline ─────────────────────────── */
 
 export async function renderProject(projectId: string): Promise<void> {
   const project = await getProject(projectId);
@@ -349,168 +388,160 @@ export async function renderProject(projectId: string): Promise<void> {
   const { width, height } = targetSize(project.resolution, project.aspect);
   const scenes = project.script.scenes ?? [];
   if (scenes.length === 0) throw new Error("The script has no scenes");
+  const settings = resolveSettings(project.script.settings);
+  const transition = scenes.length > 1 ? transitionFor(settings, project.style, project.tone) : null;
+  const overlap = transition?.seconds ?? 0;
 
   await updateProject(projectId, {
     status: "rendering",
     progress: 2,
-    stage: "Preparing voiceover",
+    stage: "Recording voiceover",
     error: null,
   });
 
-  const sceneFiles: string[] = [];
-  const audioFiles: string[] = [];
-
+  // 1. Voiceover for every scene (word timings drive subtitles and scene length).
+  const voices: { file: string; seconds: number; words: SpokenWord[] }[] = [];
   for (let index = 0; index < scenes.length; index += 1) {
     const scene = scenes[index];
     await updateProject(projectId, {
-      progress: Math.round(5 + (index / scenes.length) * 75),
-      stage: `Scene ${index + 1} of ${scenes.length}: generating voiceover`,
+      progress: Math.round(3 + (index / scenes.length) * 22),
+      stage: `Recording voiceover ${index + 1} of ${scenes.length}`,
     });
-
-    const speech = await synthesizeSpeech(
-      scene.narration?.length ? scene.narration : scene.caption,
-      project.voice,
-      project.language,
-    );
-    const audioFile = path.join(
-      dir,
-      `audio-${String(index).padStart(2, "0")}.${speech.ext}`,
-    );
-    fs.writeFileSync(audioFile, speech.data);
-    audioFiles.push(audioFile);
-
-    const spoken = await probeDuration(audioFile);
+    const text = scene.narration?.trim() ? scene.narration : scene.caption || " ";
+    const speech = await synthesizeSpeech(text, project.voice, project.language);
+    const file = path.join(dir, `voice-${String(index).padStart(2, "0")}.${speech.ext}`);
+    fs.writeFileSync(file, speech.data);
+    const spoken = await probeDuration(file);
     const manual = scene.duration ?? 0;
-    const duration = Math.min(
-      45,
-      Math.max(2.6, spoken + 0.45, manual > 0 ? manual : 0),
-    );
-
-    await updateProject(projectId, {
-      progress: Math.round(5 + ((index + 0.5) / scenes.length) * 75),
-      stage: `Scene ${index + 1} of ${scenes.length}: compositing visuals`,
+    const seconds = Math.min(45, Math.max(2.6, spoken + 0.45, manual > 0 ? manual : 0));
+    voices.push({
+      file,
+      seconds,
+      words: speech.words?.length ? speech.words : estimateWords(text, spoken),
     });
-
-    const file = await renderSceneVideo(
-      scene,
-      index,
-      dir,
-      width,
-      height,
-      project.style,
-      duration,
-    );
-    sceneFiles.push(file);
   }
 
+  // 2. Visuals: each scene is rendered `overlap` longer so crossfades never shift the voice.
+  const sceneFiles: string[] = [];
+  for (let index = 0; index < scenes.length; index += 1) {
+    await updateProject(projectId, {
+      progress: Math.round(25 + (index / scenes.length) * 55),
+      stage: `Compositing scene ${index + 1} of ${scenes.length}`,
+    });
+    const isLast = index === scenes.length - 1;
+    const seconds = voices[index].seconds + (isLast ? 0 : overlap);
+    const ass = buildSceneAss({
+      scene: scenes[index],
+      words: voices[index].words,
+      sceneSeconds: seconds,
+      width,
+      height,
+      style: project.style,
+      subtitles: settings.subtitles,
+      headlines: settings.headlines,
+    });
+    sceneFiles.push(
+      await renderSceneVideo({ scene: scenes[index], index, dir, width, height, seconds, ass }),
+    );
+  }
+
+  // 3. One final pass: crossfaded picture + voice (padded per scene) + ducked music.
   await updateProject(projectId, {
-    progress: 85,
-    stage: "Assembling final video",
+    progress: 82,
+    stage: transition ? "Adding transitions, music and final mix" : "Adding music and final mix",
   });
 
-  const videoList = path.join(dir, "scenes.txt");
-  fs.writeFileSync(
-    videoList,
-    sceneFiles.map((file) => `file '${file.replace(/'/g, "'\\''")}'`).join("\n"),
-    "utf8",
-  );
-  const silentVideo = path.join(dir, "video.mp4");
-  await runFfmpeg([
-    "-y",
-    "-f",
-    "concat",
-    "-safe",
-    "0",
-    "-i",
-    videoList,
-    "-c",
-    "copy",
-    silentVideo,
-  ]);
+  const total = voices.reduce((sum, voice) => sum + voice.seconds, 0);
+  const track = resolveMusicTrack(settings.music, project.tone);
+  const musicFile = track ? musicFilePath(track) : null;
 
-  const audioInputs: string[] = [];
-  audioFiles.forEach((file) => {
-    audioInputs.push("-i", file);
+  const inputs: string[] = [];
+  sceneFiles.forEach((file) => inputs.push("-i", file));
+  voices.forEach((voice) => inputs.push("-i", voice.file));
+  if (musicFile) inputs.push("-stream_loop", "-1", "-i", musicFile);
+
+  const n = scenes.length;
+  const filters: string[] = [];
+  for (let index = 0; index < n; index += 1) {
+    filters.push(`[${index}:v]settb=AVTB,fps=30,format=yuv420p,setsar=1[v${index}]`);
+  }
+  if (transition && n > 1) {
+    let previous = "v0";
+    let offset = 0;
+    for (let index = 1; index < n; index += 1) {
+      offset += voices[index - 1].seconds;
+      const label = index === n - 1 ? "vout" : `x${index}`;
+      filters.push(
+        `[${previous}][v${index}]xfade=transition=${transition.name}:duration=${overlap}:offset=${offset.toFixed(3)}[${label}]`,
+      );
+      previous = label;
+    }
+  } else {
+    filters.push(`${Array.from({ length: n }, (_, index) => `[v${index}]`).join("")}concat=n=${n}:v=1:a=0[vout]`);
+  }
+
+  voices.forEach((voice, index) => {
+    filters.push(
+      `[${n + index}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,apad=whole_dur=${voice.seconds.toFixed(3)},atrim=0:${voice.seconds.toFixed(3)},asetpts=PTS-STARTPTS[a${index}]`,
+    );
   });
-  const filter = `${audioFiles
-    .map((_, index) => `[${index}:a]`)
-    .join("")}concat=n=${audioFiles.length}:v=0:a=1,loudnorm=I=-16:TP=-1.5:LRA=11[out]`;
-  const audioTrack = path.join(dir, "audio.m4a");
-  await runFfmpeg([
-    "-y",
-    ...audioInputs,
-    "-filter_complex",
-    filter,
-    "-map",
-    "[out]",
-    "-ac",
-    "2",
-    "-ar",
-    "44100",
-    audioTrack,
-  ]);
+  filters.push(`${voices.map((_, index) => `[a${index}]`).join("")}concat=n=${n}:v=0:a=1[voice]`);
+
+  if (musicFile) {
+    const fadeOutStart = Math.max(0, total - 2.5);
+    const level = Math.min(1, Math.max(0, settings.musicVolume));
+    filters.push(
+      `[${2 * n}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=0:${total.toFixed(3)},asetpts=PTS-STARTPTS,volume=${level.toFixed(2)},afade=t=in:st=0:d=1.5,afade=t=out:st=${fadeOutStart.toFixed(3)}:d=2.5[music]`,
+      "[voice]asplit=2[vmain][vkey]",
+      "[music][vkey]sidechaincompress=threshold=0.02:ratio=8:attack=15:release=400[ducked]",
+      "[vmain][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100[aout]",
+    );
+  } else {
+    filters.push("[voice]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100[aout]");
+  }
 
   const output = path.join(dir, "output.mp4");
   await runFfmpeg([
     "-y",
-    "-i",
-    silentVideo,
-    "-i",
-    audioTrack,
-    "-c:v",
-    "copy",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "160k",
-    "-shortest",
-    "-movflags",
-    "+faststart",
+    ...inputs,
+    "-filter_complex", filters.join(";"),
+    "-map", "[vout]",
+    "-map", "[aout]",
+    "-t", total.toFixed(3),
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+    "-profile:v", "high", "-r", "30",
+    ...(IS_VERCEL ? ["-threads", "2"] : []),
+    "-c:a", "aac", "-b:a", "160k", "-ac", "2",
+    "-movflags", "+faststart",
     output,
   ]);
+
+  for (const file of [...sceneFiles, ...voices.map((voice) => voice.file)]) {
+    fs.rmSync(/* turbopackIgnore: true */ file, { force: true });
+  }
 
   const poster = path.join(dir, "poster.jpg");
   try {
     await runFfmpeg([
-      "-y",
-      "-ss",
-      "0.4",
-      "-i",
-      output,
-      "-frames:v",
-      "1",
-      "-vf",
-      "scale=720:-2",
-      "-q:v",
-      "4",
-      poster,
+      "-y", "-ss", Math.min(1.2, total / 3).toFixed(2), "-i", output,
+      "-frames:v", "1", "-vf", "scale=720:-2", "-q:v", "4", poster,
     ]);
   } catch {
     // poster is optional
   }
 
-  const totalDuration = await probeDuration(output);
-
   await updateProject(projectId, {
     progress: 94,
-    stage: isBlobConfigured()
-      ? "Uploading master to Vercel Blob"
-      : "Saving rendered master",
+    stage: isBlobConfigured() ? "Uploading master to Vercel Blob" : "Saving rendered master",
   });
 
-  const savedOutputPath = await saveRenderArtifact(
-    projectId,
-    "output.mp4",
-    output,
-    "video/mp4",
-  );
+  const savedOutputPath = await saveRenderArtifact(projectId, "output.mp4", output, "video/mp4");
   const hasPoster = fs.existsSync(/* turbopackIgnore: true */ poster);
   const savedPosterPath = hasPoster
     ? await saveRenderArtifact(projectId, "poster.jpg", poster, "image/jpeg")
     : null;
 
-  // On Vercel or when Vercel Blob owns the deliverables, wipe the entire /tmp
-  // scratch directory so warm Fluid Compute instances never fill /tmp.
+  // On Vercel or when Blob owns the deliverables, wipe the /tmp scratch dir.
   if (IS_VERCEL || isBlobConfigured()) {
     fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
   } else {
@@ -528,8 +559,6 @@ export async function renderProject(projectId: string): Promise<void> {
     outputPath: savedOutputPath,
     posterPath: savedPosterPath,
   });
-
-  void totalDuration;
 }
 
 export async function runRenderJob(projectId: string): Promise<void> {
@@ -565,35 +594,12 @@ function jobMap(): Map<string, JobState> {
 }
 
 export function getJobState(projectId: string): JobState {
-  return (
-    jobMap().get(projectId) ?? {
-      status: "idle",
-      error: null,
-      startedAt: 0,
-    }
-  );
+  return jobMap().get(projectId) ?? { status: "idle", error: null, startedAt: 0 };
 }
 
 export function startRender(projectId: string): boolean {
-  const jobs = jobMap();
-  const existing = jobs.get(projectId);
+  const existing = jobMap().get(projectId);
   if (existing?.status === "running") return false;
-  jobs.set(projectId, { status: "running", error: null, startedAt: Date.now() });
-
-  void (async () => {
-    try {
-      await renderProject(projectId);
-      jobs.set(projectId, { status: "done", error: null, startedAt: Date.now() });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Render failed";
-      jobs.set(projectId, { status: "error", error: message, startedAt: Date.now() });
-      await updateProject(projectId, {
-        status: "error",
-        stage: "Render failed",
-        error: message,
-      }).catch(() => undefined);
-    }
-  })();
-
+  void runRenderJob(projectId);
   return true;
 }

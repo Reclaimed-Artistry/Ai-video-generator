@@ -11,9 +11,11 @@ const nextConfig: NextConfig = {
       "./node_modules/ffmpeg-static/index.js",
       "./node_modules/ffmpeg-static/package.json",
       "./src/assets/fonts/**/*",
+      "./src/assets/music/**/*",
       "./node_modules/mespeak/src/**/*",
       "./node_modules/mespeak/voices/en/**/*",
     ],
+    "/api/music/*": ["./src/assets/music/**/*"],
     "/api/tts/preview": [
       "./node_modules/mespeak/src/**/*",
       "./node_modules/mespeak/voices/en/**/*",

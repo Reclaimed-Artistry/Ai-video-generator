@@ -45,12 +45,21 @@ export function hydrateSceneMedia(scene: Scene): Scene {
   };
 }
 
+const STOPWORDS = new Set(
+  ("the and for with your you our are was were this that these those from into onto over under " +
+    "about after before while when then than them they their there here have has had not but out off " +
+    "just more most less very can will would could should what which who whom how why all any each " +
+    "every some such only own same too its it's his her him she one two three four five six seven " +
+    "eight nine ten get got make makes made let lets like way ways start starts keep keeps time times " +
+    "day days even also back up down tonight today now new tip tips step steps thing things").split(" "),
+);
+
 function tokenize(query: string): string[] {
   return query
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .filter((token) => token.length > 2);
+    .split(/[\s-]+/)
+    .filter((token) => token.length > 2 && !STOPWORDS.has(token));
 }
 
 function scoreAsset(asset: StockAsset, tokens: string[]): number {
