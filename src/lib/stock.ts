@@ -107,7 +107,7 @@ const VISUAL_CONCEPTS: VisualConcept[] = [
     displayQuery: "lion wildlife safari",
   },
   {
-    triggers: ["space", "astronaut", "rocket", "galaxy", "planet", "mars", "moon", "cosmos", "stars", "universe", "nasa", "orbit", "satellite"],
+    triggers: ["outer space", "spaceship", "space station", "astronaut", "rocket", "galaxy", "planet", "mars", "moon", "cosmos", "stars", "universe", "nasa", "orbit", "satellite"],
     slugs: ["space", "stars", "earth", "galaxy"],
     displayQuery: "space galaxy stars",
     preferNasa: true,
