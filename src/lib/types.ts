@@ -342,6 +342,12 @@ export const BRAND_FONT_ASS_NAME: Record<BrandFontId, string> = {
 
 export type ClonedVoice = {
   id: string;
+  /**
+   * The value a project stores in `project.voice` to use this voice
+   * (`clone:<id>`). Derived centrally so every API response and every client
+   * agrees on how to reference a cloned voice.
+   */
+  voiceId: string;
   name: string;
   provider: "elevenlabs" | "custom";
   providerVoiceId: string;

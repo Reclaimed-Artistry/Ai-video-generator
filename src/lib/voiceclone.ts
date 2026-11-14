@@ -47,6 +47,7 @@ export function voiceCloneStatus(): VoiceCloneStatus {
 export function toClonedVoice(row: ClonedVoiceRow): ClonedVoice {
   return {
     id: row.id,
+    voiceId: clonedVoiceRef(row.id),
     name: row.name,
     provider: row.provider === "custom" ? "custom" : "elevenlabs",
     providerVoiceId: row.providerVoiceId,

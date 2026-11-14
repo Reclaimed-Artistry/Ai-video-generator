@@ -164,7 +164,13 @@ export default function DesignPanel({
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Logo upload failed");
-      setLogoUrl(`/api/files/${data.key}?v=${Date.now()}`);
+      // Use the server-resolved `logoUrl` rather than building one from `key`:
+      // with Vercel Blob configured, `key` is an absolute https URL and
+      // prefixing `/api/files/` onto it would produce a broken path.
+      setLogoUrl(
+        data.brandKit?.logoUrl ??
+          (data.key?.startsWith("http") ? data.key : `/api/files/${data.key}?v=${Date.now()}`),
+      );
       setStatus({ tone: "success", text: "Logo uploaded. It will burn into every render." });
     } catch (error) {
       setStatus({

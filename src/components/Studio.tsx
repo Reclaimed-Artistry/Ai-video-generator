@@ -77,6 +77,21 @@ export default function Studio({ initialProject }: { initialProject: Project }) 
   const [project, setProject] = useState<Project>(initialProject);
   const [activeIndex, setActiveIndex] = useState(0);
   const [tab, setTab] = useState<RightTab>("design");
+
+  // `useState` only reads its argument on the first mount. If this component
+  // is ever re-rendered with a *different* project (client-side navigation
+  // between /studio/:id routes, or a router cache restoring the shell), the
+  // editor would keep editing the previous one. Re-sync during render —
+  // React discards the first pass and re-renders immediately, which is the
+  // documented pattern for adjusting state when a prop changes.
+  const [loadedId, setLoadedId] = useState(initialProject.id);
+  if (loadedId !== initialProject.id) {
+    setLoadedId(initialProject.id);
+    setProject(initialProject);
+    setActiveIndex(0);
+    setTab("design");
+  }
+
   // Live telemetry only advances while an encode is running. Outside of a
   // render the project row itself is the source of truth, so there is no
   // mirrored state to keep in sync.
@@ -172,6 +187,14 @@ export default function Studio({ initialProject }: { initialProject: Project }) 
 
   /* -------------------------------------------------------------- rendering */
 
+  /** Re-reads the project from the server so the UI reflects server-side edits. */
+  const refreshProject = useCallback(async () => {
+    const response = await fetch(`/api/projects/${project.id}`).catch(() => null);
+    if (!response?.ok) return;
+    const payload = await response.json();
+    setProject(payload.project as Project);
+  }, [project.id]);
+
   const pollRender = useCallback(async () => {
     const response = await fetch(`/api/projects/${project.id}/render`).catch(() => null);
     if (!response?.ok) return;
@@ -182,13 +205,9 @@ export default function Studio({ initialProject }: { initialProject: Project }) 
       error: data.error ?? null,
     });
     if (data.status === "done" || data.status === "error") {
-      const projectResponse = await fetch(`/api/projects/${project.id}`).catch(() => null);
-      if (projectResponse?.ok) {
-        const payload = await projectResponse.json();
-        setProject(payload.project as Project);
-      }
+      await refreshProject();
     }
-  }, [project.id]);
+  }, [project.id, refreshProject]);
 
   useEffect(() => {
     if (project.status !== "rendering") return;
@@ -685,7 +704,7 @@ export default function Studio({ initialProject }: { initialProject: Project }) 
                 voice={project.voice}
                 language={project.language}
                 onVoiceChange={(voiceId) => void patchProject({ voice: voiceId })}
-                onDubbed={() => void pollRender()}
+                onDubbed={() => void refreshProject()}
               />
             ) : null}
 
