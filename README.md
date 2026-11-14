@@ -60,6 +60,16 @@ PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react
 
 Generated videos and images are stored once (Vercel Blob → Postgres → local disk → embedded in the project) and stay locked to their scene, so stock auto-matching never replaces them.
 
+## How the AI writer avoids repetition
+
+- **Plan, then write:** the director prompt asks for a fresh angle, one distinct point per scene, a structure that fits the brief (history → timeline, “how to” → steps, lists → one item per scene) and a shot design per scene (shot type, camera move, filmable subject) with one consistent visual style.
+- **Banned clichés & accuracy rules:** no “stop scrolling” / “let’s dive in” openers, no parroting the prompt, no invented statistics.
+- **Quality gate:** every script is scored for shared phrases, repeated openers, prompt parroting, clichés and duplicate captions/footage searches. With a keyed provider the AI rewrites only the weak scenes; otherwise local fixes are applied. The score is shown in the AI tab.
+- **Reliable parsing:** small models’ broken JSON (stray brackets, missing commas) is repaired instead of discarded, and free-tier rate limits are waited out instead of falling back to templates.
+- **Built-in engine (no AI available):** several cliché-free wordings per beat chosen per topic, timeline arcs for history briefs, captions from each scene’s own words, and varied filmable shots.
+
+The free tier uses a small model (GPT-OSS 20B) that can still invent facts. For factual or brand content, add `OPENAI_API_KEY` (or any OpenAI-compatible key) or `POLLINATIONS_API_KEY`.
+
 ## API Surface
 
 | Route | Method | Description |

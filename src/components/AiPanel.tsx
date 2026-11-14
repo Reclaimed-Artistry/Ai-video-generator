@@ -524,6 +524,14 @@ export default function AiPanel({
         <p>Images: {status ? status.imageLabel : "…"}</p>
         <p>Writer: {status ? status.textLabel : "…"}</p>
         {engine ? <p>This script was written by: {engineName(engine)}</p> : null}
+        {typeof project.script.options?.qualityScore === "number" ? (
+          <p>
+            Script quality check: {project.script.options.qualityScore}/100
+            {project.script.options.qualityNotes?.length
+              ? ` · ${project.script.options.qualityNotes.slice(0, 2).join(" ")}`
+              : " · no repetition found"}
+          </p>
+        ) : null}
         <p className="mt-1 text-ash">
           Tip: type requests in the AI edit box, e.g. “generate a video of waves at dusk for
           scene 2” or “make an image of a cabin for all scenes”.

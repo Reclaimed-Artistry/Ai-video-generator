@@ -1,6 +1,33 @@
 import { randomUUID } from "node:crypto";
 import { chatJSON, textProvider } from "./ai";
-import { stickThumbDataUrl, type StickTheme } from "./stickman";
+import {
+  analyzeScript,
+  captionFromLine,
+  composeShotPrompt,
+  DIRECTOR_SYSTEM,
+  directorUserPrompt,
+  polishScript,
+  repairUserPrompt,
+  salvageScenes,
+  structureFor,
+  visualForLine,
+} from "./script-intelligence";
+import {
+  chooseStickPerformance,
+  stickThumbDataUrl,
+  type StickAction,
+  type StickTheme,
+} from "./stickman";
+
+const STICK_ALTERNATES: StickAction[] = ["point", "think", "shrug", "walk", "talk", "wave"];
+
+/** Pick a stickman performance that fits the line but differs from the previous scene. */
+function varietyStickAction(narration: string, index: number, previous: StickAction[]): StickAction {
+  const fit = chooseStickPerformance(narration, index).action;
+  const last = previous[previous.length - 1];
+  if (fit !== last) return fit;
+  return STICK_ALTERNATES.find((a) => a !== last && a !== previous[previous.length - 2]) ?? "talk";
+}
 import { defaultMusicForTone } from "./music";
 import {
   hydrateSceneMedia,
@@ -398,6 +425,39 @@ function beatSequence(count: number): string[] {
   return out.slice(0, count);
 }
 
+/** Short noun phrase for the topic ("Why tiny daily habits beat…" → "tiny daily habits"). */
+export function topicSubject(prompt: string): string {
+  let t = cleanTopic(prompt).toLowerCase().replace(/[?!.:"“”]/g, "").trim();
+  t = t.replace(/^(why|how|what|when|where|who)\s+(do|does|did|is|are|can|could|should)?\s*/, "");
+  t = t.replace(/^(the\s+)?(history|story|origin|origins|evolution|rise|science|future|truth|secret|secrets)\s+(of|behind)\s+/, "");
+  t = t.replace(/^(top\s+)?\d+\s+/, "").replace(/^(the|a|an)\s+/, "");
+  const stops = new Set(["is","are","was","were","beat","beats","changed","change","changes","works","work","can","will","makes","make","helps","help","do","does","did","should","could","and","vs","versus","to","for","that","in","on","with","from","into","became","becomes"]);
+  const out: string[] = [];
+  for (const w of t.split(/\s+/).filter(Boolean)) {
+    if (stops.has(w) && out.length > 0) break;
+    out.push(w);
+    if (out.length >= 4) break;
+  }
+  return out.join(" ") || cleanTopic(prompt);
+}
+
+function promptHash(text: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+const lower1 = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
+
+/**
+ * Built-in narration (used when no AI writer answers). Every beat has several
+ * cliché-free wordings, chosen per topic so different videos read
+ * differently; the full topic appears only in the hook, otherwise a short
+ * subject is used. "History of…" briefs get a timeline arc.
+ */
 function buildWorkflowNarration(
   beat: string,
   topic: string,
@@ -406,23 +466,67 @@ function buildWorkflowNarration(
   tone: Tone,
   index: number,
 ): string {
-  const topicStart = sentenceCase(topic);
+  const subject = topicSubject(topic);
+  const Subject = sentenceCase(subject);
+  const seed = promptHash(`${topic}|${workflow}`);
+  const pick = (variants: string[]) => variants[(seed + index * 7) % variants.length];
+  const isHistory = /\b(history|origin|evolution|story of|how .* (changed|began|started|became))\b/i.test(topic);
+
+  if (isHistory) {
+    switch (beat) {
+      case "hook":
+        return pick([
+          `${sentenceCase(topic)} — and it starts somewhere you would never guess.`,
+          `Everything you know about ${subject} began with one small, unlikely moment.`,
+          `The story of ${subject} is stranger, and far bigger, than it looks.`,
+        ]);
+      case "problem":
+        return pick([
+          `Long before it was everywhere, ${subject} was local, rare and easy to overlook.`,
+          `At first, only a handful of people even knew ${subject} existed.`,
+          `In the beginning, ${subject} was a curiosity, not a revolution.`,
+        ]);
+      case "craft":
+        return pick([
+          `Then came the turning point: trade routes, new tools and a few bold believers carried it further.`,
+          `The breakthrough was not one invention but a chain of people who refused to let the idea stay small.`,
+          `Once traders and early adopters caught on, it spread from one region to the next within a few generations.`,
+        ]);
+      case "payoff":
+        return pick([
+          `As ${subject} spread, it quietly reshaped how people worked, met and spent their days.`,
+          `It changed daily routines, economies and even the places where big ideas were discussed.`,
+          `Cities, habits and whole industries bent around ${subject} as it went global.`,
+        ]);
+      case "proof":
+        return pick([
+          `Its fingerprints are still visible today, in the rituals and businesses built around it.`,
+          `Historians still trace modern habits back to those early turning points.`,
+          `Today's version is the result of centuries of experiments, mistakes and reinvention.`,
+        ]);
+      default:
+        return pick([
+          `Next time you meet ${subject}, remember the long road it took to get here.`,
+          `${Subject} is not just part of history — it is still writing new chapters.`,
+          `Follow for more stories hiding inside everyday things.`,
+        ]);
+    }
+  }
 
   if (workflow === "commercial") {
     switch (beat) {
       case "hook":
         return tone === "energetic"
-          ? `Meet ${topic} — built to change the way you experience every day.`
-          : `There is a quieter, sharper standard for ${topic}.`;
+          ? pick([`Meet ${subject}: made for the moments that matter most.`, `This is ${subject}, and it changes your everyday routine.`, `Say hello to ${subject} — the upgrade you will notice on day one.`])
+          : pick([`There is a quieter, sharper standard for ${subject}.`, `Some things are simply made with more care. ${Subject} is one of them.`, `${Subject}, designed without compromise.`]);
       case "problem":
-        return `${category.painPoint}. It was time for something genuinely better.`;
+        return pick([`${category.painPoint}. It was time for something better.`, `${category.painPoint} — and most people have simply accepted it.`, `You have felt it: ${lower1(category.painPoint)}.`]);
       case "craft":
-        return `${category.craft}.`;
+        return pick([`${category.craft}.`, `Every detail is deliberate. ${category.craft}.`, `Behind it: ${lower1(category.craft)}.`]);
       case "payoff":
-        return `${category.payoff}.`;
+        return pick([`${category.payoff}.`, `The result is simple: ${lower1(category.payoff)}.`, `You feel the difference immediately — ${lower1(category.payoff)}.`]);
       case "proof":
-        return `${category.proof}.`;
-      case "cta":
+        return pick([`${category.proof}.`, `Don't take our word for it: ${lower1(category.proof)}.`, `The numbers back it up. ${category.proof}.`]);
       default:
         return category.ctaCommercial;
     }
@@ -431,77 +535,70 @@ function buildWorkflowNarration(
   if (workflow === "shorts") {
     switch (beat) {
       case "hook":
-        return `Stop scrolling — here is what nobody tells you about ${topic}.`;
+        return pick([
+          `Here's the surprising truth about ${subject}.`,
+          `Most people get ${subject} completely wrong.`,
+          `One small change with ${subject} makes a bigger difference than you think.`,
+        ]);
       case "problem":
-        return `${category.painPoint}.`;
+        return pick([`${category.painPoint}.`, `Here's the trap: ${lower1(category.painPoint)}.`, `Sound familiar? ${category.painPoint}.`]);
       case "craft":
-        return `Here is the shift: ${category.craft.charAt(0).toLowerCase()}${category.craft.slice(1)}.`;
+        return pick([`The fix is simpler than it sounds: ${lower1(category.craft)}.`, `Try this instead — ${lower1(category.craft)}.`, `What works: ${lower1(category.craft)}.`]);
       case "payoff":
-        return `The payoff? ${category.payoff}.`;
+        return pick([`Do that and ${lower1(category.payoff)}.`, `Within a week you'll notice it: ${lower1(category.payoff)}.`, `That's when it clicks — ${lower1(category.payoff)}.`]);
       case "proof":
-        return `${category.proof}.`;
-      case "cta":
+        return pick([`${category.proof}.`, `It isn't theory. ${category.proof}.`, `And the evidence is clear: ${lower1(category.proof)}.`]);
       default:
-        return `Save this for later and try it with ${topic} today.`;
+        return pick([`Try it today and tell me what changed.`, `Follow for one more idea like this tomorrow.`, `Send this to someone who needs it.`]);
     }
   }
 
   if (workflow === "documentary") {
     switch (beat) {
       case "hook":
-        return `Look closely at ${topic}, and a much larger story comes into focus.`;
+        return pick([`Look closely at ${subject}, and a larger story comes into focus.`, `${Subject} hides a story most people walk right past.`, `It begins quietly, the way most big changes do.`]);
       case "problem":
-        return `${category.painPoint}. For years, almost everyone accepted that as normal.`;
+        return pick([`${category.painPoint}. For years, almost everyone accepted that as normal.`, `For a long time, ${lower1(category.painPoint)}.`, `The old way had a cost: ${lower1(category.painPoint)}.`]);
       case "craft":
-        return `Beneath the surface, the approach is shifting. ${category.craft}.`;
+        return pick([`Beneath the surface, the approach is shifting. ${category.craft}.`, `A different approach emerged. ${category.craft}.`, `Some began to work differently: ${lower1(category.craft)}.`]);
       case "payoff":
-        return `Over time, those quiet choices compound: ${category.payoff.charAt(0).toLowerCase()}${category.payoff.slice(1)}.`;
+        return pick([`Over time, those quiet choices compound: ${lower1(category.payoff)}.`, `Slowly, the results became impossible to ignore: ${lower1(category.payoff)}.`, `The effects ripple outward — ${lower1(category.payoff)}.`]);
       case "proof":
-        return `${category.proof}.`;
-      case "cta":
+        return pick([`${category.proof}.`, `The evidence keeps growing. ${category.proof}.`, `Researchers and practitioners agree: ${lower1(category.proof)}.`]);
       default:
-        return `${topicStart} is no longer a distant idea — it is already unfolding around us.`;
+        return pick([`${Subject} is no longer a distant idea — it is already unfolding around us.`, `The story of ${subject} is still being written.`, `What happens next depends on the choices we make now.`]);
     }
   }
 
-  // Default: YouTube Explainer
+  // Default: YouTube explainer
   switch (beat) {
     case "hook":
       return tone === "energetic"
-        ? `Let us unpack ${topic} — and why it matters right now.`
-        : `Here is a clear, practical breakdown of ${topic}.`;
+        ? pick([`${sentenceCase(topic)} — and why it matters right now.`, `Here's what is really going on with ${subject}.`, `${Subject} is more interesting than it looks. Let me show you.`])
+        : pick([`A clear, practical look at ${subject}.`, `Let's break down ${subject}, one idea at a time.`, `${Subject}, explained simply.`]);
     case "problem":
-      return `${category.painPoint}. That is why the old playbook keeps stalling.`;
+      return pick([`${category.painPoint}. That's why the old playbook keeps stalling.`, `The usual approach has a flaw: ${lower1(category.painPoint)}.`, `Most people hit the same wall — ${lower1(category.painPoint)}.`]);
     case "craft":
-      return `What actually works is straightforward: ${category.craft.charAt(0).toLowerCase()}${category.craft.slice(1)}.`;
+      return pick([`What actually works: ${lower1(category.craft)}.`, `A better approach looks like this: ${lower1(category.craft)}.`, `Instead, ${lower1(category.craft)}.`]);
     case "payoff":
-      return `Once that clicks, the difference is immediate: ${category.payoff.charAt(0).toLowerCase()}${category.payoff.slice(1)}.`;
+      return pick([`Once that clicks, ${lower1(category.payoff)}.`, `The difference shows up quickly: ${lower1(category.payoff)}.`, `That's the real win — ${lower1(category.payoff)}.`]);
     case "proof":
-      return `${category.proof}.`;
-    case "cta":
+      return pick([`${category.proof}.`, `It's backed by results: ${lower1(category.proof)}.`, `The track record speaks for itself. ${category.proof}.`]);
     default:
       return index > 0 ? category.ctaExplainer : category.ctaCommercial;
   }
 }
 
-function buildBeatCaption(beat: string, topic: string): string {
-  const shortTitle = titleCase(topic.split(" ").slice(0, 4).join(" "));
-  switch (beat) {
-    case "hook":
-      return shortTitle;
-    case "problem":
-      return "The Bottleneck";
-    case "craft":
-      return "How It Works";
-    case "payoff":
-      return "The Payoff";
-    case "proof":
-      return "Why It Works";
-    case "cta":
-      return "Take the Next Step";
-    default:
-      return shortTitle;
-  }
+/** Caption from the scene's own most distinctive words (no fixed labels). */
+function buildBeatCaption(beat: string, topic: string, narration = ""): string {
+  if (beat === "hook") return titleCase(topicSubject(topic).split(" ").slice(0, 4).join(" "));
+  if (narration.trim()) return captionFromLine(narration);
+  const skip = new Set(["that", "this", "with", "your", "what", "when", "then", "they", "them", "here", "from", "into", "most", "more", "just", "about", "every", "there", "their", "which", "while", "would", "could", "should", "simply"]);
+  const picked = (narration.toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? [])
+    .filter((w, i, all) => !skip.has(w) && all.indexOf(w) === i)
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 3);
+  return picked.length ? titleCase(picked.join(" ")) : titleCase(topicSubject(topic));
 }
 
 function sceneFromAsset(
@@ -661,7 +758,7 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
       options.tone,
       index,
     );
-    const caption = buildBeatCaption(beat, topic);
+    const caption = buildBeatCaption(beat, topic, narration);
 
     // Match each scene's real-world footage directly to its spoken narration + race option
     const { asset: matched, mediaQuery } = await matchVideoForNarration({
@@ -713,74 +810,117 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
   };
 }
 
-async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript | null> {
+type DirectorScene = {
+  narration?: string;
+  caption?: string;
+  shotType?: string;
+  camera?: string;
+  mediaQuery?: string;
+  visualPrompt?: string;
+};
+type DirectorReply = {
+  title?: string;
+  angle?: string;
+  style?: string;
+  outline?: string[];
+  scenes?: DirectorScene[];
+};
+
+/** Turn director scenes into studio scenes, matching real footage to each. */
+async function directorScenesToScenes(
+  directorScenes: DirectorScene[],
+  options: GenerateScriptOptions,
+  style: string,
+): Promise<Scene[]> {
+  const peopleRepresentation = options.peopleRepresentation ?? "all";
+  const topic = cleanTopic(options.prompt);
+  const usedAssets: string[] = [];
+  const usedDemographics: PeopleRepresentation[] = [];
+  const scenes: Scene[] = [];
+  for (let idx = 0; idx < directorScenes.length; idx += 1) {
+    const scene = directorScenes[idx];
+    const narration = (scene.narration ?? "").trim();
+    const caption = (scene.caption ?? "").trim();
+    const { asset: matched, mediaQuery } = await matchVideoForNarration({
+      narration: `${scene.mediaQuery ?? ""} ${narration}`.trim(),
+      caption,
+      topicContext: topic,
+      excludeIds: usedAssets,
+      peopleRepresentation,
+      usedDemographics,
+    });
+    if (matched) {
+      usedAssets.push(matched.id);
+      if (matched.demographics?.length) usedDemographics.push(...matched.demographics);
+    }
+    const visual = scene.visualPrompt?.trim();
+    scenes.push(
+      sceneFromAsset(
+        {
+          id: randomUUID(),
+          narration,
+          caption,
+          mediaQuery: scene.mediaQuery?.trim() || mediaQuery || topic,
+          aiPrompt: visual
+            ? composeShotPrompt({ visualPrompt: visual, shotType: scene.shotType, camera: scene.camera, style, index: idx })
+            : null,
+          duration: null,
+          transition: idx === 0 ? "fade" : "none",
+        },
+        matched,
+      ),
+    );
+  }
+  return scenes;
+}
+
+async function llmGenerate(
+  options: GenerateScriptOptions,
+  deadline: number,
+): Promise<VideoScript | null> {
   const workflow = options.workflow ?? "explainer";
   if (workflow === "script" || textProvider() === "none") return null;
 
   const count = sceneCountFor(options.duration, workflow);
   const wfMeta = WORKFLOWS[workflow];
   try {
-    const reply = await chatJSON<{
-      title?: string;
-      summary?: string;
-      scenes?: { narration?: string; caption?: string; mediaQuery?: string; visualPrompt?: string }[];
-    }>([
+    const reply = await chatJSON<DirectorReply>(
+      [
+        { role: "system", content: DIRECTOR_SYSTEM },
+        {
+          role: "user",
+          content: directorUserPrompt({
+            prompt: options.prompt,
+            count,
+            formatLabel: wfMeta.label,
+            tone: options.tone,
+            language: options.language,
+            duration: options.duration,
+            cast: getPeopleRepresentation(options.peopleRepresentation).label,
+            structure: structureFor(workflow, options.prompt),
+          }),
+        },
+      ],
       {
-        role: "system",
-        content:
-          "You are a veteran video director and scriptwriter. Write natural, vivid, spoken narration (no clichés, no robotic intros). Reply with ONLY a JSON object.",
+        deadline,
+        temperature: 0.85,
+        salvage: (content) => {
+          const scenes = salvageScenes(content);
+          return scenes.length ? { scenes } : null;
+        },
       },
-      {
-        role: "user",
-        content: `Write a ${count}-scene ${wfMeta.label} video script in language "${options.language}" about: "${options.prompt}". Tone: ${options.tone}. Target total duration: ${options.duration}s. Cast / people representation: "${getPeopleRepresentation(options.peopleRepresentation).label}". Each scene narration should be 1-2 natural spoken sentences. Each scene needs: a concise caption (max 5 words); a concrete real-world stock-video search query (2-4 filmable keywords showing real people or real places, never abstract or motion-graphic animation); and a visualPrompt: one vivid sentence describing a single striking still image for a text-to-image model (subject, setting, light, camera angle; no text in the image). Return JSON: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string, "visualPrompt": string}]}`,
-      },
-    ]);
+    );
     if (!reply) return null;
     const parsed = reply.data;
-    if (!Array.isArray(parsed.scenes) || !parsed.scenes.length) return null;
+    const directorScenes = (parsed.scenes ?? []).filter((s) => (s.narration ?? "").trim().length > 3);
+    if (directorScenes.length < Math.min(3, count)) return null;
 
+    const style = (parsed.style ?? "").trim();
+    const scenes = await directorScenesToScenes(directorScenes.slice(0, MAX_SCENES), options, style);
     const peopleRepresentation = options.peopleRepresentation ?? "all";
-    const topic = cleanTopic(options.prompt);
-    const usedAssets: string[] = [];
-    const usedDemographics: PeopleRepresentation[] = [];
-    const scenes: Scene[] = [];
-    for (let idx = 0; idx < parsed.scenes.length; idx += 1) {
-      const scene = parsed.scenes[idx];
-      const narration = scene.narration ?? "";
-      const caption = scene.caption ?? "";
-      const { asset: matched, mediaQuery } = await matchVideoForNarration({
-        narration: `${scene.mediaQuery ?? ""} ${narration}`.trim(),
-        caption,
-        topicContext: topic,
-        excludeIds: usedAssets,
-        peopleRepresentation,
-        usedDemographics,
-      });
-      if (matched) {
-        usedAssets.push(matched.id);
-        if (matched.demographics?.length) {
-          usedDemographics.push(...matched.demographics);
-        }
-      }
-      scenes.push(
-        sceneFromAsset(
-          {
-            id: randomUUID(),
-            narration,
-            caption,
-            mediaQuery: mediaQuery || scene.mediaQuery?.trim() || topic,
-            aiPrompt: scene.visualPrompt?.trim() || null,
-            duration: null,
-            transition: idx === 0 ? "fade" : "none",
-          },
-          matched,
-        ),
-      );
-    }
-
     return {
-      title: parsed.title ?? titleCase(cleanTopic(options.prompt)),
-      summary: parsed.summary ?? `${scenes.length} scenes · ${wfMeta.label}`,
+      title: parsed.title?.trim() || titleCase(cleanTopic(options.prompt)),
+      summary: parsed.angle?.trim() || `${scenes.length} scenes · ${wfMeta.label}`,
       scenes,
       options: {
         workflow,
@@ -789,6 +929,7 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
         captionMode: options.captionMode ?? wfMeta.defaultCaptionMode,
         peopleRepresentation,
         scriptEngine: reply.provider,
+        visualStyle: style || undefined,
       },
     };
   } catch {
@@ -796,8 +937,66 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
   }
 }
 
+/**
+ * Second pass for keyed (fast) providers: rewrite only the scenes the quality
+ * check flagged. The free tier allows one reply per ~45s, so there it is
+ * skipped in favour of local polishing.
+ */
+async function repairScript(
+  script: VideoScript,
+  options: GenerateScriptOptions,
+  deadline: number,
+): Promise<{ script: VideoScript; repaired: number }> {
+  const provider = textProvider();
+  if (provider !== "openai" && provider !== "pollinations") return { script, repaired: 0 };
+  const report = analyzeScript(script.scenes, options.prompt);
+  if (report.weakScenes.length === 0) return { script, repaired: 0 };
+  const reply = await chatJSON<{ scenes?: (DirectorScene & { index?: number })[] }>(
+    [
+      { role: "system", content: DIRECTOR_SYSTEM },
+      {
+        role: "user",
+        content: repairUserPrompt({
+          prompt: options.prompt,
+          scenes: script.scenes,
+          weakScenes: report.weakScenes,
+          issues: report.issues,
+        }),
+      },
+    ],
+    { deadline, temperature: 0.8 },
+  );
+  const fixes = reply?.data.scenes ?? [];
+  if (fixes.length === 0) return { script, repaired: 0 };
+  const style = script.options?.visualStyle ?? "";
+  const scenes = [...script.scenes];
+  let repaired = 0;
+  for (const fix of fixes) {
+    const idx = Number(fix.index) - 1;
+    if (!Number.isInteger(idx) || idx < 0 || idx >= scenes.length || !(fix.narration ?? "").trim()) continue;
+    const [rebuilt] = await directorScenesToScenes([fix], options, style);
+    scenes[idx] = { ...rebuilt, id: scenes[idx].id, transition: scenes[idx].transition };
+    repaired += 1;
+  }
+  return { script: { ...script, scenes }, repaired };
+}
+
+
 /** Fallback image prompt when the AI writer did not supply one. */
-export function defaultVisualPrompt(scene: Pick<Scene, "narration" | "caption" | "mediaQuery">, topic: string): string {
+export function defaultVisualPrompt(
+  scene: Pick<Scene, "narration" | "caption" | "mediaQuery">,
+  topic: string,
+  index = 0,
+): string {
+  const subject = topicSubject(topic);
+  return composeShotPrompt({
+    visualPrompt: `${visualForLine(scene.narration, subject, index)}, natural light, real people and places`,
+    index,
+  });
+}
+
+/** @deprecated kept for reference: the old "query, illustrating: line" prompt. */
+export function legacyVisualPrompt(scene: Pick<Scene, "narration" | "caption" | "mediaQuery">, topic: string): string {
   const subject = (scene.mediaQuery || scene.caption || topic).trim();
   const line = scene.narration.replace(/\s+/g, " ").trim().slice(0, 220);
   return `${subject}, illustrating: ${line}`;
@@ -806,18 +1005,43 @@ export function defaultVisualPrompt(scene: Pick<Scene, "narration" | "caption" |
 export async function generateScript(
   options: GenerateScriptOptions,
 ): Promise<VideoScript> {
-  const script = (await llmGenerate(options)) ?? (await localGenerate(options));
+  // One overall time budget (the create route allows 150s): the AI writer may
+  // wait out a free-tier rate limit, and keyed providers get a repair pass.
+  const deadline = Date.now() + 110_000;
+  const drafted = (await llmGenerate(options, deadline)) ?? (await localGenerate(options));
+  const { script: repairedScript, repaired } = await repairScript(drafted, options, deadline).catch(() => ({
+    script: drafted,
+    repaired: 0,
+  }));
   const topic = cleanTopic(options.prompt);
+  const subject = topicSubject(options.prompt);
+  const polishedScenes = polishScript(repairedScript.scenes, options.prompt, subject);
+  const report = analyzeScript(polishedScenes, options.prompt);
+  const script: VideoScript = {
+    ...repairedScript,
+    scenes: polishedScenes,
+    options: {
+      ...repairedScript.options,
+      qualityScore: report.score,
+      qualityNotes: [
+        ...(repaired > 0 ? [`AI rewrote ${repaired} repetitive scene${repaired === 1 ? "" : "s"}.`] : []),
+        ...report.issues.slice(0, 4),
+      ],
+    },
+  };
   const visualMode = options.visualMode ?? script.options?.visualMode ?? "stock";
+  const previousActions: StickAction[] = [];
   const stickTheme = options.stickTheme ?? "whiteboard";
   return {
     ...script,
     scenes: script.scenes.map((scene, index) => {
       const withPrompt = {
         ...scene,
-        aiPrompt: scene.aiPrompt?.trim() || defaultVisualPrompt(scene, topic),
+        aiPrompt: scene.aiPrompt?.trim() || defaultVisualPrompt(scene, topic, index),
       };
       if (visualMode !== "stickman") return withPrompt;
+      const stickAction = varietyStickAction(scene.narration, index, previousActions);
+      previousActions.push(stickAction);
       // Built-in stick-figure animation: free, offline, lip-synced at render.
       return {
         ...withPrompt,
@@ -830,6 +1054,7 @@ export async function generateScript(
         mediaCreator: "Built-in animation engine",
         mediaProvider: "stickman",
         mediaLocked: true,
+        stickAction,
       };
     }),
     options: {
@@ -878,8 +1103,7 @@ async function rewriteSceneWithAI(
     [
       {
         role: "system",
-        content:
-          "You are a veteran video scriptwriter editing one scene of an existing video. Keep continuity with the surrounding scenes. Reply with ONLY a JSON object.",
+        content: `${DIRECTOR_SYSTEM}\nYou are editing ONE scene of an existing video: keep continuity with the surrounding scenes.`,
       },
       {
         role: "user",
@@ -887,11 +1111,15 @@ async function rewriteSceneWithAI(
 Previous scene narration: "${previous}"
 CURRENT scene narration: "${scene.narration}"
 Next scene narration: "${next}"
+Other scenes (do NOT reuse their phrases, facts or opening words): ${script.scenes
+          .filter((_, i) => i !== sceneIndex)
+          .map((s) => `"${s.narration.slice(0, 120)}"`)
+          .join(" | ")}
 Rewrite the CURRENT scene. ${direction} Narration: 1-2 natural spoken sentences. Caption: max 5 words. mediaQuery: 2-4 filmable real-world stock-video keywords. visualPrompt: one vivid sentence describing a single still image for a text-to-image model (no text in the image).
 Return JSON: {"narration": string, "caption": string, "mediaQuery": string, "visualPrompt": string}`,
       },
     ],
-    { timeoutMs: 30_000 },
+    { deadline: Date.now() + 100_000 },
   );
   const narration = reply?.data.narration?.trim();
   if (!reply || !narration) return null;
@@ -925,7 +1153,8 @@ Return JSON: {"narration": string, "caption": string, "mediaQuery": string, "vis
     liveMatch ?? matchLocalAsset(mediaQuery || mediaQueryHint, "video", excludeIds, peopleRepresentation);
   return {
     scene: sceneFromAsset(
-      { ...scene, narration, caption, aiPrompt, mediaQuery: mediaQuery || mediaQueryHint, mediaLocked: false },
+      // Prefer the AI's own scene-specific search over the matcher's generic keywords.
+      { ...scene, narration, caption, aiPrompt, mediaQuery: mediaQueryHint || mediaQuery, mediaLocked: false },
       matched,
     ),
     engine: reply.provider,
@@ -972,7 +1201,7 @@ async function regenerateSceneBuiltIn(
     options.tone,
     variant,
   );
-  const caption = buildBeatCaption(beat, topic);
+  const caption = buildBeatCaption(beat, topic, narration);
   if (scene.mediaSource === "ai") {
     return { ...scene, narration, caption };
   }

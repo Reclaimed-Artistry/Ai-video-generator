@@ -1,3 +1,4 @@
+import { parseModelJson } from "./script-intelligence";
 import { AI_STYLES, type AiStyleId, type AspectRatio } from "./types";
 
 /**
@@ -113,12 +114,14 @@ export function extractJson<T>(content: string): T | null {
   }
 }
 
+type ChatResult = { content: string | null; retryAfter: number | null };
+
 async function postChat(
   url: string,
   body: Record<string, unknown>,
   headers: Record<string, string>,
   timeoutMs: number,
-): Promise<string | null> {
+): Promise<ChatResult> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -128,75 +131,95 @@ async function postChat(
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
-    if (response.status === 402 || response.status === 429) return null;
-    if (!response.ok) return null;
+    if (response.status === 402 || response.status === 429) {
+      const text = await response.text().catch(() => "");
+      return { content: null, retryAfter: parseRetryAfter(response, text, 45) };
+    }
+    if (!response.ok) return { content: null, retryAfter: null };
     const data = (await response.json().catch(() => null)) as {
       choices?: { message?: { content?: string } }[];
     } | null;
-    return data?.choices?.[0]?.message?.content ?? null;
+    return { content: data?.choices?.[0]?.message?.content ?? null, retryAfter: null };
   } catch {
-    return null;
+    return { content: null, retryAfter: null };
   } finally {
     clearTimeout(timer);
   }
 }
 
 /**
- * Ask the best available LLM for a JSON object. Returns null (never throws)
- * when no provider can answer, so callers fall back to the built-in engine.
+ * Ask the best available LLM for a JSON object. Never throws: returns null
+ * when no provider answers in time, so callers fall back to the built-in
+ * engine. Small-model JSON mistakes are repaired (parseModelJson) and, if a
+ * `salvage` function is given, fields are recovered from malformed replies.
+ * When the provider says "retry after N s" and the deadline allows, it waits
+ * and tries once more instead of giving up.
  */
 export async function chatJSON<T>(
   messages: ChatMessage[],
-  opts: { temperature?: number; timeoutMs?: number } = {},
+  opts: {
+    temperature?: number;
+    timeoutMs?: number;
+    /** Absolute time (ms) by which an answer is needed. */
+    deadline?: number;
+    salvage?: (content: string) => T | null;
+  } = {},
 ): Promise<{ data: T; provider: TextProvider } | null> {
-  const temperature = opts.temperature ?? 0.75;
-  const timeoutMs = opts.timeoutMs ?? 40_000;
+  const temperature = opts.temperature ?? 0.8;
   const provider = textProvider();
+  if (provider === "none") return null;
+  const timeoutMs = opts.timeoutMs ?? (provider === "pollinations-free" ? 60_000 : 45_000);
+  const deadline = opts.deadline ?? Date.now() + timeoutMs;
 
-  if (provider === "openai") {
-    const base = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
-    const content = await postChat(
-      `${base}/chat/completions`,
-      {
-        model: process.env.AI_TEXT_MODEL || "gpt-4o-mini",
-        temperature,
-        response_format: { type: "json_object" },
-        messages,
-      },
-      { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      timeoutMs,
-    );
-    const data = content ? extractJson<T>(content) : null;
-    return data ? { data, provider } : null;
-  }
-
-  if (provider === "pollinations") {
-    const content = await postChat(
-      "https://gen.pollinations.ai/v1/chat/completions",
-      {
-        model: process.env.AI_TEXT_MODEL || "openai",
-        temperature,
-        response_format: { type: "json_object" },
-        messages,
-      },
-      { authorization: `Bearer ${process.env.POLLINATIONS_API_KEY}` },
-      timeoutMs,
-    );
-    const data = content ? extractJson<T>(content) : null;
-    return data ? { data, provider } : null;
-  }
-
-  if (provider === "pollinations-free") {
-    const content = await postChat(
+  const request = (budget: number): Promise<ChatResult> => {
+    if (provider === "openai") {
+      const base = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
+      return postChat(
+        `${base}/chat/completions`,
+        { model: process.env.AI_TEXT_MODEL || "gpt-4o-mini", temperature, response_format: { type: "json_object" }, messages },
+        { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        budget,
+      );
+    }
+    if (provider === "pollinations") {
+      return postChat(
+        `${POLLINATIONS_GEN_URL}/v1/chat/completions`,
+        { model: process.env.AI_TEXT_MODEL || "openai", temperature, response_format: { type: "json_object" }, messages },
+        { authorization: `Bearer ${process.env.POLLINATIONS_API_KEY}` },
+        budget,
+      );
+    }
+    // The free model is a reasoning model: with low effort and a roomy token
+    // limit it answers instead of exhausting its budget while "thinking".
+    return postChat(
       "https://text.pollinations.ai/openai",
-      { model: "openai", messages, seed: Math.floor(Math.random() * 1e6) },
+      {
+        model: "openai",
+        messages,
+        seed: Math.floor(Math.random() * 1e6),
+        reasoning_effort: "low",
+        max_tokens: 4000,
+      },
       {},
-      timeoutMs,
+      budget,
     );
-    const data = content ? extractJson<T>(content) : null;
-    return data ? { data, provider } : null;
-  }
+  };
 
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const budget = Math.min(timeoutMs, deadline - Date.now());
+    if (budget < 8_000) return null;
+    const result = await request(budget);
+    if (result.content) {
+      const data = parseModelJson<T>(result.content) ?? opts.salvage?.(result.content) ?? null;
+      return data ? { data, provider } : null;
+    }
+    // Rate-limited: wait it out once if there is still time for a full reply.
+    if (result.retryAfter !== null && Date.now() + result.retryAfter * 1000 + 20_000 < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, (result.retryAfter! + 1) * 1000));
+      continue;
+    }
+    return null;
+  }
   return null;
 }
 

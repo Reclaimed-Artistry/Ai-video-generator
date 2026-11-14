@@ -5,6 +5,7 @@ import type { Scene } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 type Context = { params: Promise<{ id: string; sceneId: string }> };
 

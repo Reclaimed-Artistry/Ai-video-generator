@@ -185,6 +185,11 @@ export type ProductionOptions = {
   punchZoom?: boolean;
   /** Whoosh sound effect on every scene change. */
   sceneSfx?: boolean;
+  /** One-sentence visual bible from the AI director (palette, light, recurring character). */
+  visualStyle?: string;
+  /** 0-100 repetition/quality score of the script, with short notes. */
+  qualityScore?: number;
+  qualityNotes?: string[];
 };
 
 export type VideoScript = {
