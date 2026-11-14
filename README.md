@@ -45,3 +45,24 @@ PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react
 | `/api/voices` | `GET` | Neural voice talent list & active provider status |
 | `/api/tts/preview` | `POST` | Synthesize live voice audition audio |
 | `/api/files/[...file]` | `GET` | Byte-range MP4 & poster streaming |
+
+## Deploy on Railway (Docker + PostgreSQL)
+
+This repository includes `Dockerfile`, `railway.json`, and `scripts/docker-entrypoint.sh`
+(which installs `fontconfig` + DejaVu fonts for `libass` captions and runs `drizzle-kit push` on startup):
+
+1. In [Railway](https://railway.app), click **New Project → Deploy from GitHub repo** and select this repository.
+2. Add a PostgreSQL service (**+ New → Database → Add PostgreSQL**).
+3. In the web service **Variables** tab, add:
+   - `DATABASE_URL=${{Postgres.DATABASE_URL}}`
+   - `STORAGE_DIR=/app/storage`
+   - Optional: `PEXELS_API_KEY`, `PIXABAY_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`
+4. In **Settings → Volumes**, mount a persistent volume at `/app/storage` so rendered MP4 masters persist across redeploys.
+5. In **Settings → Networking**, click **Generate Domain**.
+
+## Local Development with Docker
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
