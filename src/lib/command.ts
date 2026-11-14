@@ -1,20 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { getMusicTrack, MUSIC_TRACKS } from "./music";
 import { extractVisualKeywords, generateScript, regenerateScene } from "./script";
+import { hydrateSceneMedia, matchBestStockVideo, previewUrlForAsset } from "./stock";
 import {
-  hydrateSceneMedia,
-  matchBestStockVideo,
-  matchVideoForNarration,
-  previewUrlForAsset,
-} from "./stock";
-import {
-  getPeopleRepresentation,
   LANGUAGES,
   MAX_SCENES,
   type AspectRatio,
   type CaptionMode,
   type MusicTrackId,
-  type PeopleRepresentation,
   type Project,
   type Resolution,
   type Scene,
@@ -99,82 +92,15 @@ export async function interpretEditCommand(
     ...project.script,
     scenes: project.script.scenes.map((scene) => ({ ...scene })),
     options: {
-      ...project.script.options,
       workflow: project.script.options?.workflow ?? "explainer",
       musicTrack: project.script.options?.musicTrack ?? "cinematic",
       musicVolume: project.script.options?.musicVolume ?? 0.16,
       captionMode: project.script.options?.captionMode ?? "word-highlight",
-      peopleRepresentation: project.script.options?.peopleRepresentation ?? "all",
+      cast: project.script.options?.cast ?? "any",
     },
   };
   let scriptDirty = false;
   const patch: CommandResult["patch"] = {};
-
-  // 0. People / Race Representation command: e.g. "use african american people", "african only", "hispanic cast", "all races"
-  let requestedPeople: PeopleRepresentation | null = null;
-  if (/\b(african[\s-]american|black\s+american)\b/i.test(lower)) {
-    requestedPeople = "african-american";
-  } else if (/\b(african\s+only|only\s+african|african\s+(?:people|cast|actors|models|talent))\b/i.test(lower)) {
-    requestedPeople = "african";
-  } else if (/\b(hispanic|latino|latina|latinx)\b/i.test(lower)) {
-    requestedPeople = "hispanic";
-  } else if (/\b(east[\s-]asian|chinese|japanese|korean)\b/i.test(lower)) {
-    requestedPeople = "east-asian";
-  } else if (/\b(south[\s-]asian|indian)\b/i.test(lower)) {
-    requestedPeople = "south-asian";
-  } else if (/\b(middle[\s-]eastern|arab|arabian)\b/i.test(lower)) {
-    requestedPeople = "middle-eastern";
-  } else if (/\b(caucasian|white\s+(?:people|cast|actors|models|talent)|european\s+(?:people|cast))\b/i.test(lower)) {
-    requestedPeople = "caucasian";
-  } else if (/\b(all\s+races|diverse\s+(?:people|cast|races)|multiracial)\b/i.test(lower)) {
-    requestedPeople = "all";
-  }
-
-  if (requestedPeople) {
-    nextScript.options!.peopleRepresentation = requestedPeople;
-    const usedIds: string[] = [];
-    const usedDemos: PeopleRepresentation[] = [];
-    for (let i = 0; i < nextScript.scenes.length; i += 1) {
-      const sc = nextScript.scenes[i];
-      if (sc.mediaLocked && sc.mediaId) {
-        usedIds.push(sc.mediaId);
-        continue;
-      }
-      const { asset, mediaQuery } = await matchVideoForNarration({
-        narration: sc.narration || sc.caption || project.prompt,
-        caption: sc.caption,
-        topicContext: project.prompt,
-        excludeIds: usedIds,
-        peopleRepresentation: requestedPeople,
-        usedDemographics: usedDemos,
-      });
-      if (asset) {
-        usedIds.push(asset.id);
-        if (asset.demographics?.length) usedDemos.push(...asset.demographics);
-        nextScript.scenes[i] = hydrateSceneMedia(
-          {
-            ...sc,
-            mediaQuery,
-            mediaId: asset.id,
-            mediaType: "video",
-            mediaUrl: previewUrlForAsset(asset),
-            mediaThumb: asset.thumb,
-            mediaTitle: asset.title,
-            mediaCreator: asset.creator,
-            mediaProvider: asset.provider,
-          },
-          requestedPeople,
-        );
-      }
-    }
-    scriptDirty = true;
-    changes.push(
-      `Cast → ${getPeopleRepresentation(requestedPeople).label} (synced all unlocked clips to narration)`,
-    );
-  }
-
-  const activePeople: PeopleRepresentation =
-    nextScript.options?.peopleRepresentation ?? "all";
 
   // 1. Resolution (240p / 360p / 1080p)
   if (/\b240p?\b/.test(lower)) {
@@ -306,28 +232,19 @@ export async function interpretEditCommand(
         .filter((_, idx) => idx !== sceneIdx)
         .map((s) => s.mediaId)
         .filter((id): id is string => Boolean(id));
-      const matched = await matchBestStockVideo(
-        desiredQuery,
-        exclude,
-        preferredProvider,
-        project.prompt,
-        activePeople,
-      );
+      const matched = await matchBestStockVideo(desiredQuery, exclude, preferredProvider, undefined, project.script.options?.cast);
       if (matched) {
-        nextScript.scenes[sceneIdx] = hydrateSceneMedia(
-          {
-            ...nextScript.scenes[sceneIdx],
-            mediaQuery: desiredQuery,
-            mediaId: matched.id,
-            mediaType: "video",
-            mediaUrl: previewUrlForAsset(matched),
-            mediaThumb: matched.thumb,
-            mediaTitle: matched.title,
-            mediaCreator: matched.creator,
-            mediaProvider: matched.provider,
-          },
-          activePeople,
-        );
+        nextScript.scenes[sceneIdx] = hydrateSceneMedia({
+          ...nextScript.scenes[sceneIdx],
+          mediaQuery: desiredQuery,
+          mediaId: matched.id,
+          mediaType: "video",
+          mediaUrl: previewUrlForAsset(matched),
+          mediaThumb: matched.thumb,
+          mediaTitle: matched.title,
+          mediaCreator: matched.creator,
+          mediaProvider: matched.provider,
+        });
         scriptDirty = true;
         changes.push(
           `Scene ${sceneIdx + 1} B-roll → "${matched.title}" (${matched.provider})`,
@@ -357,7 +274,6 @@ export async function interpretEditCommand(
     const rewritten = await regenerateScene(nextScript, sceneIdx, {
       prompt: project.prompt,
       tone: patch.tone ?? project.tone,
-      peopleRepresentation: activePeople,
     });
     nextScript.scenes[sceneIdx] = { ...rewritten, id: nextScript.scenes[sceneIdx].id };
     scriptDirty = true;
@@ -386,7 +302,7 @@ export async function interpretEditCommand(
     const exclude = nextScript.scenes
       .map((s) => s.mediaId)
       .filter((id): id is string => Boolean(id));
-    const matched = await matchBestStockVideo(query, exclude, undefined, project.prompt, activePeople);
+    const matched = await matchBestStockVideo(query, exclude, undefined, undefined, project.script.options?.cast);
     const newScene: Scene = hydrateSceneMedia({
       id: randomUUID(),
       narration: `Let us also look at ${topic} — a crucial detail that brings the whole story together.`,
@@ -437,7 +353,6 @@ export async function interpretEditCommand(
         musicTrack: nextScript.options?.musicTrack,
         musicVolume: nextScript.options?.musicVolume,
         captionMode: nextScript.options?.captionMode,
-        peopleRepresentation: activePeople,
       });
       nextScript.scenes = regenerated.scenes;
       nextScript.summary = regenerated.summary;
@@ -454,7 +369,6 @@ export async function interpretEditCommand(
       musicTrack: nextScript.options?.musicTrack,
       musicVolume: nextScript.options?.musicVolume,
       captionMode: nextScript.options?.captionMode,
-      peopleRepresentation: activePeople,
     });
     nextScript.scenes = regenerated.scenes;
     nextScript.summary = regenerated.summary;
@@ -467,7 +381,7 @@ export async function interpretEditCommand(
     const visualFallback = extractVisualKeywords(command, "");
     if (visualFallback) {
       const targetIdx = sceneIdx ?? 0;
-      const matched = await matchBestStockVideo(visualFallback, [], undefined, project.prompt, activePeople);
+      const matched = await matchBestStockVideo(visualFallback, [], undefined, undefined, project.script.options?.cast);
       if (matched && nextScript.scenes[targetIdx]) {
         nextScript.scenes[targetIdx] = hydrateSceneMedia({
           ...nextScript.scenes[targetIdx],

@@ -5,6 +5,7 @@ import { desc, eq } from "drizzle-orm";
 import { db, ensureSchema, hasDatabaseUrl } from "@/db";
 import { projects, type ProjectRow } from "@/db/schema";
 import { defaultMusicForTone } from "./music";
+import { isCastOption } from "./people";
 import { hydrateSceneMedia } from "./stock";
 import { deleteProjectArtifacts, getStorageRoot } from "./storage";
 import type { AspectRatio, Project, Resolution, Style, Tone, VideoScript } from "./types";
@@ -62,13 +63,12 @@ function writeFallbackStore(map: Map<string, Project>): void {
 }
 
 function hydrateProject(project: Project): Project {
-  const opts = project.script?.options;
-  const peopleRepresentation = opts?.peopleRepresentation ?? "all";
   const scenes = Array.isArray(project.script?.scenes)
     ? project.script.scenes.map((scene) =>
-        hydrateSceneMedia(scene, peopleRepresentation),
+        hydrateSceneMedia(scene, project.script?.options?.cast),
       )
     : [];
+  const opts = project.script?.options;
   return {
     ...project,
     script: {
@@ -76,6 +76,7 @@ function hydrateProject(project: Project): Project {
       summary: project.script?.summary ?? "",
       scenes,
       options: {
+        cast: isCastOption(opts?.cast) ? opts.cast : "any",
         workflow: opts?.workflow ?? "explainer",
         musicTrack: opts?.musicTrack ?? defaultMusicForTone(project.tone || "cinematic"),
         musicVolume: typeof opts?.musicVolume === "number" ? opts.musicVolume : 0.16,
@@ -84,7 +85,6 @@ function hydrateProject(project: Project): Project {
         voiceRateOffset:
           typeof opts?.voiceRateOffset === "number" ? opts.voiceRateOffset : 0,
         autoMatchMedia: opts?.autoMatchMedia ?? true,
-        peopleRepresentation,
       },
     },
   };
@@ -92,11 +92,8 @@ function hydrateProject(project: Project): Project {
 
 export function toProject(row: ProjectRow): Project {
   const script = (row.script ?? {}) as Partial<VideoScript>;
-  const peopleRepresentation = script.options?.peopleRepresentation ?? "all";
   const scenes = Array.isArray(script.scenes)
-    ? script.scenes.map((scene) =>
-        hydrateSceneMedia(scene, peopleRepresentation),
-      )
+    ? script.scenes.map((scene) => hydrateSceneMedia(scene, script.options?.cast))
     : [];
 
   return {
@@ -119,6 +116,7 @@ export function toProject(row: ProjectRow): Project {
       summary: script.summary ?? "",
       scenes,
       options: {
+        cast: isCastOption(script.options?.cast) ? script.options.cast : "any",
         workflow: script.options?.workflow ?? "explainer",
         musicTrack:
           script.options?.musicTrack ??
@@ -134,7 +132,6 @@ export function toProject(row: ProjectRow): Project {
             ? script.options.voiceRateOffset
             : 0,
         autoMatchMedia: script.options?.autoMatchMedia ?? true,
-        peopleRepresentation,
       },
     },
     outputPath: row.outputPath,

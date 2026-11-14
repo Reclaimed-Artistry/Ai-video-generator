@@ -1,6 +1,7 @@
 "use client";
 
-import { ArrowRight, FileText, Loader2, Music, Play, Square, Users, Volume2 } from "lucide-react";
+import { CAST_OPTIONS, type CastOption } from "@/lib/people";
+import { ArrowRight, FileText, Loader2, Music, Play, Square, Volume2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AspectGlyph, AudioMeter } from "@/components/BrandMark";
@@ -10,7 +11,6 @@ import {
   ASPECT_ORDER,
   ASPECTS,
   CAPTION_MODES,
-  PEOPLE_REPRESENTATIONS,
   RESOLUTION_ORDER,
   RESOLUTIONS,
   TONES,
@@ -19,7 +19,6 @@ import {
   type AspectRatio,
   type CaptionMode,
   type MusicTrackId,
-  type PeopleRepresentation,
   type Resolution,
   type Tone,
   type Workflow,
@@ -93,7 +92,13 @@ function computeRaster(resolution: Resolution, aspect: AspectRatio): string {
   return `${width}×${height}`;
 }
 
-export default function Composer() {
+export default function Composer({
+  castCoverage = {},
+  liveCast = false,
+}: {
+  castCoverage?: Record<string, number>;
+  liveCast?: boolean;
+}) {
   const router = useRouter();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -106,8 +111,7 @@ export default function Composer() {
   const [voice, setVoice] = useState<string>("ava");
   const [musicTrack, setMusicTrack] = useState<MusicTrackId>("corporate");
   const [captionMode, setCaptionMode] = useState<CaptionMode>("word-highlight");
-  const [peopleRepresentation, setPeopleRepresentation] =
-    useState<PeopleRepresentation>("all");
+  const [cast, setCast] = useState<CastOption>("any");
   const [duration, setDuration] = useState<number>(30);
   const [loadingMode, setLoadingMode] = useState<"render" | "draft" | null>(null);
   const [auditioning, setAuditioning] = useState(false);
@@ -205,8 +209,8 @@ export default function Composer() {
           voice,
           musicTrack,
           captionMode,
-          peopleRepresentation,
           duration,
+          cast,
         }),
       });
       const raw = await response.text();
@@ -521,39 +525,42 @@ export default function Composer() {
           </label>
         </div>
 
-        {/* Row 3: People / Cast Representation (Real-world footage only) */}
-        <div className="mt-3 rounded-[3px] border border-line bg-inset/60 p-2.5">
-          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-            <span className="font-tech inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-stone-ink">
-              <Users className="h-3 w-3 text-amber-cue" />
-              <span>People / Cast in Video</span>
+        {/* Cast representation: who appears on screen in every clip */}
+        <div className="mt-3 border-t border-line pt-3">
+          <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+            <span className="font-tech text-[10px] uppercase tracking-[0.14em] text-ash">
+              People on screen
             </span>
-            <span className="font-tech text-[10px] text-ash">
-              Real-world clips only · Zero abstract media · Matched to narration
+            <span className="text-[11px] text-ash">
+              Every clip is matched to its narration and filtered by the uploader&apos;s own tags.
             </span>
           </div>
-          <div
-            role="radiogroup"
-            aria-label="People representation in video"
-            className="flex flex-wrap gap-1.5"
-          >
-            {PEOPLE_REPRESENTATIONS.map((opt) => {
-              const active = peopleRepresentation === opt.id;
+          <div role="radiogroup" aria-label="People on screen" className="flex flex-wrap gap-1.5">
+            {CAST_OPTIONS.map((option) => {
+              const count = option.id === "any" ? null : castCoverage[option.id] ?? 0;
+              const unavailable = option.id !== "any" && count === 0 && !liveCast;
+              const active = cast === option.id;
               return (
                 <button
-                  key={opt.id}
+                  key={option.id}
                   type="button"
                   role="radio"
                   aria-checked={active}
-                  onClick={() => setPeopleRepresentation(opt.id)}
-                  title={opt.description}
-                  className={`rounded-[2px] border px-2.5 py-1 font-tech text-[10px] uppercase tracking-[0.06em] transition-colors ${
+                  disabled={unavailable}
+                  title={unavailable ? "No tagged clips in the bundled library yet — add a PEXELS_API_KEY to search the live library" : option.note}
+                  onClick={() => setCast(option.id)}
+                  className={`rounded-[3px] border px-2.5 py-1.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                     active
-                      ? "border-amber-cue bg-amber-cue font-semibold text-[#14110A]"
+                      ? "border-amber-cue bg-amber-cue/10 text-paper"
                       : "border-line bg-canvas text-stone-ink hover:border-line-strong hover:text-paper"
                   }`}
                 >
-                  {opt.shortLabel}
+                  <span className="font-medium">{option.label}</span>
+                  {count !== null ? (
+                    <span className="ml-1.5 font-tech text-[10px] text-ash">
+                      {count > 0 ? `${count} clips` : liveCast ? "live" : "—"}
+                    </span>
+                  ) : null}
                 </button>
               );
             })}

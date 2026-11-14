@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getProject, updateProject } from "@/lib/projects";
+import { enforceMediaPolicy } from "@/lib/media-policy";
 import { generateScript } from "@/lib/script";
 
 export const runtime = "nodejs";
@@ -19,17 +20,18 @@ export async function POST(request: Request, context: Context) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
-    const script = await generateScript({
+    const generated = await generateScript({
       prompt: project.prompt,
       duration: project.duration,
       tone: project.tone,
       language: project.language,
+      cast: project.script.options?.cast ?? "any",
       workflow: project.script.options?.workflow,
       musicTrack: project.script.options?.musicTrack,
       musicVolume: project.script.options?.musicVolume,
       captionMode: project.script.options?.captionMode,
-      peopleRepresentation: project.script.options?.peopleRepresentation ?? "all",
     });
+    const { script } = await enforceMediaPolicy(generated, project.prompt);
 
     await updateProject(id, {
       script,

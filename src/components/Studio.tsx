@@ -25,7 +25,6 @@ import {
   Terminal,
   Trash2,
   Unlock,
-  Users,
   Volume2,
   Wand2,
   X,
@@ -47,6 +46,7 @@ import {
   saveLocalVideoBlob,
 } from "@/lib/client-store";
 import { resolveMediaUrl } from "@/lib/media-url";
+import { CAST_OPTIONS, castLabel, detectPeople, type CastOption } from "@/lib/people";
 import { getMusicTrack, MUSIC_TRACKS } from "@/lib/music";
 import {
   ASPECT_ORDER,
@@ -57,7 +57,6 @@ import {
   MAX_SCENES,
   MEDIA_FILTERS,
   MEDIA_SPEEDS,
-  PEOPLE_REPRESENTATIONS,
   RESOLUTION_ORDER,
   RESOLUTIONS,
   STYLES,
@@ -67,7 +66,6 @@ import {
   type CaptionPosition,
   type MediaFilter,
   type MusicTrackId,
-  type PeopleRepresentation,
   type Project,
   type Resolution,
   type Scene,
@@ -100,12 +98,12 @@ const QUICK_TOPICS = [
 ];
 
 const COMMAND_EXAMPLES = [
-  "Use African American cast",
-  "Switch to African only",
   "Change voice to British male",
   "Switch to 9:16 vertical",
-  "Replace scene 2 with coffee",
+  "Replace scene 2 with ocean waves",
+  "Add cinematic music",
   "Make it 1080p",
+  "Turn off captions",
 ];
 
 function pickPreviewUrl(asset: StockAsset): string | null {
@@ -196,6 +194,8 @@ export default function Studio({
   const [searching, setSearching] = useState(false);
   const [matchingSceneId, setMatchingSceneId] = useState<string | null>(null);
   const [syncingAllMedia, setSyncingAllMedia] = useState(false);
+  const [applyingCast, setApplyingCast] = useState(false);
+  const [castNotice, setCastNotice] = useState<string | null>(null);
   const [hoveredAssetId, setHoveredAssetId] = useState<string | null>(null);
 
   // Persistence & Render state
@@ -227,14 +227,18 @@ export default function Studio({
   }, [scenes, activeSceneId]);
   const activeScene: Scene | null = scenes[activeIndex] ?? null;
 
+  const castOption: CastOption = project.script.options?.cast ?? "any";
+  const castRef = useRef<CastOption>(castOption);
+  useEffect(() => {
+    castRef.current = castOption;
+  }, [castOption]);
+
   const captionMode: CaptionMode =
     project.script.options?.captionMode ?? "word-highlight";
   const captionPosition: CaptionPosition =
     project.script.options?.captionPosition ?? "bottom";
   const voiceRateOffset = project.script.options?.voiceRateOffset ?? 0;
   const autoMatchMedia = project.script.options?.autoMatchMedia ?? true;
-  const peopleRepresentation: PeopleRepresentation =
-    project.script.options?.peopleRepresentation ?? "all";
   const musicTrackId: MusicTrackId =
     project.script.options?.musicTrack ?? "cinematic";
   const musicVolume = project.script.options?.musicVolume ?? 0.16;
@@ -263,15 +267,11 @@ export default function Studio({
   const hasMasterFile = Boolean(inlineBlobUrl) || Boolean(project.outputPath) || render.status === "done";
 
   const searchMedia = useCallback(
-    async (
-      query: string,
-      provider: StockProvider = providerFilter,
-      peopleOverride: PeopleRepresentation = peopleRepresentation,
-    ) => {
+    async (query: string, provider: StockProvider = providerFilter) => {
       setSearching(true);
       try {
         const response = await fetch(
-          `/api/media/search?q=${encodeURIComponent(query)}&provider=${provider}&people=${encodeURIComponent(peopleOverride)}&limit=24`,
+          `/api/media/search?q=${encodeURIComponent(query)}&provider=${provider}&limit=24&cast=${castRef.current}`,
         );
         const data = await response.json().catch(() => ({}));
         if (response.ok) {
@@ -282,14 +282,12 @@ export default function Studio({
         setSearching(false);
       }
     },
-    [providerFilter, peopleRepresentation],
+    [providerFilter],
   );
 
   useEffect(() => {
     let active = true;
     const firstQuery = initialProject.script.scenes[0]?.mediaQuery ?? "";
-    const initialPeople =
-      initialProject.script.options?.peopleRepresentation ?? "all";
 
     // Always mirror into client-store so navigating back / reloading never loses the project
     saveLocalProject(initialProject);
@@ -302,7 +300,7 @@ export default function Studio({
       .catch(() => undefined);
 
     fetch(
-      `/api/media/search?q=${encodeURIComponent(firstQuery)}&provider=all&people=${encodeURIComponent(initialPeople)}&limit=24`,
+      `/api/media/search?q=${encodeURIComponent(firstQuery)}&provider=all&limit=24&cast=${initialProject.script.options?.cast ?? "any"}`,
     )
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -523,6 +521,42 @@ export default function Studio({
     if (hasMasterFile) setHasUnrenderedEdits(true);
   }
 
+  /** Switch the cast and re-match every unlocked clip that doesn't feature it. */
+  async function changeCast(next: CastOption) {
+    if (next === castOption || applyingCast) return;
+    updateScriptOptions({ cast: next });
+    setApplyingCast(true);
+    setCastNotice(null);
+    try {
+      const res = await fetch("/api/media/cast", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          script: { ...project.script, options: { ...project.script.options, cast: next } },
+          cast: next,
+          topicContext: project.prompt || project.title,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.script) {
+        setProject((curr) => ({
+          ...curr,
+          script: { ...data.script, options: { ...curr.script.options, cast: next } },
+        }));
+        setCastNotice(
+          data.changed > 0
+            ? `${data.changed} clip${data.changed === 1 ? "" : "s"} re-matched to ${castLabel(next)}`
+            : `Every clip already fits ${castLabel(next)}`,
+        );
+        if (hasMasterFile) setHasUnrenderedEdits(true);
+      } else {
+        setCastNotice(data.error ?? "Could not apply the cast right now");
+      }
+    } finally {
+      setApplyingCast(false);
+    }
+  }
+
   function updateScene(sceneId: string, patch: Partial<Scene>) {
     setMonitorMode("storyboard");
     setProject((curr) => ({
@@ -559,7 +593,7 @@ export default function Studio({
             topicContext: project.prompt || project.title,
             excludeIds,
             provider: providerFilter,
-            peopleRepresentation,
+            cast: castRef.current,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -586,14 +620,7 @@ export default function Studio({
         setMatchingSceneId((curr) => (curr === sceneId ? null : curr));
       }
     },
-    [
-      project.script.scenes,
-      project.prompt,
-      project.title,
-      providerFilter,
-      peopleRepresentation,
-      hasMasterFile,
-    ],
+    [project.script.scenes, project.prompt, project.title, providerFilter, hasMasterFile],
   );
 
   function handleNarrationEdit(scene: Scene, nextNarration: string) {
@@ -606,13 +633,9 @@ export default function Studio({
     }, 1150);
   }
 
-  async function syncAllScenesToNarration(
-    overrideScenes?: Scene[],
-    overridePeople?: PeopleRepresentation,
-  ) {
+  async function syncAllScenesToNarration(overrideScenes?: Scene[]) {
     const list = overrideScenes ?? scenes;
     if (list.length === 0 || syncingAllMedia) return;
-    const effectivePeople = overridePeople ?? peopleRepresentation;
     setSyncingAllMedia(true);
     setMonitorMode("storyboard");
     try {
@@ -622,7 +645,7 @@ export default function Studio({
         body: JSON.stringify({
           topicContext: project.prompt || project.title,
           provider: providerFilter,
-          peopleRepresentation: effectivePeople,
+          cast: castRef.current,
           scenes: list.map((s) => ({
             id: s.id,
             narration: s.narration,
@@ -870,6 +893,7 @@ export default function Studio({
       mediaTitle: asset.title,
       mediaCreator: asset.creator,
       mediaProvider: asset.provider,
+      mediaPeople: detectPeople(asset.title, asset.tags).groups,
       mediaQuery: asset.tags.slice(0, 3).join(" "),
       mediaLocked: true,
     });
@@ -1393,6 +1417,17 @@ export default function Studio({
                       <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-stone-ink">
                         {scene.narration || "No voiceover copy"}
                       </p>
+                      {castOption !== "any" ? (
+                        (scene.mediaPeople ?? []).includes(castOption) ? (
+                          <span className="mt-1 inline-block font-tech text-[9px] uppercase tracking-wider text-nominal">
+                            ✓ {castLabel(castOption)}
+                          </span>
+                        ) : scene.mediaLocked ? (
+                          <span className="mt-1 inline-block font-tech text-[9px] uppercase tracking-wider text-amber-cue">
+                            Locked clip · outside cast
+                          </span>
+                        ) : null
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -2163,36 +2198,6 @@ export default function Studio({
             {/* TAB 1: MULTI-SITE MOVING STOCK VIDEO BIN */}
             {tab === "media" ? (
               <div className="space-y-3">
-                {/* People / Cast Filter for B-Roll Bin + Live Re-Sync */}
-                <div className="rounded-[3px] border border-line bg-inset/70 p-2">
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="font-tech inline-flex items-center gap-1 text-[9px] uppercase tracking-[0.12em] text-stone-ink">
-                      <Users className="h-2.5 w-2.5 text-amber-cue" />
-                      <span>People / Cast</span>
-                    </span>
-                    <span className="font-tech text-[9px] text-ash">
-                      No abstract media
-                    </span>
-                  </div>
-                  <select
-                    aria-label="People representation filter"
-                    value={peopleRepresentation}
-                    onChange={(event) => {
-                      const nextPeople = event.target.value as PeopleRepresentation;
-                      updateScriptOptions({ peopleRepresentation: nextPeople });
-                      void searchMedia(search, providerFilter, nextPeople);
-                      void syncAllScenesToNarration(scenes, nextPeople);
-                    }}
-                    className="w-full rounded-[2px] border border-line bg-canvas px-2 py-1.5 text-xs font-medium text-paper outline-none focus:border-amber-cue"
-                  >
-                    {PEOPLE_REPRESENTATIONS.map((opt) => (
-                      <option key={opt.id} value={opt.id} className="bg-panel text-paper">
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
                 <div className="flex flex-wrap items-center gap-1">
                   {(
                     [
@@ -2585,6 +2590,30 @@ export default function Studio({
             {tab === "settings" ? (
               <div className="space-y-4">
                 <div>
+                  <span className="font-tech mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.14em] text-ash">
+                    <span>People on screen</span>
+                    {applyingCast ? <span className="text-amber-cue">Re-matching…</span> : null}
+                  </span>
+                  <select
+                    value={castOption}
+                    disabled={applyingCast}
+                    onChange={(event) => void changeCast(event.target.value as CastOption)}
+                    className="w-full rounded-[3px] border border-line bg-canvas px-2.5 py-2 text-xs font-medium text-paper outline-none focus:border-amber-cue disabled:opacity-60"
+                  >
+                    {CAST_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id} className="bg-panel">
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[11px] leading-snug text-ash">
+                    {castNotice ??
+                      (castOption === "any"
+                        ? "Any footage that matches each scene's narration. Abstract animation is never used."
+                        : "Unlocked scenes only use clips whose own tags name this group, matched to each scene's narration.")}
+                  </p>
+                </div>
+                <div>
                   <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
                     Subtitle / Caption Mode
                   </span>
@@ -2658,44 +2687,6 @@ export default function Studio({
                         </button>
                       ))}
                     </div>
-                  </div>
-                </div>
-
-                <div>
-                  <span className="font-tech mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.14em] text-ash">
-                    <span className="inline-flex items-center gap-1">
-                      <Users className="h-3 w-3 text-amber-cue" />
-                      People / Cast Representation
-                    </span>
-                    <span>Real footage only</span>
-                  </span>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {PEOPLE_REPRESENTATIONS.map((opt) => {
-                      const active = peopleRepresentation === opt.id;
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          onClick={() => {
-                            updateScriptOptions({ peopleRepresentation: opt.id });
-                            void searchMedia(search, providerFilter, opt.id);
-                            void syncAllScenesToNarration(scenes, opt.id);
-                          }}
-                          className={`rounded-[3px] border px-2.5 py-2 text-left transition-colors ${
-                            active
-                              ? "border-amber-cue bg-elevated text-paper"
-                              : "border-line bg-inset text-stone-ink hover:border-line-strong hover:text-paper"
-                          }`}
-                        >
-                          <span className="font-tech block text-[11px] font-semibold">
-                            {opt.shortLabel}
-                          </span>
-                          <span className="block truncate text-[10px] text-ash">
-                            {opt.description}
-                          </span>
-                        </button>
-                      );
-                    })}
                   </div>
                 </div>
 

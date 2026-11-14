@@ -1,107 +1,21 @@
 import catalogData from "./stock-catalog.json";
+import type { MediaType, Scene, StockAsset, StockSource } from "./types";
+
 import {
-  getPeopleRepresentation,
-  type MediaType,
-  type PeopleRepresentation,
-  type Scene,
-  type StockAsset,
-  type StockSource,
-} from "./types";
+  assetMatchesCast,
+  castLabel,
+  castSearchTerms,
+  detectPeople,
+  isAbstractAsset,
+  sceneTokensForNarration,
+  type CastOption,
+} from "./people";
 
-/**
- * Hard filter blocking abstract, neon, 3D CGI, motion-graphics, particle,
- * wireframe, fractal, and subscribe-animation clips from EVERY local and live
- * stock provider so generated videos always use real-world camera footage.
- */
-const ABSTRACT_MEDIA_RE =
-  /\b(abstract|animation|animated|motion\s+graphic|motion\s+graphics|3d\s+(?:render|animation|model|like|subscribe|background|loop|art)|cgi|neon|light\s+trails?|luminous|fractal|hologram|holographic|particles?|vfx|cyberpunk|cyberspace|matrix|wireframe|geometric|background\s+loop|swirl|swirls|gradient|tunnel|like\s+and\s+subscribe|subscribe\s+animation|text\s+animation|glitch|plexus|network\s+connections|data\s+flow|molecular\s+network|futuristic\s+digital|vaporwave|kaleidoscope|wave\s+animation|lines\s+background|screensaver|render\s+loop)\b/i;
-
-export function isAbstractAsset(
-  asset: Pick<StockAsset, "title" | "tags" | "pageUrl">,
-): boolean {
-  const haystack = `${asset.title ?? ""} ${(asset.tags ?? []).join(" ")} ${asset.pageUrl ?? ""}`;
-  return ABSTRACT_MEDIA_RE.test(haystack);
-}
-
-const DEMOGRAPHIC_PATTERNS: Record<Exclude<PeopleRepresentation, "all">, RegExp> = {
-  "african-american": /\b(african[\s-]american|afro[\s-]american|black[\s-]american|black\s+(?:man|woman|men|women|couple|family|business|businessman|businesswoman|founder|owned|entrepreneur|team|athlete|developer|people))\b/i,
-  african: /\b(africa|african|nigeria|nigerian|lagos|abuja|kenya|kenyan|nairobi|ghana|accra|cameroon|douala|south\s+africa|johannesburg|ethiopia|uganda|tanzania|senegal)\b/i,
-  hispanic: /\b(hispanic|latino|latina|latinx|mexican|colombian|spanish|brazilian|argentinian|peruvian|amigos|hombre)\b/i,
-  "east-asian": /\b(east[\s-]asian|chinese|japanese|korean|seoul|tokyo|taiwanese|vietnamese|asian\s+(?:man|woman|men|women|business|couple|family|developer|team|people))\b/i,
-  "south-asian": /\b(south[\s-]asian|indian|india|mumbai|delhi|bangalore|pakistani|bengali|bangladeshi|sri\s+lankan|brown\s+people)\b/i,
-  "middle-eastern": /\b(middle[\s-]eastern|arab|arabian|hijab|dubai|emirates|saudi|egyptian|moroccan|lebanese|jordanian|turkish|persian)\b/i,
-  caucasian: /\b(caucasian|white\s+(?:man|woman|men|women|couple|family|business|team|people)|european|blond|blonde)\b/i,
-};
-
-const HUMAN_INDICATOR_RE =
-  /\b(man|woman|men|women|person|people|couple|family|team|colleagues|coworkers|workers|employees|friends|entrepreneur|founder|founders|executive|businessman|businesswoman|developer|engineer|doctor|chef|barista|athlete|runner|student|artist|musician|singer|vendor|crowd|pedestrian|pedestrians|shoppers|manager|specialist|portrait|smiling|talking|walking|typing|working|meeting|brainstorming|jogging|exercising|training)\b/i;
-
-function inferDemographicsFromMetadata(
-  asset: StockAsset,
-  searchDemographicHint?: PeopleRepresentation,
-): { hasPeople: boolean; demographics: PeopleRepresentation[] } {
-  if (Array.isArray(asset.demographics) && typeof asset.hasPeople === "boolean") {
-    return { hasPeople: asset.hasPeople, demographics: asset.demographics };
-  }
-
-  const text = `${asset.title} ${asset.tags.join(" ")} ${asset.pageUrl}`;
-  const found: PeopleRepresentation[] = [];
-  for (const [demo, re] of Object.entries(DEMOGRAPHIC_PATTERNS) as [
-    Exclude<PeopleRepresentation, "all">,
-    RegExp,
-  ][]) {
-    if (re.test(text)) found.push(demo);
-  }
-
-  const hasPeople =
-    found.length > 0 ||
-    HUMAN_INDICATOR_RE.test(text) ||
-    /\b(diverse|multiracial|multiethnic)\b/i.test(text);
-
-  if (found.length === 0 && hasPeople) {
-    if (/\b(diverse|multiracial|multiethnic)\b/i.test(text)) {
-      found.push("all");
-    } else if (searchDemographicHint && searchDemographicHint !== "all") {
-      found.push(searchDemographicHint);
-    }
-  }
-
-  return { hasPeople, demographics: found };
-}
-
-/**
- * Checks whether an asset is permitted under the selected people/race option:
- * - Never allows abstract media
- * - For a specific race (`!== "all"`), rejects any human clip belonging to
- *   another race or whose race is unverified (when strictPeopleOnly is set)
- */
-export function isAssetCompatibleWithPeople(
-  asset: StockAsset,
-  people: PeopleRepresentation = "all",
-  opts: { allowNonHumanScenic?: boolean } = {},
-): boolean {
-  if (isAbstractAsset(asset)) return false;
-  if (!people || people === "all") return true;
-
-  const { hasPeople, demographics } = inferDemographicsFromMetadata(asset);
-
-  // Explicit match for the requested demographic -> always allowed
-  if (demographics.includes(people)) return true;
-
-  // Non-human scenic / animal / landscape / object footage: allowed only when
-  // the narration explicitly calls for a non-human subject
-  if (!hasPeople && demographics.length === 0) {
-    return Boolean(opts.allowNonHumanScenic);
-  }
-
-  // Human clip of a different (or unknown) race -> reject
-  return false;
-}
-
+/** Bundled library minus any motion-graphic / abstract footage. */
 export const LOCAL_CATALOG = (catalogData as StockAsset[]).filter(
-  (asset) => asset.type === "video" && !isAbstractAsset(asset),
+  (asset) => asset.type !== "video" || !isAbstractAsset(asset),
 );
-export const VIDEO_CATALOG = LOCAL_CATALOG;
+export const VIDEO_CATALOG = LOCAL_CATALOG.filter((asset) => asset.type === "video");
 
 export function getLocalAsset(id: string): StockAsset | undefined {
   return LOCAL_CATALOG.find((asset) => asset.id === id);
@@ -158,86 +72,77 @@ type VisualConcept = {
   slugs: string[];
   displayQuery: string;
   preferNasa?: boolean;
-  /** True when the concept is inherently scenic/animal/object rather than people-centric */
-  nonHumanSubject?: boolean;
 };
 
 /**
  * Concrete visual concept dictionary mapping narrative subjects & synonyms
- * to filmable real-world B-roll slugs (zero abstract/neon/CGI entries).
+ * to filmable B-roll slugs verified to return rich HD footage.
  */
 const VISUAL_CONCEPTS: VisualConcept[] = [
   {
     triggers: ["bottle", "water bottle", "hydration", "flask", "reusable", "thermos", "plastic"],
-    slugs: ["water-bottle", "water", "drinking-water", "park"],
+    slugs: ["water-bottle", "water", "drinking-water", "nature"],
     displayQuery: "water bottle hydration",
   },
   {
     triggers: ["coffee", "espresso", "barista", "latte", "roastery", "roaster", "cappuccino", "cafe", "beans", "brew"],
     slugs: ["coffee-barista", "coffee", "cafe", "espresso"],
-    displayQuery: "coffee cafe barista",
+    displayQuery: "barista coffee espresso",
   },
   {
-    triggers: ["pasta", "cooking", "recipe", "chef", "kitchen", "baking", "bread", "restaurant", "meal", "dinner", "food", "ingredient", "dish", "smoothie", "cake", "market"],
-    slugs: ["cooking", "kitchen", "chef", "food", "market"],
-    displayQuery: "food cooking kitchen",
+    triggers: ["pasta", "cooking", "recipe", "chef", "kitchen", "baking", "bread", "restaurant", "meal", "dinner", "food", "ingredient", "dish", "smoothie", "cake"],
+    slugs: ["cooking", "kitchen", "chef", "food"],
+    displayQuery: "chef cooking kitchen",
   },
   {
     triggers: ["robot", "robotics", "ai", "agent", "agents", "artificial intelligence", "chatbot", "automation", "machine learning", "neural", "algorithm", "llm"],
-    slugs: ["coding", "laptop", "office", "technology", "computer"],
-    displayQuery: "ai software laptop office",
+    slugs: ["robot", "technology", "coding", "computer"],
+    displayQuery: "ai robot technology",
   },
   {
     triggers: ["code", "coding", "software", "developer", "programming", "app", "saas", "cybersecurity", "cloud", "server", "data", "analytics", "dashboard", "digital", "network", "tech", "technology"],
-    slugs: ["coding", "laptop", "computer", "office", "technology"],
-    displayQuery: "software developer laptop",
+    slugs: ["coding", "technology", "computer", "data"],
+    displayQuery: "software technology data",
   },
   {
     triggers: ["dog", "puppy", "dogs", "pet", "pets"],
     slugs: ["dog", "dog-park", "puppy"],
     displayQuery: "dog playing park",
-    nonHumanSubject: true,
   },
   {
     triggers: ["cat", "kitten", "cats"],
     slugs: ["cat", "kitten"],
     displayQuery: "cat indoor portrait",
-    nonHumanSubject: true,
   },
   {
     triggers: ["lion", "safari", "elephant", "tiger", "wildlife", "animal", "animals", "savanna", "zoo"],
     slugs: ["lion", "wildlife", "animals", "nature"],
     displayQuery: "lion wildlife safari",
-    nonHumanSubject: true,
   },
   {
     triggers: ["outer space", "spaceship", "space station", "astronaut", "rocket", "galaxy", "planet", "mars", "moon", "cosmos", "stars", "universe", "nasa", "orbit", "satellite"],
     slugs: ["space", "stars", "earth", "galaxy"],
     displayQuery: "space galaxy stars",
     preferNasa: true,
-    nonHumanSubject: true,
   },
   {
     triggers: ["ocean", "waves", "sea", "surf", "underwater", "coral", "marine", "coast", "shore", "beach", "island"],
     slugs: ["ocean", "beach", "waves", "sea"],
     displayQuery: "ocean waves coast",
-    nonHumanSubject: true,
   },
   {
     triggers: ["mountain", "mountains", "hiking", "hike", "trail", "alps", "summit", "peak", "climbing", "trek"],
     slugs: ["mountain-hiking", "mountain", "forest", "nature"],
     displayQuery: "mountain hiking landscape",
-    nonHumanSubject: true,
   },
   {
     triggers: ["forest", "trees", "woods", "jungle", "rainforest", "sustainable", "sustainability", "climate", "eco", "green", "environment", "earth", "river", "waterfall", "wildlife", "nature"],
     slugs: ["forest", "nature", "river", "water"],
     displayQuery: "forest nature river",
-    nonHumanSubject: true,
   },
   {
-    triggers: ["gym", "workout", "fitness", "training", "running", "runner", "marathon", "exercise", "muscle", "weightlifting", "cardio", "athlete", "sport", "yoga", "stretch", "mobility", "jogging"],
-    slugs: ["gym", "workout", "running", "fitness"],
+    triggers: ["gym", "workout", "fitness", "training", "running", "runner", "marathon", "exercise", "muscle", "weightlifting", "cardio", "athlete", "sport", "yoga", "stretch", "mobility"],
+    slugs: ["gym", "workout", "running", "yoga"],
     displayQuery: "gym workout fitness",
   },
   {
@@ -246,7 +151,7 @@ const VISUAL_CONCEPTS: VisualConcept[] = [
     displayQuery: "doctor medical clinic",
   },
   {
-    triggers: ["money", "finance", "invest", "investing", "stock", "stocks", "crypto", "banking", "bank", "revenue", "profit", "wealth", "budget", "economy", "trading", "commerce", "cash"],
+    triggers: ["money", "finance", "invest", "investing", "stock", "stocks", "crypto", "banking", "bank", "revenue", "profit", "wealth", "budget", "economy", "trading"],
     slugs: ["money", "finance", "business", "office"],
     displayQuery: "finance money business",
   },
@@ -254,39 +159,36 @@ const VISUAL_CONCEPTS: VisualConcept[] = [
     triggers: ["car", "cars", "driving", "drive", "vehicle", "electric", "highway", "road", "roadtrip", "traffic", "supercar", "automotive"],
     slugs: ["car", "driving", "highway", "traffic"],
     displayQuery: "car driving highway",
-    nonHumanSubject: true,
   },
   {
     triggers: ["airplane", "flight", "airport", "plane", "travel", "vacation", "holiday", "hotel", "passport", "destination", "tourist", "adventure"],
-    slugs: ["airplane", "travel", "beach", "walking"],
+    slugs: ["airplane", "travel", "beach", "hotel"],
     displayQuery: "airplane flight travel",
-    nonHumanSubject: true,
   },
   {
     triggers: ["train", "railway", "subway", "metro", "commute", "rail", "station"],
     slugs: ["train", "city", "street", "skyline"],
     displayQuery: "train city transit",
-    nonHumanSubject: true,
   },
   {
     triggers: ["city", "skyline", "downtown", "urban", "architecture", "skyscraper", "building", "buildings", "street", "nightlife", "rooftop"],
-    slugs: ["city", "skyline", "street", "walking"],
-    displayQuery: "city street architecture",
+    slugs: ["city", "skyline", "street", "architecture"],
+    displayQuery: "city skyline architecture",
   },
   {
     triggers: ["house", "home", "apartment", "interior", "real estate", "living room", "property", "furniture", "design", "minimalist"],
-    slugs: ["house", "home", "interior", "architecture"],
-    displayQuery: "modern home interior",
+    slugs: ["house", "interior", "architecture", "living-room"],
+    displayQuery: "modern house interior",
   },
   {
-    triggers: ["guitar", "piano", "music", "musician", "concert", "band", "singer", "dj", "audio", "podcast", "microphone", "music studio", "recording studio", "headphones"],
-    slugs: ["guitar", "music", "concert", "headphones"],
-    displayQuery: "music studio headphones",
+    triggers: ["guitar", "piano", "music", "musician", "concert", "band", "singer", "dj", "audio", "podcast", "microphone", "music studio", "recording studio"],
+    slugs: ["guitar", "music", "concert", "microphone"],
+    displayQuery: "music guitar studio",
   },
   {
-    triggers: ["camera", "filming", "cinema", "photographer", "creator", "youtube", "tiktok", "instagram", "social", "marketing", "brand", "advertising", "campaign", "smartphone"],
-    slugs: ["camera", "smartphone", "creator", "marketing"],
-    displayQuery: "creator smartphone marketing",
+    triggers: ["camera", "filming", "cinema", "photographer", "creator", "youtube", "tiktok", "instagram", "social", "marketing", "brand", "advertising", "campaign", "smartphone", "neon"],
+    slugs: ["camera", "smartphone", "neon", "studio"],
+    displayQuery: "camera creator studio",
   },
   {
     triggers: ["student", "school", "university", "college", "study", "studying", "library", "book", "books", "reading", "teacher", "classroom", "course", "learn", "education", "workshop"],
@@ -332,8 +234,6 @@ export type VisualSearchPlan = {
   slugs: string[];
   targetTokens: string[];
   preferNasa: boolean;
-  /** True only when the scene explicitly describes non-human animals, space, or landscapes */
-  allowNonHumanScenic: boolean;
 };
 
 /**
@@ -436,23 +336,15 @@ export function buildVisualSearchPlan(
         ? `${concretePrimary[0]} ${concreteContext[0] ?? ""}`.trim()
         : concreteContext.slice(0, 3).join(" ") || "cinematic footage");
 
-  const primaryMentionsPeople = HUMAN_INDICATOR_RE.test(primaryLower);
-  const allowNonHumanScenic =
-    !primaryMentionsPeople &&
-    orderedConcepts.length > 0 &&
-    orderedConcepts[0].nonHumanSubject === true;
-
   return {
     displayQuery,
     slugs: slugs.slice(0, 6),
     targetTokens,
     preferNasa: orderedConcepts.some((c) => c.preferNasa),
-    allowNonHumanScenic,
   };
 }
 
 function scoreAsset(asset: StockAsset, tokens: string[]): number {
-  if (isAbstractAsset(asset)) return -1000;
   if (tokens.length === 0) return 1;
   const title = asset.title.toLowerCase();
   const titleWords = new Set(tokenize(title));
@@ -472,75 +364,30 @@ function scoreAsset(asset: StockAsset, tokens: string[]): number {
   return score;
 }
 
-/** Rank the bundled Pexels stock library against a search phrase and optional race/people preference. */
+/** Rank the bundled Pexels stock library against a search phrase. */
 export function searchLocalCatalog(
   query: string,
-  opts: {
-    type?: MediaType;
-    limit?: number;
-    peopleRepresentation?: PeopleRepresentation;
-    allowNonHumanScenic?: boolean;
-  } = {},
+  opts: { type?: MediaType; limit?: number; cast?: CastOption | null } = {},
 ): StockAsset[] {
-  const people = opts.peopleRepresentation ?? "all";
   const tokens = extractConcreteWords(query);
   const fallbackTokens = tokens.length > 0 ? tokens : tokenize(query);
   const limit = opts.limit ?? 24;
-
-  const eligible = LOCAL_CATALOG.filter(
-    (asset) =>
-      (!opts.type || asset.type === opts.type) &&
-      isAssetCompatibleWithPeople(asset, people, {
-        allowNonHumanScenic: opts.allowNonHumanScenic,
-      }),
-  );
-
-  if (fallbackTokens.length === 0) {
-    // No query -> return demographic-matched real clips first
-    return eligible
-      .sort((a, b) => {
-        const aMatch = people !== "all" && a.demographics?.includes(people) ? 1 : 0;
-        const bMatch = people !== "all" && b.demographics?.includes(people) ? 1 : 0;
-        return bMatch - aMatch || a.title.localeCompare(b.title);
-      })
-      .slice(0, limit);
-  }
-
-  return eligible
-    .map((asset) => {
-      const textScore = scoreAsset(asset, fallbackTokens);
-      const demoBonus =
-        people !== "all" && asset.demographics?.includes(people) ? 14 : 0;
-      return { asset, textScore, demoBonus, total: textScore + demoBonus };
-    })
-    .filter((entry) => entry.textScore > 0 || (people !== "all" && entry.demoBonus > 0))
-    .sort(
-      (a, b) =>
-        b.total - a.total ||
-        b.textScore - a.textScore ||
-        a.asset.title.localeCompare(b.asset.title),
-    )
+  return LOCAL_CATALOG.filter(
+    (asset) => (!opts.type || asset.type === opts.type) && assetMatchesCast(asset, opts.cast),
+  )
+    .map((asset) => ({ asset, score: scoreAsset(asset, fallbackTokens) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.asset.title.localeCompare(b.asset.title))
     .slice(0, limit)
     .map((entry) => entry.asset);
 }
 
-export function topLocalVideoScore(
-  query: string,
-  peopleRepresentation: PeopleRepresentation = "all",
-  allowNonHumanScenic = false,
-): number {
+export function topLocalVideoScore(query: string): number {
   const tokens = extractConcreteWords(query);
   const effective = tokens.length > 0 ? tokens : tokenize(query);
   if (effective.length === 0) return 0;
   let best = 0;
   for (const asset of VIDEO_CATALOG) {
-    if (
-      !isAssetCompatibleWithPeople(asset, peopleRepresentation, {
-        allowNonHumanScenic,
-      })
-    ) {
-      continue;
-    }
     const score = scoreAsset(asset, effective);
     if (score > best) best = score;
   }
@@ -552,38 +399,25 @@ export function matchLocalAsset(
   query: string,
   preferred?: MediaType | null,
   exclude: string[] = [],
-  peopleRepresentation: PeopleRepresentation = "all",
-  allowNonHumanScenic = false,
+  cast?: CastOption | null,
 ): StockAsset | null {
   const type = preferred ?? "video";
   const candidates = searchLocalCatalog(query, {
     type,
-    limit: 24,
-    peopleRepresentation,
-    allowNonHumanScenic,
+    limit: 16,
+    cast,
   }).filter((asset) => !exclude.includes(asset.id));
   if (candidates.length > 0) return candidates[0];
 
-  const reuse = searchLocalCatalog(query, {
-    type,
-    limit: 1,
-    peopleRepresentation,
-    allowNonHumanScenic,
-  })[0];
+  const reuse = searchLocalCatalog(query, { type, limit: 1, cast })[0];
   if (reuse) return reuse;
 
-  // Strict demographic fallback so we never drop into a different race
-  if (peopleRepresentation !== "all") {
-    const demoPool = VIDEO_CATALOG.filter((asset) =>
-      asset.demographics?.includes(peopleRepresentation),
-    );
-    const unusedDemo = demoPool.find((asset) => !exclude.includes(asset.id));
-    if (unusedDemo) return unusedDemo;
-    if (demoPool[0]) return demoPool[0];
-  }
-
-  const unusedFallback = VIDEO_CATALOG.find((asset) => !exclude.includes(asset.id));
-  return unusedFallback ?? VIDEO_CATALOG[0] ?? null;
+  // Never fall back outside the requested cast.
+  const pool = cast && cast !== "any"
+    ? VIDEO_CATALOG.filter((asset) => assetMatchesCast(asset, cast))
+    : VIDEO_CATALOG;
+  const unusedFallback = pool.find((asset) => !exclude.includes(asset.id));
+  return unusedFallback ?? pool[0] ?? null;
 }
 
 /**
@@ -597,19 +431,9 @@ export function previewUrlForAsset(asset: StockAsset): string | null {
   return preferred?.url ?? null;
 }
 
-export function hydrateSceneMedia(
-  scene: Scene,
-  peopleRepresentation: PeopleRepresentation = "all",
-): Scene {
-  // Reject any legacy abstract clip titles/URLs and re-match to real footage
-  const existingLooksAbstract = Boolean(
-    scene.mediaTitle &&
-      ABSTRACT_MEDIA_RE.test(`${scene.mediaTitle} ${scene.mediaQuery ?? ""}`),
-  );
-
-  // Keep custom uploaded/pasted URLs and non-abstract live external clips intact
+export function hydrateSceneMedia(scene: Scene, cast?: CastOption | null): Scene {
+  // Keep custom uploaded/pasted URLs and live external provider clips intact
   if (
-    !existingLooksAbstract &&
     scene.mediaUrl &&
     scene.mediaType === "video" &&
     (!scene.mediaId || !scene.mediaId.startsWith("v"))
@@ -621,38 +445,31 @@ export function hydrateSceneMedia(
     };
   }
 
-  const fromId =
-    !existingLooksAbstract && scene.mediaId
-      ? getLocalAsset(scene.mediaId)
-      : undefined;
+  const fromId = scene.mediaId ? getLocalAsset(scene.mediaId) : undefined;
   const videoAsset =
     fromId && fromId.type === "video"
       ? fromId
       : matchLocalAsset(
-          scene.mediaQuery || scene.narration || scene.caption || "office",
+          scene.mediaQuery || scene.narration || scene.caption || "city",
           "video",
           [],
-          peopleRepresentation,
-          true,
+          cast,
         );
 
   if (!videoAsset) return scene;
 
   return {
     ...scene,
-    mediaId: fromId ? fromId.id : videoAsset.id,
+    mediaId: scene.mediaId && fromId?.type === "video" ? scene.mediaId : videoAsset.id,
     mediaType: "video",
     mediaUrl:
-      !existingLooksAbstract &&
-      fromId &&
-      scene.mediaUrl &&
-      scene.mediaType === "video"
+      scene.mediaUrl && scene.mediaType === "video"
         ? scene.mediaUrl
         : previewUrlForAsset(videoAsset),
-    mediaThumb: (!existingLooksAbstract && fromId && scene.mediaThumb) || videoAsset.thumb || null,
-    mediaTitle: (!existingLooksAbstract && fromId && scene.mediaTitle) || videoAsset.title || null,
-    mediaCreator: (!existingLooksAbstract && fromId && scene.mediaCreator) || videoAsset.creator || null,
-    mediaProvider: (!existingLooksAbstract && fromId && scene.mediaProvider) || videoAsset.provider || "pexels",
+    mediaThumb: scene.mediaThumb || videoAsset.thumb || null,
+    mediaTitle: scene.mediaTitle || videoAsset.title || null,
+    mediaCreator: scene.mediaCreator || videoAsset.creator || null,
+    mediaProvider: scene.mediaProvider || videoAsset.provider || "pexels",
   };
 }
 
@@ -708,11 +525,22 @@ function mapPexelsVideo(item: Record<string, unknown>): StockAsset {
     title:
       (item.title as string) ||
       (urlSlug ? urlSlug.charAt(0).toUpperCase() + urlSlug.slice(1) : "Pexels video"),
-    tags: String(item.tags ?? urlSlug ?? "")
-      .split(/[,\s]+/)
-      .map((tag) => tag.trim())
-      .filter((t) => t.length > 2)
-      .slice(0, 6),
+    tags: [
+      // Thumbnail file names carry Pexels' tag slug (e.g. "african-american-family").
+      String(item.image ?? "")
+        .split("/")
+        .pop()
+        ?.replace(/\?.*$/, "")
+        .replace(/\.(jpe?g|png)$/i, "")
+        .replace(/-?\d+$/, "")
+        .replace(/^pexels-photo$/, "")
+        .replace(/-/g, " ") ?? "",
+      ...String(item.tags ?? urlSlug ?? "")
+        .split(/[,\s]+/)
+        .map((tag) => tag.trim())
+        .filter((t) => t.length > 2)
+        .slice(0, 6),
+    ].filter(Boolean),
     creator: (item.user as { name?: string } | undefined)?.name ?? "Pexels",
     pageUrl: (item.url as string) ?? "https://www.pexels.com/",
     thumb: (item.image as string) ?? "",
@@ -722,42 +550,13 @@ function mapPexelsVideo(item: Record<string, unknown>): StockAsset {
   };
 }
 
-function attachLiveDemographics(
-  asset: StockAsset,
-  searchDemographicHint?: PeopleRepresentation,
-): StockAsset {
-  const meta = inferDemographicsFromMetadata(asset, searchDemographicHint);
-  return {
-    ...asset,
-    hasPeople: meta.hasPeople,
-    demographics: meta.demographics,
-  };
-}
-
-function withPeopleQuery(
-  query: string,
-  people: PeopleRepresentation = "all",
-  skipPrefix = false,
-): string {
-  const base = query.trim();
-  if (!people || people === "all" || skipPrefix) return base;
-  const prefix = getPeopleRepresentation(people).searchPrefix;
-  if (!prefix) return base;
-  const lower = base.toLowerCase();
-  if (prefix.split(" ").some((w) => w.length > 3 && lower.includes(w))) {
-    return base;
-  }
-  return base ? `${prefix} ${base}` : `${prefix} people lifestyle`;
-}
-
 async function searchPexelsLive(
   query: string,
   limit: number,
-  peopleHint?: PeopleRepresentation,
 ): Promise<StockAsset[] | null> {
   const key = process.env.PEXELS_API_KEY;
   if (!key) return null;
-  const q = query.trim() || "city office people";
+  const q = query.trim() || "cinematic";
   const url = `https://api.pexels.com/videos/search?query=${encodeURIComponent(q)}&per_page=${limit}`;
   try {
     const ctrl = new AbortController();
@@ -771,8 +570,7 @@ async function searchPexelsLive(
     const data = (await response.json()) as { videos?: Record<string, unknown>[] };
     const mapped = (data.videos ?? [])
       .map(mapPexelsVideo)
-      .filter((asset) => asset.sources.length > 0 && !isAbstractAsset(asset))
-      .map((asset) => attachLiveDemographics(asset, peopleHint));
+      .filter((asset) => asset.sources.length > 0);
     return mapped.length > 0 ? mapped : null;
   } catch {
     return null;
@@ -933,12 +731,10 @@ async function searchMixkitLive(
 
   const tokens = rawWords.length > 0 ? rawWords : tokenize(query);
   for (const slug of candidates.slice(0, 4)) {
-    const hits = (await fetchMixkitSlugCached(slug, limit)).filter(
-      (asset) => !isAbstractAsset(asset),
-    );
+    const hits = await fetchMixkitSlugCached(slug, limit);
     if (hits.length > 0) {
       return hits
-        .map((asset) => ({ asset: attachLiveDemographics(asset), score: scoreAsset(asset, tokens) }))
+        .map((asset) => ({ asset, score: scoreAsset(asset, tokens) }))
         .sort((a, b) => b.score - a.score)
         .slice(0, limit)
         .map((e) => e.asset);
@@ -997,7 +793,7 @@ async function searchWikimediaLive(
         .replace(/_/g, " ")
         .trim();
 
-      const candidate: StockAsset = {
+      results.push({
         id: `wikimedia-${page.pageid}`,
         provider: "wikimedia",
         type: "video",
@@ -1009,10 +805,7 @@ async function searchWikimediaLive(
         duration: Math.max(4, Math.min(60, Math.round(Number(info.duration ?? 12)))),
         portrait: height > width,
         sources: [{ url: fileUrl, width, height, bytes: sizeBytes }],
-      };
-      if (!isAbstractAsset(candidate)) {
-        results.push(attachLiveDemographics(candidate));
-      }
+      });
     }
     return results.slice(0, limit);
   } catch {
@@ -1105,11 +898,10 @@ async function searchNasaLive(
 async function searchPixabayLive(
   query: string,
   limit: number,
-  peopleHint?: PeopleRepresentation,
 ): Promise<StockAsset[] | null> {
   const key = process.env.PIXABAY_API_KEY;
   if (!key) return null;
-  const q = query.trim() || "city office people";
+  const q = query.trim() || "cinematic";
   const url = `https://pixabay.com/api/videos/?key=${key}&q=${encodeURIComponent(q)}&per_page=${limit}`;
   try {
     const ctrl = new AbortController();
@@ -1118,39 +910,35 @@ async function searchPixabayLive(
     clearTimeout(timer);
     if (!response.ok) return null;
     const data = (await response.json()) as { hits?: Record<string, unknown>[] };
-    const mapped = (data.hits ?? [])
-      .map((hit) => {
-        const videos = (hit.videos ?? {}) as Record<string, Record<string, unknown>>;
-        const sources: StockSource[] = Object.values(videos)
-          .filter((variant) => variant && typeof variant.url === "string")
-          .map((variant) => ({
-            url: variant.url as string,
-            width: Number(variant.width ?? 0),
-            height: Number(variant.height ?? 0),
-            bytes: Number(variant.size ?? 0),
-          }));
-        const mediumThumb = (videos.medium?.thumbnail ??
-          videos.small?.thumbnail ??
-          "") as string;
-        return {
-          id: `pixabay-${hit.id}`,
-          provider: "pixabay",
-          type: "video",
-          title: String(hit.tags ?? "Pixabay clip").split(",")[0].trim(),
-          tags: String(hit.tags ?? "")
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean),
-          creator: String(hit.user ?? "Pixabay"),
-          pageUrl: String(hit.pageURL ?? "https://pixabay.com/videos/"),
-          thumb: mediumThumb,
-          duration: Number(hit.duration ?? 10),
-          sources,
-        } satisfies StockAsset;
-      })
-      .filter((asset) => asset.sources.length > 0 && !isAbstractAsset(asset))
-      .map((asset) => attachLiveDemographics(asset, peopleHint));
-    return mapped.length > 0 ? mapped : null;
+    return (data.hits ?? []).map((hit) => {
+      const videos = (hit.videos ?? {}) as Record<string, Record<string, unknown>>;
+      const sources: StockSource[] = Object.values(videos)
+        .filter((variant) => variant && typeof variant.url === "string")
+        .map((variant) => ({
+          url: variant.url as string,
+          width: Number(variant.width ?? 0),
+          height: Number(variant.height ?? 0),
+          bytes: Number(variant.size ?? 0),
+        }));
+      const mediumThumb = (videos.medium?.thumbnail ??
+        videos.small?.thumbnail ??
+        "") as string;
+      return {
+        id: `pixabay-${hit.id}`,
+        provider: "pixabay",
+        type: "video",
+        title: String(hit.tags ?? "Pixabay clip").split(",")[0].trim(),
+        tags: String(hit.tags ?? "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        creator: String(hit.user ?? "Pixabay"),
+        pageUrl: String(hit.pageURL ?? "https://pixabay.com/videos/"),
+        thumb: mediumThumb,
+        duration: Number(hit.duration ?? 10),
+        sources,
+      } satisfies StockAsset;
+    });
   } catch {
     return null;
   }
@@ -1178,134 +966,122 @@ function interleave(lists: StockAsset[][], limit: number): StockAsset[] {
 }
 
 /**
- * Multi-site stock video search (100% real-world moving video clips, zero abstract).
- * Supports `all`, `pexels`, `mixkit`, `wikimedia`, `nasa`, and `pixabay`, plus
- * optional demographic/cast filtering (`peopleRepresentation`).
+ * Multi-site stock video search (100% moving video clips).
+ * Supports `all`, `pexels`, `mixkit`, `wikimedia`, `nasa`, and `pixabay`.
  */
 export async function searchStock(
   query: string,
-  opts: {
-    type?: MediaType;
-    limit?: number;
-    provider?: string;
-    peopleRepresentation?: PeopleRepresentation;
-  } = {},
+  opts: { type?: MediaType; limit?: number; provider?: string; cast?: CastOption | null } = {},
+): Promise<{ assets: StockAsset[]; source: string }> {
+  const limit = opts.limit ?? 20;
+  const cast = opts.cast ?? "any";
+  if (cast === "any") {
+    const result = await searchStockRaw(query, opts);
+    return { ...result, assets: result.assets.filter((asset) => !isAbstractAsset(asset)) };
+  }
+
+  // Cast mode: only clips whose own metadata names the group, ranked by the query.
+  const term = castSearchTerms(cast)[0] ?? "";
+  const live = await searchStockRaw(`${term} ${query}`.trim(), { ...opts, limit: limit * 2 });
+  const liveCast = live.assets.filter(
+    (asset) => !isAbstractAsset(asset) && assetMatchesCast(asset, cast),
+  );
+  const tokens = [...new Set([...extractConcreteWords(query), ...sceneTokensForNarration(query)])];
+  const local = VIDEO_CATALOG.filter((asset) => assetMatchesCast(asset, cast))
+    .map((asset) => ({ asset, score: scoreAsset(asset, tokens) }))
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.asset);
+  const seen = new Set<string>();
+  const assets = [...liveCast, ...local]
+    .filter((asset) => {
+      if (seen.has(asset.id)) return false;
+      seen.add(asset.id);
+      return true;
+    })
+    .map((asset, index) => ({ asset, index, score: scoreAsset(asset, tokens) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((entry) => entry.asset);
+  return {
+    assets: assets.slice(0, limit),
+    source: `${castLabel(cast)} only · ${liveCast.length ? live.source : "tagged library"}`,
+  };
+}
+
+async function searchStockRaw(
+  query: string,
+  opts: { type?: MediaType; limit?: number; provider?: string } = {},
 ): Promise<{ assets: StockAsset[]; source: string }> {
   const limit = opts.limit ?? 20;
   const provider = (opts.provider ?? "all").toLowerCase();
-  const people = opts.peopleRepresentation ?? "all";
   const effectiveQuery = query.trim();
-  const plan = effectiveQuery ? buildVisualSearchPlan(effectiveQuery) : null;
-  const allowScenic = plan ? plan.allowNonHumanScenic : true;
-  const peopleAwareQuery = withPeopleQuery(effectiveQuery, people, allowScenic && Boolean(effectiveQuery));
-
-  const filterCompatible = (list: StockAsset[]) =>
-    list.filter((asset) =>
-      isAssetCompatibleWithPeople(asset, people, {
-        allowNonHumanScenic: allowScenic,
-      }),
-    );
 
   if (provider === "pexels") {
-    const live = await searchPexelsLive(peopleAwareQuery, limit, people);
-    const liveFiltered = live ? filterCompatible(live) : [];
-    if (liveFiltered.length > 0) return { assets: liveFiltered, source: "pexels-live" };
-    const local = searchLocalCatalog(effectiveQuery, {
-      type: "video",
-      limit,
-      peopleRepresentation: people,
-      allowNonHumanScenic: allowScenic,
-    });
+    const live = await searchPexelsLive(effectiveQuery, limit);
+    if (live && live.length > 0) return { assets: live, source: "pexels-live" };
+    const local = effectiveQuery
+      ? searchLocalCatalog(effectiveQuery, { type: "video", limit })
+      : VIDEO_CATALOG.slice(0, limit);
     return {
-      assets:
-        local.length > 0
-          ? local
-          : filterCompatible(VIDEO_CATALOG).slice(0, limit),
+      assets: local.length > 0 ? local : VIDEO_CATALOG.slice(0, limit),
       source: "pexels-pool",
     };
   }
 
   if (provider === "mixkit") {
-    const mixkit = filterCompatible(
-      await searchMixkitLive(peopleAwareQuery || "office people", limit, plan?.slugs ?? []),
-    );
+    const plan = buildVisualSearchPlan(effectiveQuery);
+    const mixkit = await searchMixkitLive(effectiveQuery || "cinematic", limit, plan.slugs);
     if (mixkit.length > 0) return { assets: mixkit, source: "mixkit-live" };
-    return {
-      assets: searchLocalCatalog(effectiveQuery, {
-        type: "video",
-        limit,
-        peopleRepresentation: people,
-        allowNonHumanScenic: allowScenic,
-      }),
-      source: "pexels-pool",
-    };
+    return { assets: VIDEO_CATALOG.slice(0, limit), source: "pexels-pool" };
   }
 
   if (provider === "wikimedia") {
-    const wiki = filterCompatible(
-      await searchWikimediaLive(peopleAwareQuery || "city", limit),
-    );
+    const wiki = await searchWikimediaLive(effectiveQuery || "city", limit);
     return { assets: wiki, source: "wikimedia-live" };
   }
 
   if (provider === "nasa") {
-    const nasa = (await searchNasaLive(effectiveQuery || "earth", limit)).filter(
-      (a) => !isAbstractAsset(a),
-    );
+    const nasa = await searchNasaLive(effectiveQuery || "earth", limit);
     return { assets: nasa, source: "nasa-live" };
   }
 
   if (provider === "pixabay") {
-    const pixabay = await searchPixabayLive(peopleAwareQuery, limit, people);
-    const pixFiltered = pixabay ? filterCompatible(pixabay) : [];
-    if (pixFiltered.length > 0) {
-      return { assets: pixFiltered, source: "pixabay-live" };
+    const pixabay = await searchPixabayLive(effectiveQuery, limit);
+    if (pixabay && pixabay.length > 0) {
+      return { assets: pixabay, source: "pixabay-live" };
     }
-    const local = searchLocalCatalog(effectiveQuery, {
-      type: "video",
-      limit,
-      peopleRepresentation: people,
-      allowNonHumanScenic: allowScenic,
-    });
-    return { assets: local, source: "pexels-pool" };
+    const plan = buildVisualSearchPlan(effectiveQuery);
+    const mixkit = await searchMixkitLive(effectiveQuery || "cinematic", limit, plan.slugs);
+    if (mixkit.length > 0) {
+      return { assets: mixkit, source: "mixkit-live (pixabay key unset)" };
+    }
+    return { assets: VIDEO_CATALOG.slice(0, limit), source: "pexels-pool" };
   }
 
-  // provider === "all": merge verified local pool + live Pexels/Mixkit/Pixabay, strictly filtering abstract & mismatched race
+  // provider === "all": merge Pexels + Mixkit (+ Pixabay if key configured) in parallel
+  const plan = effectiveQuery ? buildVisualSearchPlan(effectiveQuery) : null;
   const [pexelsLive, mixkitLive, pixabayLive] = await Promise.all([
-    searchPexelsLive(peopleAwareQuery, Math.ceil(limit / 2), people),
-    effectiveQuery && people === "all"
+    searchPexelsLive(effectiveQuery, Math.ceil(limit / 2)),
+    effectiveQuery
       ? searchMixkitLive(effectiveQuery, Math.ceil(limit / 2), plan?.slugs ?? [])
       : Promise.resolve([]),
-    searchPixabayLive(peopleAwareQuery, Math.ceil(limit / 3), people),
+    searchPixabayLive(effectiveQuery, Math.ceil(limit / 3)),
   ]);
 
-  const pexelsLocal = searchLocalCatalog(effectiveQuery, {
-    type: "video",
-    limit,
-    peopleRepresentation: people,
-    allowNonHumanScenic: allowScenic,
-  });
+  const pexelsLocal = effectiveQuery
+    ? searchLocalCatalog(effectiveQuery, { type: "video", limit: Math.ceil(limit / 2) })
+    : VIDEO_CATALOG.slice(0, limit);
 
-  const livePexelsClean = pexelsLive ? filterCompatible(pexelsLive) : [];
-  const liveMixkitClean = filterCompatible(mixkitLive);
-  const livePixabayClean = pixabayLive ? filterCompatible(pixabayLive) : [];
-
-  const pexelsList = livePexelsClean.length > 0 ? livePexelsClean : pexelsLocal;
-  const lists = [pexelsList, liveMixkitClean, livePixabayClean, pexelsLocal].filter(
-    (l) => l.length > 0,
-  );
+  const pexelsList = pexelsLive && pexelsLive.length > 0 ? pexelsLive : pexelsLocal;
+  const lists = [pexelsList, mixkitLive, pixabayLive ?? []].filter((l) => l.length > 0);
 
   if (lists.length === 0) {
-    return {
-      assets: filterCompatible(VIDEO_CATALOG).slice(0, limit),
-      source: "pexels-pool",
-    };
+    return { assets: VIDEO_CATALOG.slice(0, limit), source: "pexels-pool" };
   }
 
   const sourcesUsed = [
-    livePexelsClean.length ? "pexels-live" : pexelsLocal.length ? "pexels" : null,
-    liveMixkitClean.length ? "mixkit" : null,
-    livePixabayClean.length ? "pixabay" : null,
+    pexelsLive?.length ? "pexels-live" : pexelsLocal.length ? "pexels" : null,
+    mixkitLive.length ? "mixkit" : null,
+    pixabayLive?.length ? "pixabay" : null,
   ].filter(Boolean);
 
   return {
@@ -1315,12 +1091,11 @@ export async function searchStock(
 }
 
 /**
- * Semantic narration + cast matcher:
- * 1. Extracts concrete filmable visual concepts from the scene's narration + caption + video topic.
- * 2. Hard-blocks ALL abstract / neon / 3D / animation media.
- * 3. Strictly honors `peopleRepresentation` (African American, African Only, Hispanic, East Asian,
- *    South Asian, Middle Eastern, Caucasian, or All Races) while maximizing exact narration relevance
- *    and avoiding duplicate clips across scenes.
+ * Semantic narration-to-video matcher: extracts filmable visual concepts from
+ * the scene's actual narration + caption + video topic, searches Pexels,
+ * Mixkit (with decomposed slugs), NASA, Wikimedia, and Pixabay, scores every
+ * candidate's real title & tags against the narration tokens, and returns the
+ * highest-relevance unused clip so each video ALWAYS matches its narration.
  */
 export async function matchVideoForNarration(opts: {
   narration: string;
@@ -1328,204 +1103,150 @@ export async function matchVideoForNarration(opts: {
   topicContext?: string;
   excludeIds?: string[];
   preferredProvider?: string;
-  peopleRepresentation?: PeopleRepresentation;
-  usedDemographics?: PeopleRepresentation[];
+  cast?: CastOption | null;
 }): Promise<{ asset: StockAsset | null; mediaQuery: string }> {
   const excludeIds = opts.excludeIds ?? [];
-  const people = opts.peopleRepresentation ?? "all";
-  const usedDemographics = opts.usedDemographics ?? [];
-
   const plan = buildVisualSearchPlan(
     opts.narration,
     opts.caption ?? "",
     opts.topicContext ?? "",
   );
-  const peopleMeta = getPeopleRepresentation(people);
-  const query =
-    people !== "all" && !plan.allowNonHumanScenic
-      ? withPeopleQuery(plan.displayQuery, people)
-      : plan.displayQuery;
+  const query = plan.displayQuery;
 
-  const filterCompatible = (list: StockAsset[]) =>
-    list.filter((asset) =>
-      isAssetCompatibleWithPeople(asset, people, {
-        allowNonHumanScenic: plan.allowNonHumanScenic,
-      }),
-    );
+  if (opts.cast && opts.cast !== "any") {
+    return matchCastVideo(opts.cast, plan, opts, excludeIds);
+  }
 
   if (opts.preferredProvider && opts.preferredProvider !== "all") {
-    const { assets } = await searchStock(plan.displayQuery, {
+    const { assets } = await searchStock(query, {
       provider: opts.preferredProvider,
-      peopleRepresentation: people,
-      limit: 16,
+      limit: 12,
     });
-    const best = rankCandidates(
-      filterCompatible(assets),
-      plan.targetTokens,
-      excludeIds,
-      people,
-      usedDemographics,
-    );
+    const best = rankCandidates(assets, plan.targetTokens, excludeIds);
     if (best) return { asset: best, mediaQuery: query };
   }
 
-  // 1. Score our verified real-world Pexels CDN library (164 zero-abstract clips across all races)
+  // 1. Check our 82-clip verified Pexels CDN library first (instant, zero 429)
   const localCandidates = searchLocalCatalog(
-    `${plan.displayQuery} ${plan.targetTokens.slice(0, 6).join(" ")}`,
-    {
-      type: "video",
-      limit: 24,
-      peopleRepresentation: people,
-      allowNonHumanScenic: plan.allowNonHumanScenic,
-    },
+    `${query} ${plan.targetTokens.slice(0, 6).join(" ")}`,
+    { type: "video", limit: 14 },
   );
-
-  const localBest = rankCandidates(
-    localCandidates,
-    plan.targetTokens,
-    excludeIds,
-    people,
-    usedDemographics,
-  );
-  const localBestNarrationScore = localBest
-    ? scoreAsset(localBest, plan.targetTokens)
+  const unusedLocalBest = localCandidates.find((a) => !excludeIds.includes(a.id));
+  const localBestScore = unusedLocalBest
+    ? scoreAsset(unusedLocalBest, plan.targetTokens)
     : 0;
-  const localBestUnused = localBest && !excludeIds.includes(localBest.id);
 
-  // When a specific race is chosen (and no live Pexels/Pixabay API key is set)
-  // OR when an unused verified clip already matches the narration strongly,
-  // use the verified demographic-tagged catalog clip directly so we NEVER leak
-  // unverified/wrong-race Mixkit clips or abstract clips.
+  // If we have no live Pexels/Pixabay keys and not a space/NASA topic, a strong
+  // unused verified Pexels clip (score >= 16) is fast, reliable, and spot-on!
   if (
     !process.env.PEXELS_API_KEY &&
     !process.env.PIXABAY_API_KEY &&
     !plan.preferNasa &&
-    localBest &&
-    localBestUnused &&
-    (people !== "all"
-      ? !plan.allowNonHumanScenic || localBestNarrationScore >= 12
-      : localBestNarrationScore >= 14)
+    unusedLocalBest &&
+    localBestScore >= 16
   ) {
-    return { asset: localBest, mediaQuery: query };
+    return { asset: unusedLocalBest, mediaQuery: query };
   }
 
-  // 2. Query live providers with demographic-aware queries (and strict abstract/race filtering)
-  const mixkitSlugs =
-    people !== "all" && !plan.allowNonHumanScenic
-      ? [
-          ...peopleMeta.slugPrefixes.flatMap((p) =>
-            plan.slugs.slice(0, 2).map((s) => `${p}-${s}`),
-          ),
-          ...peopleMeta.slugPrefixes,
-        ]
-      : plan.slugs;
-
+  // 2. Otherwise query live providers in parallel (cached Mixkit + Pexels + NASA + Pixabay)
   const [pexelsLive, mixkitLive, nasaLive, pixabayLive] = await Promise.all([
-    process.env.PEXELS_API_KEY
-      ? searchPexelsLive(query, 12, people)
-      : Promise.resolve(null),
-    people === "all" || plan.allowNonHumanScenic
-      ? searchMixkitLive(query, 12, mixkitSlugs)
-      : Promise.resolve([]),
-    plan.preferNasa ? searchNasaLive(plan.displayQuery, 6) : Promise.resolve([]),
-    process.env.PIXABAY_API_KEY
-      ? searchPixabayLive(query, 10, people)
-      : Promise.resolve(null),
+    process.env.PEXELS_API_KEY ? searchPexelsLive(query, 10) : Promise.resolve(null),
+    searchMixkitLive(query, 12, plan.slugs),
+    plan.preferNasa ? searchNasaLive(query, 6) : Promise.resolve([]),
+    process.env.PIXABAY_API_KEY ? searchPixabayLive(query, 8) : Promise.resolve(null),
   ]);
 
-  const pool = filterCompatible(
-    interleave(
-      [
-        pexelsLive ?? [],
-        nasaLive.filter((a) => !isAbstractAsset(a)),
-        mixkitLive,
-        pixabayLive ?? [],
-        localCandidates,
-      ].filter((l) => l.length > 0),
-      40,
-    ),
+  const pool = interleave(
+    [
+      pexelsLive ?? [],
+      nasaLive,
+      mixkitLive,
+      pixabayLive ?? [],
+      localCandidates,
+    ].filter((l) => l.length > 0),
+    36,
   );
 
-  let best = rankCandidates(
-    pool,
-    plan.targetTokens,
-    excludeIds,
-    people,
-    usedDemographics,
-  );
+  let best = rankCandidates(pool, plan.targetTokens, excludeIds);
 
-  // 3. Only check Wikimedia for non-human documentary topics when score is still low
-  if (
-    (people === "all" || plan.allowNonHumanScenic) &&
-    (!best || scoreAsset(best, plan.targetTokens) < 10)
-  ) {
-    const wiki = filterCompatible(await searchWikimediaLive(query, 8));
+  // 3. If still weak (score < 10), also check Wikimedia Commons for real-world subjects
+  if (!best || scoreAsset(best, plan.targetTokens) < 10) {
+    const wiki = await searchWikimediaLive(query, 8);
     if (wiki.length > 0) {
-      best = rankCandidates(
-        [...pool, ...wiki],
-        plan.targetTokens,
-        excludeIds,
-        people,
-        usedDemographics,
-      );
+      best = rankCandidates([...pool, ...wiki], plan.targetTokens, excludeIds);
     }
   }
 
   return {
-    asset:
-      best ??
-      matchLocalAsset(
-        plan.displayQuery,
-        "video",
-        excludeIds,
-        people,
-        plan.allowNonHumanScenic,
-      ),
+    asset: best ?? matchLocalAsset(query, "video", excludeIds),
     mediaQuery: query,
   };
+}
+
+/**
+ * Cast-restricted matcher: only clips whose own metadata names the requested
+ * group are eligible. Among those, the clip closest to the scene's narration
+ * wins (narration concepts + everyday-scene vocabulary), preferring unused clips.
+ */
+async function matchCastVideo(
+  cast: CastOption,
+  plan: VisualSearchPlan,
+  opts: { narration: string; caption?: string; topicContext?: string },
+  excludeIds: string[],
+): Promise<{ asset: StockAsset | null; mediaQuery: string }> {
+  const sceneText = `${opts.narration} ${opts.caption ?? ""}`;
+  const tokens = [
+    ...new Set([
+      ...plan.targetTokens,
+      ...sceneTokensForNarration(sceneText),
+      ...sceneTokensForNarration(opts.topicContext ?? ""),
+    ]),
+  ];
+
+  const local = VIDEO_CATALOG.filter((asset) => assetMatchesCast(asset, cast));
+
+  // With a Pexels key, also search the live library with the cast term added;
+  // results are kept only if their own tags name the requested group.
+  let live: StockAsset[] = [];
+  if (process.env.PEXELS_API_KEY) {
+    const term = castSearchTerms(cast)[0] ?? "";
+    const found = await searchPexelsLive(`${term} ${plan.displayQuery}`.trim(), 15).catch(() => null);
+    live = (found ?? []).filter((asset) => assetMatchesCast(asset, cast));
+  }
+
+  // Narration fit beats variety: an unused relevant clip, then a reused relevant
+  // clip, and only when nothing in the cast is relevant, an unused clip.
+  const scored = [...live, ...local]
+    .filter((asset) => !isAbstractAsset(asset))
+    .map((asset) => ({
+      asset,
+      score: scoreAsset(asset, tokens),
+      used: excludeIds.includes(asset.id),
+    }))
+    .sort((a, b) => b.score - a.score);
+  const best =
+    scored.find((entry) => entry.score > 0 && !entry.used) ??
+    scored.find((entry) => entry.score > 0) ??
+    scored.find((entry) => !entry.used) ??
+    scored[0];
+  return { asset: best?.asset ?? null, mediaQuery: plan.displayQuery };
 }
 
 function rankCandidates(
   candidates: StockAsset[],
   tokens: string[],
   excludeIds: string[],
-  people: PeopleRepresentation = "all",
-  usedDemographics: PeopleRepresentation[] = [],
 ): StockAsset | null {
-  const realCandidates = candidates.filter((a) => !isAbstractAsset(a));
-  if (realCandidates.length === 0) return null;
-
-  const scored = realCandidates.map((asset) => {
-    const narrationScore = scoreAsset(asset, tokens);
+  const usable = candidates.filter((asset) => !isAbstractAsset(asset));
+  if (usable.length === 0) return null;
+  const scored = usable.map((asset) => {
+    const baseScore = scoreAsset(asset, tokens);
     const alreadyUsed = excludeIds.includes(asset.id);
-    const meta = inferDemographicsFromMetadata(asset);
-
-    let peopleBonus = 0;
-    if (people !== "all") {
-      if (meta.demographics.includes(people)) {
-        // Strongly reward explicit cast match
-        peopleBonus = 36;
-      } else if (!meta.hasPeople) {
-        // Non-human scenic clip: only competitive when narration strongly matches it
-        peopleBonus = narrationScore >= 16 ? 12 : -25;
-      } else {
-        // Conflicting race -> heavy penalty (already filtered upstream)
-        peopleBonus = -200;
-      }
-    } else if (meta.hasPeople && meta.demographics.length > 0) {
-      // "All Races": reward rotating across diverse demographics from scene to scene
-      const introducesFreshDemo = meta.demographics.some(
-        (d) => d === "all" || !usedDemographics.includes(d),
-      );
-      peopleBonus = introducesFreshDemo ? 6 : 0;
-    }
-
-    const unusedBonus = alreadyUsed ? -65 : 24;
-    const total = narrationScore * 2 + peopleBonus + unusedBonus;
-    return { asset, narrationScore, total };
+    // Prefer unused clips strongly while still honoring semantic relevance
+    const total = baseScore + (alreadyUsed ? -10 : 5);
+    return { asset, baseScore, total };
   });
-
-  scored.sort((a, b) => b.total - a.total || b.narrationScore - a.narrationScore);
+  scored.sort((a, b) => b.total - a.total || b.baseScore - a.baseScore);
   return scored[0]?.asset ?? null;
 }
 
@@ -1535,16 +1256,27 @@ export async function matchBestStockVideo(
   excludeIds: string[] = [],
   preferredProvider?: string,
   topicContext?: string,
-  peopleRepresentation: PeopleRepresentation = "all",
+  cast?: CastOption | null,
 ): Promise<StockAsset | null> {
   const { asset } = await matchVideoForNarration({
     narration: query,
     topicContext,
     excludeIds,
     preferredProvider,
-    peopleRepresentation,
+    cast,
   });
   return asset;
+}
+
+/** How many bundled clips are explicitly tagged with each cast group. */
+export function castCoverage(): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const asset of VIDEO_CATALOG) {
+    for (const group of detectPeople(asset.title, asset.tags).groups) {
+      counts[group] = (counts[group] ?? 0) + 1;
+    }
+  }
+  return counts;
 }
 
 export function providerStatus() {

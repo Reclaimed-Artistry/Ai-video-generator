@@ -7,12 +7,12 @@ import type { AspectRatio, StockAsset } from "@/lib/types";
 
 const SUBJECT_FILTERS: { id: string; label: string; match: string[] }[] = [
   { id: "all", label: "All Rolls", match: [] },
-  { id: "work", label: "Office & Tech", match: ["office", "laptop", "coding", "software", "business", "startup", "team"] },
-  { id: "coffee", label: "Coffee & Kitchen", match: ["coffee", "cafe", "food", "barista", "cooking", "chef"] },
-  { id: "africa", label: "African & Global", match: ["african", "african american", "hispanic", "east asian", "south asian", "middle eastern"] },
-  { id: "fitness", label: "Fitness", match: ["fitness", "gym", "running", "jogging", "workout"] },
   { id: "city", label: "Urban & Rail", match: ["city", "skyline", "train", "railway", "urban"] },
-  { id: "nature", label: "Nature & Ocean", match: ["ocean", "waves", "beach", "forest", "mountain", "waterfall"] },
+  { id: "tech", label: "Data & Network", match: ["technology", "network", "data", "digital", "molecule"] },
+  { id: "coffee", label: "Coffee & Kitchen", match: ["coffee", "cafe", "food", "barista", "cooking"] },
+  { id: "ocean", label: "Ocean & Aerial", match: ["ocean", "waves", "beach", "sea"] },
+  { id: "fitness", label: "Training", match: ["fitness", "gym", "running", "treadmill"] },
+  { id: "travel", label: "Flight & Coast", match: ["travel", "airplane", "flight", "istanbul"] },
 ];
 
 function previewSourceUrl(asset: StockAsset): string | null {

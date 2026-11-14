@@ -46,6 +46,27 @@ PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react
 | `/api/tts/preview` | `POST` | Synthesize live voice audition audio |
 | `/api/files/[...file]` | `GET` | Byte-range MP4 & poster streaming |
 
+## People on screen (cast) & no abstract footage
+
+- **Cast option** — choose who appears in every clip: *All races*, *Black / African
+  American*, *African*, *Hispanic / Latino*, *Asian*, *South Asian*, *Middle Eastern /
+  North African* or *White / European* (composer, and Studio → Settings).
+- **Tags, not guesses** — a clip only counts for a group when its own metadata says
+  so: the clip title, the uploader's Pexels tags, or an explicit place (e.g. Lagos,
+  Mexico City). Nobody is classified by appearance. Rules live in `src/lib/people.ts`.
+- **Narration first, within the cast** — each scene is matched to its own narration
+  using only clips tagged with the chosen cast; a relevant clip is reused before an
+  unrelated one is used. Clips you lock in the Studio are never replaced.
+- **No abstract media** — motion graphics, 3D renders, neon/light-trail animations
+  and similar are removed from the library and filtered out of every live search.
+- **Enforced everywhere** — on create, regenerate, cast change (`POST /api/media/cast`)
+  and again right before every render.
+- **Coverage** — the bundled library has tagged people footage for most groups
+  (counts show on each option); groups with no tagged clips are disabled unless a
+  `PEXELS_API_KEY` is set, which enables live, tag-checked Pexels search.
+- Rebuild the tagged library with
+  `node --experimental-strip-types scripts/build-people-catalog.mjs`.
+
 ## Deploy on Vercel (One-Click or GitHub Import)
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FReclaimed-Artistry%2FAi-video-generator&env=DATABASE_URL&project-name=reclaimed-artistry)

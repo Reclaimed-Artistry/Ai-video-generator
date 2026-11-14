@@ -5,7 +5,7 @@ import FootageContactSheet from "@/components/FootageContactSheet";
 import LocalProjectsLedger from "@/components/LocalProjectsLedger";
 import ReferenceMonitor from "@/components/ReferenceMonitor";
 import { listProjects } from "@/lib/projects";
-import { providerStatus, VIDEO_CATALOG } from "@/lib/stock";
+import { providerStatus, VIDEO_CATALOG, castCoverage } from "@/lib/stock";
 import { VOICES } from "@/lib/voices";
 
 export const dynamic = "force-dynamic";
@@ -138,7 +138,7 @@ export default async function HomePage() {
               </p>
 
               <div className="mt-7">
-                <Composer />
+                <Composer castCoverage={castCoverage()} liveCast={providerStatus().pexels} />
               </div>
             </div>
 

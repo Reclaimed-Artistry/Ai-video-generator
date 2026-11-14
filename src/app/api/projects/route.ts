@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { createProject, listProjects } from "@/lib/projects";
+import { enforceMediaPolicy } from "@/lib/media-policy";
+import { isCastOption, type CastOption } from "@/lib/people";
 import { generateScript } from "@/lib/script";
 import type {
   AspectRatio,
   CaptionMode,
   MusicTrackId,
-  PeopleRepresentation,
   Resolution,
   Style,
   Tone,
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
       musicTrack?: MusicTrackId;
       musicVolume?: number;
       captionMode?: CaptionMode;
-      peopleRepresentation?: PeopleRepresentation;
+      cast?: CastOption;
     };
 
     const prompt = (body.prompt ?? "").trim();
@@ -56,8 +57,8 @@ export async function POST(request: Request) {
     const tone = (body.tone ?? "cinematic") as Tone;
     const workflow = (body.workflow ?? "explainer") as Workflow;
     const language = body.language ?? "en";
-    const peopleRepresentation = (body.peopleRepresentation ?? "all") as PeopleRepresentation;
-    const script = await generateScript({
+    const cast: CastOption = isCastOption(body.cast) ? body.cast : "any";
+    const generated = await generateScript({
       prompt,
       duration,
       tone,
@@ -66,9 +67,10 @@ export async function POST(request: Request) {
       musicTrack: body.musicTrack,
       musicVolume: body.musicVolume,
       captionMode: body.captionMode,
-      peopleRepresentation,
       title: body.title,
+      cast,
     });
+    const { script } = await enforceMediaPolicy(generated, prompt);
 
     const project = await createProject({
       title: body.title?.trim() || script.title,

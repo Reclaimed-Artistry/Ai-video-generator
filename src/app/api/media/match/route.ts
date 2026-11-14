@@ -1,18 +1,19 @@
 import { NextResponse } from "next/server";
+import { isCastOption, type CastOption } from "@/lib/people";
 import { matchVideoForNarration, previewUrlForAsset } from "@/lib/stock";
-import type { PeopleRepresentation, StockAsset } from "@/lib/types";
+import type { StockAsset } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-type MatchBody = {
+type SingleMatchBody = {
   narration?: string;
   caption?: string;
   topicContext?: string;
   excludeIds?: string[];
+  cast?: CastOption;
   provider?: string;
-  peopleRepresentation?: PeopleRepresentation;
   scenes?: {
     id: string;
     narration: string;
@@ -38,16 +39,13 @@ function assetPayload(asset: StockAsset | null, mediaQuery: string) {
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json().catch(() => ({}))) as MatchBody;
-    const peopleRepresentation: PeopleRepresentation =
-      body.peopleRepresentation ?? "all";
+    const body = (await request.json().catch(() => ({}))) as SingleMatchBody;
 
-    // Batch mode: sync all unlocked scenes to their narration + race option without duplicates
+    // Batch mode: sync all unlocked scenes to their narration without duplicates
     if (Array.isArray(body.scenes) && body.scenes.length > 0) {
       const usedIds: string[] = body.scenes
         .filter((s) => s.mediaLocked && s.mediaId)
         .map((s) => s.mediaId as string);
-      const usedDemographics: PeopleRepresentation[] = [];
 
       const matches: Record<string, ReturnType<typeof assetPayload>> = {};
 
@@ -59,15 +57,9 @@ export async function POST(request: Request) {
           topicContext: body.topicContext,
           excludeIds: usedIds,
           preferredProvider: body.provider,
-          peopleRepresentation,
-          usedDemographics,
+          cast: isCastOption(body.cast) ? body.cast : "any",
         });
-        if (asset) {
-          usedIds.push(asset.id);
-          if (asset.demographics?.length) {
-            usedDemographics.push(...asset.demographics);
-          }
-        }
+        if (asset) usedIds.push(asset.id);
         matches[scene.id] = assetPayload(asset, mediaQuery);
       }
 
@@ -91,7 +83,7 @@ export async function POST(request: Request) {
       topicContext,
       excludeIds: body.excludeIds ?? [],
       preferredProvider: body.provider,
-      peopleRepresentation,
+          cast: isCastOption(body.cast) ? body.cast : "any",
     });
 
     return NextResponse.json({

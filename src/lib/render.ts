@@ -6,9 +6,9 @@ import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { getFontsDir, probeDuration, runFfmpeg } from "./ffmpeg";
 import { defaultMusicForTone, getMusicTrack } from "./music";
 import { getProject, updateProject } from "./projects";
+import { enforceMediaPolicy } from "./media-policy";
 import {
   getLocalAsset,
-  isAbstractAsset,
   matchLocalAsset,
   matchVideoForNarration,
   pickSource,
@@ -29,7 +29,6 @@ import {
   type CaptionMode,
   type CaptionPosition,
   type MediaFilter,
-  type PeopleRepresentation,
   type Project,
   type Resolution,
   type Scene,
@@ -393,38 +392,24 @@ async function resolveMedia(
   scene: Scene,
   targetHeight: number,
   topicContext = "",
-  peopleRepresentation: PeopleRepresentation = "all",
-  usedIds: string[] = [],
 ): Promise<ResolvedMedia> {
   const localFallbackAsset =
     matchLocalAsset(
-      scene.mediaQuery || scene.narration || scene.caption || topicContext || "office",
+      scene.mediaQuery || scene.narration || scene.caption || topicContext || "city",
       "video",
-      usedIds,
-      peopleRepresentation,
     ) ?? VIDEO_CATALOG[0];
   const fallbackUrl = localFallbackAsset
     ? pickSource(localFallbackAsset, targetHeight)?.url
     : undefined;
 
-  // Reject any stale abstract clip attached to an old project and replace with real footage
-  const existingIsAbstract = Boolean(
-    scene.mediaTitle &&
-      isAbstractAsset({
-        title: scene.mediaTitle,
-        tags: [],
-        pageUrl: scene.mediaUrl ?? "",
-      }),
-  );
-
-  if (!existingIsAbstract && scene.mediaId) {
+  if (scene.mediaId) {
     const asset = getLocalAsset(scene.mediaId);
-    if (asset && asset.type === "video" && !isAbstractAsset(asset)) {
+    if (asset && asset.type === "video") {
       const source = pickSource(asset, targetHeight);
       if (source) return { url: source.url, fallbackUrl, kind: "video" };
     }
   }
-  if (!existingIsAbstract && scene.mediaUrl && scene.mediaType !== "photo") {
+  if (scene.mediaUrl && scene.mediaType !== "photo") {
     let renderUrl = scene.mediaUrl;
     if (
       targetHeight >= 720 &&
@@ -436,15 +421,13 @@ async function resolveMedia(
     return { url: renderUrl, fallbackUrl, kind: "video" };
   }
 
-  // Match real-world footage directly to narration + chosen people/race option
+  // If scene has no assigned URL yet, match live footage directly to its narration!
   const live = await matchVideoForNarration({
     narration: scene.narration || scene.mediaQuery || scene.caption,
     caption: scene.caption,
     topicContext,
-    excludeIds: usedIds,
-    peopleRepresentation,
   }).catch(() => ({ asset: null, mediaQuery: "" }));
-  if (live.asset && !isAbstractAsset(live.asset)) {
+  if (live.asset) {
     const src = pickSource(live.asset, targetHeight);
     if (src) return { url: src.url, fallbackUrl, kind: "video" };
   }
@@ -469,8 +452,6 @@ async function renderSceneVideo(
   spokenDuration: number,
   wordTimings: WordTiming[],
   topicContext: string,
-  peopleRepresentation: PeopleRepresentation,
-  usedIds: string[],
 ): Promise<string> {
   const output = path.join(dir, `scene-${String(index).padStart(2, "0")}.mp4`);
   const captionFile = path.join(dir, `caption-${String(index).padStart(2, "0")}.ass`);
@@ -502,13 +483,7 @@ async function renderSceneVideo(
       : `ass=${escapedAss}`;
   }
 
-  const media = await resolveMedia(
-    scene,
-    height,
-    topicContext,
-    peopleRepresentation,
-    usedIds,
-  );
+  const media = await resolveMedia(scene, height, topicContext);
 
   if (media.kind === "generated" || !media.url) {
     const gradient = `gradients=s=${width}x${height}:c0=0x121210:c1=0x262521:x0=0:y0=0:x1=${width}:y1=${height}:d=${Math.ceil(duration)}:r=30`;
@@ -653,7 +628,12 @@ async function renderProjectInternal(
   fs.mkdirSync(/* turbopackIgnore: true */ dir, { recursive: true });
 
   const { width, height } = targetSize(project.resolution, project.aspect);
-  const scenes = project.script.scenes ?? [];
+  // Safety net: no abstract clips, and every unlocked scene follows the cast option.
+  const policed = await enforceMediaPolicy(project.script, project.prompt);
+  if (policed.changed > 0 && !inline) {
+    await updateProject(projectId, { script: policed.script });
+  }
+  const scenes = policed.script.scenes ?? [];
   if (scenes.length === 0) throw new Error("The script has no scenes");
 
   const captionMode: CaptionMode =
@@ -744,10 +724,6 @@ async function renderProjectInternal(
       });
     }
 
-    const usedIds = scenes
-      .slice(0, index)
-      .map((item) => item.mediaId)
-      .filter((id): id is string => Boolean(id));
     const file = await renderSceneVideo(
       scene,
       index,
@@ -762,8 +738,6 @@ async function renderProjectInternal(
       spoken,
       wordTimings,
       project.prompt || project.title,
-      project.script.options?.peopleRepresentation ?? "all",
-      usedIds,
     );
     sceneFiles.push(file);
   }
