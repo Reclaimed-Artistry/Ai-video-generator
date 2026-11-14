@@ -1,6 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { db, ensureSchema } from "@/db";
 import { projects, type ProjectRow } from "@/db/schema";
+import { getBrandKit, getDefaultBrandKit } from "./brandkit";
 import { defaultMusicForTone } from "./music";
 import { hydrateSceneMedia } from "./stock";
 import { deleteProjectArtifacts } from "./storage";
@@ -45,6 +46,7 @@ export function toProject(row: ProjectRow): Project {
     },
     outputPath: row.outputPath,
     posterPath: row.posterPath,
+    brandKitId: row.brandKitId ?? null,
     createdAt: row.createdAt?.toISOString?.() ?? new Date().toISOString(),
     updatedAt: row.updatedAt?.toISOString?.() ?? new Date().toISOString(),
   };
@@ -86,6 +88,7 @@ export async function updateProject(
       | "script"
       | "outputPath"
       | "posterPath"
+      | "brandKitId"
     >
   >,
 ): Promise<void> {
@@ -110,4 +113,20 @@ export async function deleteProject(id: string): Promise<boolean> {
 
   await deleteProjectArtifacts(id, [deleted[0].outputPath, deleted[0].posterPath]);
   return true;
+}
+
+/**
+ * Loads a project with its brand kit attached. Falls back to the workspace
+ * default kit when the project has no explicit brand, matching what the render
+ * pipeline will apply.
+ */
+export async function getProjectWithBrand(id: string): Promise<Project | null> {
+  const project = await getProject(id);
+  if (!project) return null;
+
+  let kit = project.brandKitId ? await getBrandKit(project.brandKitId) : null;
+  if (!kit) {
+    kit = await getDefaultBrandKit();
+  }
+  return { ...project, brandKit: kit };
 }

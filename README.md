@@ -1,87 +1,142 @@
-# Reclaimed Artistry — Prompt-to-Picture Assembly & H.264 Master Desk
+# Reclaimed Artistry — Prompt-to-Video Studio
 
-Write a plain-English production brief, inspect and edit every spoken cue and
-lower-third super in the three-pane NLE Cut Desk, audition 24kHz neural
-voiceover, swap licensed moving B-roll from Pexels and Pixabay, and render a
-finished H.264/AAC MP4 master at **240p, 360p, or 1080p**.
+Type one sentence and get a finished, narrated, captioned MP4. An InVideo-style
+prompt-first studio: pick a template, describe your video, and the pipeline
+drafts the script, casts a voice, sources or generates imagery, applies your
+brand kit, and encodes the master with FFmpeg.
 
 ## Highlights
 
-- **Beat-structured script desk** — turns rough prompts into timed narration
-  cues, burned-in lower-third supers, and shot queries. Uses OpenAI when
-  `OPENAI_API_KEY` is configured, with a built-in deterministic script engine
-  out of the box.
-- **Three-pane NLE Cut Desk** — scene rundown with live word/runtime math,
-  aspect-aware Program Monitor (`16:9`, `9:16`, `1:1`) with `Storyboard Gate` vs
-  `Master MP4` switching and broadcast safe-title guides, proportional timeline
-  filmstrip, and non-clobbering PostgreSQL autosave.
-- **24kHz neural voice booth** — 14 Microsoft Edge neural personas across
-  American, British, and Australian accents in 10 languages, normalized to
-  `-16 LUFS` (EBU R128). Optional `ELEVENLABS_API_KEY` or `OPENAI_API_KEY`
-  upgrades, plus offline `mespeak` fallback.
-- **Moving footage only** — every scene resolves to verified multi-rendition
-  video clips (never static slideshows). Ships with 40 verified Pexels video
-  clips out of the box and queries live Pexels (`PEXELS_API_KEY`) and Pixabay
-  Video (`PIXABAY_API_KEY`) pools when keys are set.
+- **Prompt-first composer** — one textarea drives everything. Add optional
+  settings (format, length, voice, subtitles, music, tone, language, quality),
+  preview the voice, then either draft the script or go straight to a finished
+  render. `⌘/Ctrl + Enter` submits.
+- **22-template gallery** — Marketing, YouTube, Social, Education, Business and
+  Story templates, each with a ready-made brief, aspect ratio, tone, voice and
+  music track. Picking one pre-fills the composer.
+- **Brand kits** — logo upload, primary + text colours, caption typeface,
+  intro title/subtitle, outro text and website. Applied to intro cards, outro
+  cards, burned-in captions and every AI-generated plate.
+- **AI imagery** — OpenAI / Stability / Replicate / Gemini when a key is
+  configured. With no key, falls back to an on-device FFmpeg procedural
+  generator that composes brand-tinted fractal plates (hue-preserving, so a
+  dark teal brand stays a teal instead of washing out to grey).
+- **Voice cloning** — ElevenLabs neural cloning from a sample, or an offline
+  voice-preset path (base voice + rate + pitch) that needs no API key. Cloned
+  voices appear in the narrator picker alongside 14 built-in AI presenters.
+- **Dubbing** — 15 languages. Translates narration and captions when a
+  translation provider is configured, otherwise switches voice locale and
+  caption language so the cut is still localized.
 - **Server-side FFmpeg master** — `libx264` High profile, `libass` vector
-  caption burn-in across 5 caption styles, `loudnorm` stereo AAC-LC audio, and
-  HTTP Range streaming for scrubbing and download.
+  caption burn-in, `loudnorm` stereo AAC-LC audio, scene-proportional Ken Burns
+  on stills, HTTP Range streaming for scrubbing and download.
+- **Zero-setup database** — Postgres via `DATABASE_URL` in production; embeds
+  PGlite locally so `npm run dev` works with no database install at all.
 
 ## Stack
 
 Next.js 16 (App Router) · React 19 · Tailwind CSS v4 · Drizzle ORM ·
-PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react`.
+PostgreSQL / PGlite · FFmpeg (`@ffmpeg-installer/ffmpeg`) ·
+`@andresaya/edge-tts` · `mespeak` · `lucide-react`.
+
+## Getting started
+
+```bash
+npm install
+npm run dev      # http://localhost:3000
+```
+
+No environment variables are required — everything degrades gracefully
+offline. Scripts use a deterministic built-in engine, narration uses
+`mespeak`, and imagery uses the on-device procedural generator.
+
+### Optional environment variables
+
+| Variable | Enables |
+| --- | --- |
+| `DATABASE_URL` | Production Postgres (falls back to embedded PGlite) |
+| `OPENAI_API_KEY` | LLM script drafting + DALL·E imagery |
+| `STABILITY_API_KEY` / `REPLICATE_API_TOKEN` / `GEMINI_API_KEY` | Alternative image providers |
+| `ELEVENLABS_API_KEY` | Neural voices + real voice cloning |
+| `PEXELS_API_KEY` / `PIXABAY_API_KEY` | Live stock video search |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob CDN storage for masters |
+| `FFMPEG_PATH` | Explicit FFmpeg binary override |
 
 ## API Surface
 
 | Route | Method | Description |
 | --- | --- | --- |
-| `/api/projects` | `GET` / `POST` | List sequences / draft sequence from brief |
-| `/api/projects/[id]` | `GET` / `PATCH` / `DELETE` | Read, autosave, or delete sequence & disk files |
-| `/api/projects/[id]/script` | `POST` | Redraft all cues from project brief |
-| `/api/projects/[id]/scenes/[sceneId]` | `PATCH` / `POST` | Update or rewrite an individual cue |
+| `/api/projects` | `GET` / `POST` | List projects / draft one from a brief |
+| `/api/projects/[id]` | `GET` / `PATCH` / `DELETE` | Read, autosave, or delete a project |
+| `/api/projects/[id]/script` | `POST` | Redraft all scenes from the brief |
+| `/api/projects/[id]/scenes/[sceneId]` | `PATCH` / `POST` | Update or rewrite one scene |
 | `/api/projects/[id]/render` | `GET` / `POST` | Poll encode progress / start FFmpeg render |
-| `/api/media/search` | `GET` | Search moving video footage (`?q=&provider=all\|pexels\|pixabay`) |
-| `/api/voices` | `GET` | Neural voice talent list & active provider status |
-| `/api/tts/preview` | `POST` | Synthesize live voice audition audio |
-| `/api/files/[...file]` | `GET` | Byte-range MP4 & poster streaming |
+| `/api/projects/[id]/command` | `POST` | Natural-language edit ("switch to 9:16") |
+| `/api/projects/[id]/dub` | `GET` / `POST` | Dub targets / dub into a language |
+| `/api/media/search` | `GET` | Search stock footage (`?q=&limit=`) |
+| `/api/imagen` | `GET` / `POST` | Image provider status / generate a still |
+| `/api/brand-kits` | `GET` / `POST` | List / create brand kits |
+| `/api/brand-kits/[id]` | `GET` / `PATCH` / `DELETE` | Manage one kit |
+| `/api/brand-kits/[id]/logo` | `POST` / `DELETE` | Upload / remove a logo |
+| `/api/voices` | `GET` | Presenters, cloned voices & provider status |
+| `/api/voices/clone` | `POST` | Create a cloned voice or voice preset |
+| `/api/voices/clone/[id]` | `DELETE` | Remove a cloned voice |
+| `/api/tts/preview` | `POST` | Synthesize a voice audition clip |
+| `/api/files/[...file]` | `GET` | Byte-range media streaming |
 
-## Deploy on Vercel (One-Click or GitHub Import)
+## Deploy on Vercel
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FReclaimed-Artistry%2FAi-video-generator&env=DATABASE_URL&project-name=reclaimed-artistry)
 
-Reclaimed Artistry is configured out of the box for **Vercel Fluid Compute**:
-- **`vercel.json`** enables Fluid Compute (`maxDuration: 300` on `/api/projects/[id]/render`, compatible with both Hobby & Pro).
-- **`after()` (`next/server`)** runs FFmpeg video encoding cleanly after returning HTTP 202.
-- **Zero-migration Postgres bootstrap** automatically creates `projects` and `project_assets` tables on first connection (supports `DATABASE_URL`, `POSTGRES_URL`, or `POSTGRES_PRISMA_URL` with automatic cloud TLS).
-- **Bundled DejaVu TrueType fonts** (`src/assets/fonts`) + `/tmp` fontconfig so `libass` burned-in captions work on Vercel's bare Linux runtime.
-- **Three-tier deliverable storage**: uses **Vercel Blob** (`BLOB_READ_WRITE_TOKEN`) for global CDN playback when attached, and automatically falls back to PostgreSQL `project_assets` with byte-range streaming if you only attach a Postgres database.
-- **Trimmed serverless bundles** (`next.config.ts` excludes `ffprobe-static` and scopes `ffmpeg-static` strictly to the render route so every function stays well under Vercel's 250 MB unzipped limit).
+- **`vercel.json`** enables Fluid Compute with `maxDuration: 300` on the render
+  route.
+- **`after()` (`next/server`)** runs FFmpeg encoding after returning HTTP 202.
+- **Zero-migration Postgres bootstrap** creates `projects`, `project_assets`
+  and `brand_kits` tables on first connection (accepts `DATABASE_URL`,
+  `POSTGRES_URL`, or `POSTGRES_PRISMA_URL` with automatic cloud TLS).
+- **Bundled DejaVu TrueType fonts** (`src/assets/fonts`) plus a generated
+  `/tmp` fontconfig so `libass` burned-in captions work on a bare Linux runtime.
+- **Three-tier deliverable storage**: Vercel Blob for global CDN playback when
+  attached, falling back to Postgres `project_assets` with byte-range
+  streaming, falling back to the local `storage/` directory.
+- **Trimmed serverless bundles** — `next.config.ts` excludes `ffprobe-static`,
+  skips the `storage/` and `.pglite/` data directories, and scopes FFmpeg
+  tracing strictly to the render route.
 
-### Vercel Setup Steps
-1. Import **`Reclaimed-Artistry/Ai-video-generator`** in [Vercel](https://vercel.com/new).
-2. Attach a PostgreSQL database via the **Storage** tab (e.g. **Neon Serverless Postgres** or **Supabase** — automatically injects `DATABASE_URL` / `POSTGRES_URL`).
-3. *(Recommended for 1080p MP4 streaming)* Attach **Vercel Blob** in the **Storage** tab (automatically injects `BLOB_READ_WRITE_TOKEN`).
-4. *(Optional)* Add `PEXELS_API_KEY`, `PIXABAY_API_KEY`, `OPENAI_API_KEY`, or `ELEVENLABS_API_KEY` in **Settings → Environment Variables**.
-5. Click **Deploy**.
+1. Import the repository in [Vercel](https://vercel.com/new).
+2. Attach a Postgres database (Neon, Supabase, or Vercel Postgres) to inject
+   `DATABASE_URL`.
+3. *(Recommended)* Attach Vercel Blob so masters stream from the CDN.
+4. *(Optional)* Add `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `PEXELS_API_KEY`.
+5. Deploy.
 
 ## Deploy on Railway (Docker + PostgreSQL)
 
-This repository includes `Dockerfile`, `railway.json`, and `scripts/docker-entrypoint.sh`
-(which installs `fontconfig` + DejaVu fonts for `libass` captions and runs `drizzle-kit push` on startup):
+This repository ships a `Dockerfile`, `railway.json`, and
+`scripts/docker-entrypoint.sh` (installs `fontconfig` + DejaVu fonts for
+`libass` captions).
 
-1. In [Railway](https://railway.app), click **New Project → Deploy from GitHub repo** and select this repository.
-2. Add a PostgreSQL service (**+ New → Database → Add PostgreSQL**).
-3. In the web service **Variables** tab, add:
-   - `DATABASE_URL=${{Postgres.DATABASE_URL}}`
-   - `STORAGE_DIR=/app/storage`
-   - Optional: `PEXELS_API_KEY`, `PIXABAY_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`
-4. In **Settings → Volumes**, mount a persistent volume at `/app/storage` so rendered MP4 masters persist across redeploys.
-5. In **Settings → Networking**, click **Generate Domain**.
+1. In [Railway](https://railway.app), choose **New Project → Deploy from GitHub
+   repo**.
+2. Add a PostgreSQL service.
+3. Set `DATABASE_URL=${{Postgres.DATABASE_URL}}` and `STORAGE_DIR=/app/storage`.
+4. Mount a persistent volume at `/app/storage` so rendered masters survive
+   redeploys.
+5. Click **Generate Domain**.
 
-## Local Development with Docker
+## Local development with Docker
 
 ```bash
 cp .env.example .env
 docker compose up --build
+```
+
+## Scripts
+
+```bash
+npm run dev        # dev server
+npm run build      # production build
+npm run start      # serve the production build
+npm run lint       # eslint
+npm run typecheck  # tsc --noEmit
 ```

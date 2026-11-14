@@ -16,6 +16,10 @@
 # Rendered video masters & temporary FFmpeg artifacts
 /storage/
 
+# Embedded zero-setup PostgreSQL (PGlite) data directory
+/.pglite/
+/.brandkit/
+
 # TypeScript & debug artifacts
 *.tsbuildinfo
 npm-debug.log*

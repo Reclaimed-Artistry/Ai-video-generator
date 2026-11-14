@@ -143,7 +143,7 @@ export default function ProjectsBin({
                   {/* Slate strip */}
                   <div className="flex items-center justify-between border-b border-line bg-inset px-3 py-1.5 font-tech text-[10px]">
                     <span className="text-ash">
-                      SEQ {String(index + 1).padStart(2, "0")} // {project.resolution} · {project.aspect}
+                      SEQ {String(index + 1).padStart(2, "0")} · {project.resolution} · {project.aspect}
                     </span>
                     <span
                       className={`inline-flex items-center gap-1 uppercase ${

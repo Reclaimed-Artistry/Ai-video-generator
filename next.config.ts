@@ -1,15 +1,20 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["ffmpeg-static", "mespeak", "@andresaya/edge-tts"],
+  serverExternalPackages: [
+    "@ffmpeg-installer/ffmpeg",
+    "mespeak",
+    "@andresaya/edge-tts",
+    "@electric-sql/pglite",
+  ],
   images: {
     unoptimized: true,
   },
   outputFileTracingIncludes: {
     "/api/projects/*/render": [
-      "./node_modules/ffmpeg-static/ffmpeg",
-      "./node_modules/ffmpeg-static/index.js",
-      "./node_modules/ffmpeg-static/package.json",
+      "./node_modules/@ffmpeg-installer/ffmpeg/package.json",
+      "./node_modules/@ffmpeg-installer/ffmpeg/index.js",
+      "./node_modules/@ffmpeg-installer/linux-x64/**/*",
       "./src/assets/fonts/**/*",
       "./node_modules/mespeak/src/**/*",
       "./node_modules/mespeak/voices/en/**/*",
@@ -22,6 +27,7 @@ const nextConfig: NextConfig = {
   outputFileTracingExcludes: {
     "*": [
       "./storage/**/*",
+      "./.pglite/**/*",
       "./node_modules/ffprobe-static/**/*",
       "./.git/**/*",
       "./scripts/**/*",

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { getStorageRoot, readDbArtifact } from "@/lib/storage";
 
 export const runtime = "nodejs";
@@ -52,6 +53,40 @@ function serveBuffer(data: Buffer, contentType: string, range: string | null) {
   });
 }
 
+/**
+ * Adapts a Node read stream into a web `ReadableStream` for the `Response`.
+ *
+ * A plain `fs.createReadStream` handed straight to `Response` throws
+ * `ERR_INVALID_STATE: ReadableStream is already closed` as an *uncaught*
+ * exception whenever the client hangs up early — a video seeking, an `<img>`
+ * re-rendering, a closed tab — which is fatal to the whole server process.
+ * `Readable.toWeb()` propagates cancellation properly, and the extra error
+ * listener plus abort teardown guarantee nothing escapes unhandled.
+ */
+function toWebStream(
+  stream: fs.ReadStream,
+  signal: AbortSignal,
+): ReadableStream<Uint8Array> {
+  const web = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+
+  // Swallow late errors (e.g. ENOENT on a file cleaned up mid-transfer).
+  stream.on("error", () => {
+    try {
+      stream.destroy();
+    } catch {
+      // already destroyed
+    }
+  });
+
+  if (signal.aborted) {
+    stream.destroy();
+  } else {
+    signal.addEventListener("abort", () => stream.destroy(), { once: true });
+  }
+
+  return web;
+}
+
 export async function GET(request: Request, context: Context) {
   const { file: segments } = await context.params;
   if (segments.some((segment) => segment === ".." || segment.includes("\\"))) {
@@ -90,7 +125,7 @@ export async function GET(request: Request, context: Context) {
             start,
             end: safeEnd,
           });
-          return new Response(chunk as unknown as ReadableStream, {
+          return new Response(toWebStream(chunk, request.signal), {
             status: 206,
             headers: {
               "content-type": type,
@@ -105,7 +140,7 @@ export async function GET(request: Request, context: Context) {
     }
 
     const stream = fs.createReadStream(/* turbopackIgnore: true */ target);
-    return new Response(stream as unknown as ReadableStream, {
+    return new Response(toWebStream(stream, request.signal), {
       headers: {
         "content-type": type,
         "content-length": String(stat.size),

@@ -33,6 +33,7 @@ export async function PATCH(request: Request, context: Context) {
     language?: string;
     duration?: number;
     script?: VideoScript;
+    brandKitId?: string | null;
   };
 
   const renderDirty =
@@ -43,7 +44,8 @@ export async function PATCH(request: Request, context: Context) {
     body.style !== undefined ||
     body.language !== undefined ||
     body.duration !== undefined ||
-    body.script !== undefined;
+    body.script !== undefined ||
+    body.brandKitId !== undefined;
 
   await updateProject(id, {
     ...(body.title !== undefined ? { title: body.title } : {}),
@@ -55,6 +57,7 @@ export async function PATCH(request: Request, context: Context) {
     ...(body.language !== undefined ? { language: body.language } : {}),
     ...(body.duration !== undefined ? { duration: body.duration } : {}),
     ...(body.script !== undefined ? { script: body.script } : {}),
+    ...(body.brandKitId !== undefined ? { brandKitId: body.brandKitId } : {}),
     ...(renderDirty && project.status !== "rendering"
       ? { status: "ready", stage: "Edits pending master render" }
       : {}),

@@ -1,43 +1,46 @@
 import type { AspectRatio } from "@/lib/types";
 
-export function BrandMark({ className = "h-5 w-5" }: { className?: string }) {
+/**
+ * Timing helpers live in `@/lib/timecode` — re-exported here so existing
+ * imports keep resolving.
+ */
+export {
+  countWords,
+  estimateSceneSeconds,
+  formatClock,
+  formatDuration,
+  formatSeconds,
+  formatSmpte,
+} from "@/lib/timecode";
+
+type MarkProps = { className?: string };
+
+/**
+ * Studio mark — a violet "play + spark" glyph that reads as both a play button
+ * and a generative spark, matching the indigo/violet product palette.
+ */
+export function BrandMark({ className = "h-6 w-6" }: MarkProps) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-      className={className}
-    >
-      {/* Outer machined frame gate */}
-      <rect
-        x="1.5"
-        y="3.5"
-        width="21"
-        height="17"
-        rx="1.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
-      {/* Sprocket ticks */}
-      <line x1="5.5" y1="3.5" x2="5.5" y2="20.5" stroke="currentColor" strokeWidth="1.25" />
-      <line x1="18.5" y1="3.5" x2="18.5" y2="20.5" stroke="currentColor" strokeWidth="1.25" />
-      {/* Diagonal splice cut in tungsten amber */}
+    <svg viewBox="0 0 32 32" className={className} fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="ra-mark" x1="4" y1="3" x2="28" y2="29" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#6D4AFF" />
+          <stop offset="0.5" stopColor="#A855F7" />
+          <stop offset="1" stopColor="#F0568F" />
+        </linearGradient>
+      </defs>
+      <rect x="1.5" y="1.5" width="29" height="29" rx="9" fill="url(#ra-mark)" />
+      <path d="M13 10.4l9 5.6-9 5.6V10.4z" fill="#fff" />
       <path
-        d="M9.25 16.5L14.75 7.5"
-        stroke="#E5A93C"
-        strokeWidth="1.75"
-        strokeLinecap="square"
+        d="M22.4 7.2l.62 1.62 1.62.62-1.62.62-.62 1.62-.62-1.62-1.62-.62 1.62-.62.62-1.62z"
+        fill="#fff"
+        fillOpacity="0.92"
       />
-      <circle cx="3.5" cy="7.5" r="0.85" fill="currentColor" />
-      <circle cx="3.5" cy="12" r="0.85" fill="currentColor" />
-      <circle cx="3.5" cy="16.5" r="0.85" fill="currentColor" />
-      <circle cx="20.5" cy="7.5" r="0.85" fill="currentColor" />
-      <circle cx="20.5" cy="12" r="0.85" fill="currentColor" />
-      <circle cx="20.5" cy="16.5" r="0.85" fill="currentColor" />
     </svg>
   );
 }
 
+/** Small outline glyphs for the 16:9 / 9:16 / 1:1 frame gate selector. */
 export function AspectGlyph({
   aspect,
   className = "h-3.5 w-3.5",
@@ -45,87 +48,38 @@ export function AspectGlyph({
   aspect: AspectRatio;
   className?: string;
 }) {
-  if (aspect === "9:16") {
-    return (
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className={className}>
-        <rect
-          x="4.25"
-          y="1.75"
-          width="7.5"
-          height="12.5"
-          rx="1"
-          stroke="currentColor"
-          strokeWidth="1.35"
-        />
-      </svg>
-    );
-  }
-  if (aspect === "1:1") {
-    return (
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className={className}>
-        <rect
-          x="2.75"
-          y="2.75"
-          width="10.5"
-          height="10.5"
-          rx="1"
-          stroke="currentColor"
-          strokeWidth="1.35"
-        />
-      </svg>
-    );
-  }
+  const box =
+    aspect === "16:9"
+      ? { x: 1.5, y: 5, w: 21, h: 12 }
+      : aspect === "9:16"
+        ? { x: 7.5, y: 1.5, w: 9, h: 21 }
+        : { x: 4, y: 4, w: 16, h: 16 };
   return (
-    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className={className}>
+    <svg viewBox="0 0 24 24" className={className} fill="none" aria-hidden="true">
       <rect
-        x="1.5"
-        y="3.75"
-        width="13"
-        height="8.5"
-        rx="1"
+        x={box.x}
+        y={box.y}
+        width={box.w}
+        height={box.h}
+        rx="2.5"
         stroke="currentColor"
-        strokeWidth="1.35"
+        strokeWidth="1.8"
       />
     </svg>
   );
 }
 
-export function AudioMeter({ active }: { active: boolean }) {
+/** Animated equaliser used next to "recording / generating" states. */
+export function AudioMeter({ active, className = "h-3 w-3" }: { active?: boolean; className?: string }) {
   return (
-    <span className="inline-flex h-3 items-end gap-[2px]" aria-hidden="true">
-      {[0, 1, 2, 3].map((bar) => (
+    <span className={`inline-flex items-end gap-[2px] ${className}`} aria-hidden="true">
+      {[0, 1, 2, 3].map((i) => (
         <span
-          key={bar}
-          className={`w-[2px] bg-amber-cue ${active ? "eq-bar h-3" : "h-1 opacity-40"}`}
+          key={i}
+          className={`w-[2px] rounded-full bg-amber-cue ${active ? "eq-bar" : "opacity-40"}`}
+          style={{ height: active ? "100%" : "40%" }}
         />
       ))}
     </span>
   );
-}
-
-export function formatSmpte(seconds: number): string {
-  const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
-  const mins = Math.floor(safe / 60);
-  const secs = Math.floor(safe % 60);
-  const frames = Math.floor((safe - Math.floor(safe)) * 30);
-  return `00:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}:${String(frames).padStart(2, "0")}`;
-}
-
-export function formatClock(seconds: number): string {
-  const safe = Math.max(0, Math.round(seconds));
-  const mins = Math.floor(safe / 60);
-  const secs = safe % 60;
-  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-}
-
-export function countWords(text: string): number {
-  const trimmed = text.trim();
-  if (!trimmed) return 0;
-  return trimmed.split(/\s+/).length;
-}
-
-export function estimateSceneSeconds(narration: string, minDuration?: number | null): number {
-  const words = countWords(narration);
-  const spoken = words > 0 ? words / 2.6 + 0.55 : 3.2;
-  return Math.max(2.6, spoken, minDuration ?? 0);
 }

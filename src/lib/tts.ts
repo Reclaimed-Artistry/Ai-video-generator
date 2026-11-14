@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { EdgeTTS } from "@andresaya/edge-tts";
+import { resolveVoiceSelection } from "./voiceclone";
 import { getVoice, resolveNeuralVoice, type TtsProvider } from "./voices";
+import { getLanguage } from "./types";
 
 export type WordTiming = {
   text: string;
@@ -26,7 +28,6 @@ const loadedVoices = new Set<string>();
 
 function loadMespeak() {
   if (mespeakModule) return mespeakModule;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require("mespeak") as typeof import("mespeak");
   const configPath = path.join(mespeakRoot(), "src", "mespeak_config.json");
   const config = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ configPath, "utf8"));
@@ -152,25 +153,73 @@ async function synthesizeElevenLabs(text: string, voice: string): Promise<Buffer
   return Buffer.from(await response.arrayBuffer());
 }
 
+/**
+ * OpenAI's `/v1/audio/speech` endpoint only accepts its own voice names, so map
+ * our personas (and dubs) onto the nearest available timbre.
+ */
+const OPENAI_VOICE_MAP: Record<string, string> = {
+  "en-US-JennyNeural": "nova",
+  "en-US-AriaNeural": "shimmer",
+  "en-US-MichelleNeural": "sage",
+  "en-US-SaraNeural": "fable",
+  "en-US-AnaNeural": "coral",
+  "en-US-GuyNeural": "onyx",
+  "en-US-EricNeural": "ash",
+  "en-US-DavisNeural": "echo",
+  "en-US-JasonNeural": "echo",
+  "en-US-TonyNeural": "ash",
+  "en-GB-SoniaNeural": "sage",
+  "en-GB-RyanNeural": "echo",
+  "en-AU-WilliamNeural": "ash",
+  "en-AU-NatashaNeural": "coral",
+};
+
+function openAiVoiceFor(neuralVoice: string, fallbackId: string): string {
+  if (neuralVoice in OPENAI_VOICE_MAP) return OPENAI_VOICE_MAP[neuralVoice];
+  const persona = getVoice(fallbackId);
+  const warm = ["nova", "coral", "shimmer", "sage"];
+  const cool = ["onyx", "ash", "echo", "fable"];
+  const pool = persona.gender === "female" ? warm : cool;
+  const hash = [...neuralVoice].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+  return pool[hash % pool.length];
+}
+
 async function synthesizeOpenAi(text: string, voice: string): Promise<Buffer> {
   const key = process.env.OPENAI_API_KEY as string;
+  const body: Record<string, unknown> = {
+    model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
+    voice,
+    input: text,
+    response_format: "mp3",
+  };
   const response = await fetch("https://api.openai.com/v1/audio/speech", {
     method: "POST",
     headers: {
       authorization: `Bearer ${key}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({
-      model: "gpt-4o-mini-tts",
-      voice,
-      input: text,
-      response_format: "mp3",
-    }),
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
     throw new Error(`OpenAI TTS failed with ${response.status}`);
   }
   return Buffer.from(await response.arrayBuffer());
+}
+
+/** `locale:<lang>:<gender>:<neuralVoice>` — produced by the dubbing flow. */
+function parseLocaleVoice(voiceId: string): {
+  language: string;
+  gender: "male" | "female";
+  neuralVoice: string;
+} | null {
+  if (!voiceId.startsWith("locale:")) return null;
+  const parts = voiceId.split(":");
+  if (parts.length < 4) return null;
+  return {
+    language: parts[1],
+    gender: parts[2] === "male" ? "male" : "female",
+    neuralVoice: parts.slice(3).join(":"),
+  };
 }
 
 export async function synthesizeSpeech(
@@ -180,8 +229,29 @@ export async function synthesizeSpeech(
 ): Promise<Speech> {
   const clean = text.trim();
   if (!clean) throw new Error("Nothing to narrate");
-  const voice = getVoice(voiceId);
-  const neuralVoice = resolveNeuralVoice(voice, language);
+
+  const resolved = await resolveVoiceSelection(voiceId, language);
+  const locale = parseLocaleVoice(voiceId ?? "");
+  const persona = getVoice(voiceId);
+
+  let neuralVoice = resolved.neuralVoice;
+  let rate = resolved.rate;
+  let pitch = resolved.pitch;
+
+  if (locale) {
+    // Dubs deliberately override the persona: a Spanish dub must speak Spanish.
+    neuralVoice = locale.neuralVoice;
+    rate = 0;
+    pitch = 0;
+  } else if (!resolved.cloned && language && language !== "en") {
+    // Non-English projects fall back to a native locale narrator.
+    const meta = getLanguage(language);
+    neuralVoice = persona.gender === "female" ? meta.neuralFemale : meta.neuralMale;
+    rate = 0;
+    pitch = 0;
+  } else if (!resolved.cloned) {
+    neuralVoice = resolveNeuralVoice(persona, language);
+  }
 
   if (process.env.ELEVENLABS_API_KEY) {
     const data = await synthesizeElevenLabs(clean, neuralVoice);
@@ -189,7 +259,10 @@ export async function synthesizeSpeech(
   }
 
   if (process.env.OPENAI_API_KEY) {
-    const data = await synthesizeOpenAi(clean, neuralVoice);
+    const data = await synthesizeOpenAi(
+      clean,
+      openAiVoiceFor(neuralVoice, voiceId ?? "ava"),
+    );
     return { data, ext: "mp3", provider: "openai", wordTimings: [] };
   }
 
@@ -197,8 +270,8 @@ export async function synthesizeSpeech(
     const { audio, wordTimings, durationSec } = await synthesizeEdge(
       clean,
       neuralVoice,
-      voice.rate,
-      voice.pitch,
+      rate,
+      pitch,
     );
     return {
       data: audio,
@@ -214,6 +287,6 @@ export async function synthesizeSpeech(
     );
   }
 
-  const data = synthesizeBuiltin(clean, voice.engineVoice, voice.rate + 165, voice.pitch);
+  const data = synthesizeBuiltin(clean, resolved.engineVoice, rate + 165, pitch);
   return { data, ext: "wav", provider: "builtin", wordTimings: [] };
 }

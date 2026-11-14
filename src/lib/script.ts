@@ -330,6 +330,19 @@ export function detectCategory(prompt: string): Category {
   return best;
 }
 
+/**
+ * Resolves a workflow id defensively. Callers may pass anything (URL params,
+ * LLM output, older client builds), so an unknown id silently falls back to
+ * "explainer" instead of crashing script generation.
+ */
+function asWorkflow(workflow: string | undefined): Workflow {
+  return (workflow && workflow in WORKFLOWS ? workflow : "explainer") as Workflow;
+}
+
+function workflowMeta(workflow: string | undefined) {
+  return WORKFLOWS[asWorkflow(workflow)];
+}
+
 function sceneCountFor(duration: number, workflow: Workflow): number {
   const divisor = workflow === "shorts" ? 7 : workflow === "documentary" ? 11 : 9;
   return Math.max(MIN_SCENES, Math.min(MAX_SCENES, Math.round(duration / divisor)));
@@ -568,7 +581,7 @@ async function scriptToVideoGenerate(
 }
 
 async function localGenerate(options: GenerateScriptOptions): Promise<VideoScript> {
-  const workflow = options.workflow ?? "explainer";
+  const workflow = asWorkflow(options.workflow);
   if (workflow === "script") {
     return scriptToVideoGenerate(options);
   }
@@ -619,7 +632,8 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
     );
   }
 
-  const wfMeta = WORKFLOWS[workflow];
+
+const wfMeta = workflowMeta(workflow);
   const title =
     options.title?.trim() ||
     `${titleCase(topic)} — ${wfMeta.shortLabel}`.slice(0, 90);
@@ -639,11 +653,11 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
 
 async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript | null> {
   const key = process.env.OPENAI_API_KEY;
-  const workflow = options.workflow ?? "explainer";
+  const workflow = asWorkflow(options.workflow);
   if (!key || workflow === "script") return null;
 
   const count = sceneCountFor(options.duration, workflow);
-  const wfMeta = WORKFLOWS[workflow];
+  const wfMeta = workflowMeta(workflow);
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -733,7 +747,7 @@ export async function regenerateScene(
   options: { prompt: string; tone: Tone },
 ): Promise<Scene> {
   const scene = script.scenes[sceneIndex];
-  const workflow = script.options?.workflow ?? "explainer";
+  const workflow = asWorkflow(script.options?.workflow);
   const category = detectCategory(options.prompt);
   const topic = cleanTopic(options.prompt);
   const beats = beatSequence(Math.max(MIN_SCENES, script.scenes.length));

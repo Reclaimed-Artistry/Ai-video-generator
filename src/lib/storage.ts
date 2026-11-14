@@ -4,7 +4,7 @@ import path from "node:path";
 import { del, put } from "@vercel/blob";
 import { eq } from "drizzle-orm";
 import { db, ensureSchema } from "@/db";
-import { projectAssets } from "@/db/schema";
+import { appAssets, projectAssets } from "@/db/schema";
 
 export const IS_VERCEL = process.env.VERCEL === "1";
 
@@ -85,6 +85,90 @@ export async function saveRenderArtifact(
 
   // Tier 3: Local / Docker / Railway persistent volume
   return key;
+}
+
+/**
+ * Persists an arbitrary buffer under a caller-chosen key (brand logos, AI
+ * imagery, cloned-voice samples) using the same three-tier backend ladder as
+ * render deliverables.
+ */
+export async function saveAppArtifact(
+  key: string,
+  data: Buffer,
+  contentType: string,
+): Promise<string> {
+  // Tier 1: Vercel Blob (fast global CDN + native Range requests)
+  if (isBlobConfigured()) {
+    const blob = await put(key, data, {
+      access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType,
+    });
+    return blob.url;
+  }
+
+  // Tier 2: Serverless Vercel without a Blob token -> persist in PostgreSQL
+  if (IS_VERCEL) {
+    await ensureSchema();
+    await db
+      .insert(appAssets)
+      .values({ key, contentType, size: data.length, data, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: appAssets.key,
+        set: { contentType, size: data.length, data, updatedAt: new Date() },
+      });
+    return key;
+  }
+
+  // Tier 3: Local / Docker / Railway persistent volume
+  const target = path.join(getStorageRoot(), key);
+  fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(target), { recursive: true });
+  fs.writeFileSync(/* turbopackIgnore: true */ target, data);
+  // Keep a copy in the app_assets table so the project stays portable if the
+  // volume is ever detached.
+  try {
+    await ensureSchema();
+    await db
+      .insert(appAssets)
+      .values({ key, contentType, size: data.length, data, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: appAssets.key,
+        set: { contentType, size: data.length, data, updatedAt: new Date() },
+      });
+  } catch {
+    // Non-fatal: on-disk copy is authoritative for local deployments.
+  }
+  return key;
+}
+
+export async function readAppArtifact(
+  key: string,
+): Promise<{ data: Buffer; contentType: string; size: number } | null> {
+  await ensureSchema();
+  const rows = await db
+    .select({ data: appAssets.data, contentType: appAssets.contentType, size: appAssets.size })
+    .from(appAssets)
+    .where(eq(appAssets.key, key))
+    .limit(1);
+  if (!rows[0]) return null;
+  return rows[0];
+}
+
+export async function deleteAppArtifact(key: string): Promise<void> {
+  await ensureSchema().catch(() => undefined);
+  await db.delete(appAssets).where(eq(appAssets.key, key)).catch(() => undefined);
+  const target = path.join(getStorageRoot(), key);
+  try {
+    fs.rmSync(/* turbopackIgnore: true */ target, { force: true });
+  } catch {
+    // Ignore missing files.
+  }
+}
+
+/** Resolves a stored key to an on-disk path when the local driver is in use. */
+export function localArtifactPath(key: string): string {
+  return path.join(getStorageRoot(), key);
 }
 
 export async function readDbArtifact(key: string): Promise<{

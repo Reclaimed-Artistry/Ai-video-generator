@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@andresaya/edge-tts": "^1.9.1",
+    "@electric-sql/pglite": "^0.5.16",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@vercel/blob": "^2.9.0",
     "dotenv": "17.3.1",
     "drizzle-orm": "0.45.2",

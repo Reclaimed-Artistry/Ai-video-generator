@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db, ensureSchema } from "@/db";
 import { projects } from "@/db/schema";
+import { getDefaultBrandKit } from "@/lib/brandkit";
 import { listProjects, toProject } from "@/lib/projects";
 import { generateScript } from "@/lib/script";
 import type {
@@ -39,6 +40,8 @@ export async function POST(request: Request) {
     musicTrack?: MusicTrackId;
     musicVolume?: number;
     captionMode?: CaptionMode;
+    brandKitId?: string | null;
+    templateId?: string | null;
   };
 
   const prompt = (body.prompt ?? "").trim();
@@ -49,6 +52,16 @@ export async function POST(request: Request) {
   const duration = Math.min(90, Math.max(15, Number(body.duration ?? 30)));
   const tone = (body.tone ?? "cinematic") as Tone;
   const workflow = (body.workflow ?? "explainer") as Workflow;
+
+  // Fall back to the workspace default brand kit so every new project is
+  // branded out of the box.
+  let brandKitId = body.brandKitId ?? null;
+  if (brandKitId === null) {
+    brandKitId = await getDefaultBrandKit()
+      .then((kit) => kit?.id ?? null)
+      .catch(() => null);
+  }
+
   const script = await generateScript({
     prompt,
     duration,
@@ -77,6 +90,7 @@ export async function POST(request: Request) {
       language: body.language ?? "en",
       duration,
       script,
+      brandKitId,
     })
     .returning();
 

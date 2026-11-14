@@ -32,6 +32,10 @@ export type Scene = {
   mediaTitle?: string | null;
   mediaCreator?: string | null;
   mediaProvider?: string | null;
+  /** `stock` = licensed clip, `generated` = AI image/video, `upload` = user file. */
+  mediaOrigin?: MediaOrigin;
+  /** Set when `mediaOrigin === "generated"`. */
+  generated?: GeneratedMediaMeta;
   duration: number | null;
   transition: "fade" | "none";
 };
@@ -98,6 +102,9 @@ export type Project = {
   script: VideoScript;
   outputPath: string | null;
   posterPath: string | null;
+  brandKitId?: string | null;
+  /** Hydrated by the Studio/API layer when branding matters for rendering. */
+  brandKit?: BrandKit | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -268,18 +275,113 @@ export const STYLES: Style[] = [
   "corporate",
 ];
 
-export const LANGUAGES = [
-  { id: "en", label: "English" },
-  { id: "es", label: "Spanish" },
-  { id: "fr", label: "French" },
-  { id: "de", label: "German" },
-  { id: "pt", label: "Portuguese" },
-  { id: "it", label: "Italian" },
-  { id: "nl", label: "Dutch" },
-  { id: "pl", label: "Polish" },
-  { id: "tr", label: "Turkish" },
-  { id: "ru", label: "Russian" },
-];
+
 
 export const MAX_SCENES = 12;
 export const MIN_SCENES = 3;
+
+/* ------------------------------------------------------------------ media */
+
+/** Where a scene's visual came from. */
+export type MediaOrigin = "stock" | "generated" | "upload";
+
+export type GeneratedMediaMeta = {
+  /** Prompt actually sent to the image model. */
+  prompt: string;
+  /** Which backend produced it: `openai` | `stability` | `replicate` | `gemini` | `procedural`. */
+  provider: string;
+  /** True when no image API was configured and we composed the frame locally. */
+  fallback?: boolean;
+};
+
+/* ---------------------------------------------------------------- branding */
+
+export type BrandFontId =
+  | "dejavu"
+  | "inter"
+  | "georgia"
+  | "impact"
+  | "courier";
+
+export const BRAND_FONTS: { id: BrandFontId; label: string; assName: string }[] = [
+  { id: "dejavu", label: "DejaVu Sans", assName: "DejaVu Sans" },
+  { id: "inter", label: "Grotesk (sans)", assName: "DejaVu Sans" },
+  { id: "georgia", label: "Editorial (serif)", assName: "DejaVu Serif" },
+  { id: "impact", label: "Poster (heavy)", assName: "DejaVu Sans" },
+  { id: "courier", label: "Terminal (mono)", assName: "DejaVu Sans Mono" },
+];
+
+export type BrandKit = {
+  id: string;
+  name: string;
+  logoPath: string | null;
+  /** Resolved, browser-reachable logo URL (populated by the API layer). */
+  logoUrl?: string | null;
+  primaryColor: string;
+  accentColor: string;
+  font: BrandFontId;
+  introTitle: string | null;
+  introSubtitle: string | null;
+  outroText: string | null;
+  website: string | null;
+  showLogo: boolean;
+  isDefault: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export const BRAND_FONT_ASS_NAME: Record<BrandFontId, string> = {
+  dejavu: "DejaVu Sans",
+  inter: "DejaVu Sans",
+  georgia: "DejaVu Serif",
+  impact: "DejaVu Sans",
+  courier: "DejaVu Sans Mono",
+};
+
+/* ------------------------------------------------------------------ voices */
+
+export type ClonedVoice = {
+  id: string;
+  name: string;
+  provider: "elevenlabs" | "custom";
+  providerVoiceId: string;
+  gender: "male" | "female" | "neutral";
+  accent: string;
+  description: string | null;
+  sampleCount: number;
+  createdAt?: string;
+};
+
+/* --------------------------------------------------------------- languages */
+
+export type LanguageMeta = {
+  id: string;
+  label: string;
+  native: string;
+  /** Neural (Edge) voice used when dubbing into this language. */
+  neuralFemale: string;
+  neuralMale: string;
+};
+
+export const LANGUAGES: LanguageMeta[] = [
+  { id: "en", label: "English", native: "English", neuralFemale: "en-US-AriaNeural", neuralMale: "en-US-GuyNeural" },
+  { id: "es", label: "Spanish", native: "Español", neuralFemale: "es-ES-ElviraNeural", neuralMale: "es-ES-AlvaroNeural" },
+  { id: "fr", label: "French", native: "Français", neuralFemale: "fr-FR-DeniseNeural", neuralMale: "fr-FR-HenriNeural" },
+  { id: "de", label: "German", native: "Deutsch", neuralFemale: "de-DE-KatjaNeural", neuralMale: "de-DE-ConradNeural" },
+  { id: "pt", label: "Portuguese", native: "Português", neuralFemale: "pt-BR-FranciscaNeural", neuralMale: "pt-BR-AntonioNeural" },
+  { id: "it", label: "Italian", native: "Italiano", neuralFemale: "it-IT-ElsaNeural", neuralMale: "it-IT-DiegoNeural" },
+  { id: "nl", label: "Dutch", native: "Nederlands", neuralFemale: "nl-NL-ColetteNeural", neuralMale: "nl-NL-DirkNeural" },
+  { id: "pl", label: "Polish", native: "Polski", neuralFemale: "pl-PL-ZofiaNeural", neuralMale: "pl-PL-MarekNeural" },
+  { id: "tr", label: "Turkish", native: "Türkçe", neuralFemale: "tr-TR-EmelNeural", neuralMale: "tr-TR-AhmetNeural" },
+  { id: "ru", label: "Russian", native: "Русский", neuralFemale: "ru-RU-SvetlanaNeural", neuralMale: "ru-RU-DmitryNeural" },
+  { id: "hi", label: "Hindi", native: "हिन्दी", neuralFemale: "hi-IN-SwaraNeural", neuralMale: "hi-IN-MadhurNeural" },
+  { id: "ja", label: "Japanese", native: "日本語", neuralFemale: "ja-JP-NanamiNeural", neuralMale: "ja-JP-KeitaNeural" },
+  { id: "ko", label: "Korean", native: "한국어", neuralFemale: "ko-KR-SunHiNeural", neuralMale: "ko-KR-InJoonNeural" },
+  { id: "zh", label: "Chinese", native: "中文", neuralFemale: "zh-CN-XiaoxiaoNeural", neuralMale: "zh-CN-YunxiNeural" },
+  { id: "ar", label: "Arabic", native: "العربية", neuralFemale: "ar-EG-SalmaNeural", neuralMale: "ar-EG-ShakirNeural" },
+];
+
+export function getLanguage(id: string): LanguageMeta {
+  return LANGUAGES.find((lang) => lang.id === id) ?? LANGUAGES[0];
+}
+
