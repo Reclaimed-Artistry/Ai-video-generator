@@ -26,7 +26,6 @@ const loadedVoices = new Set<string>();
 
 function loadMespeak() {
   if (mespeakModule) return mespeakModule;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require("mespeak") as typeof import("mespeak");
   const configPath = path.join(mespeakRoot(), "src", "mespeak_config.json");
   const config = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ configPath, "utf8"));

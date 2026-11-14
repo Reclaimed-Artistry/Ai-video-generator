@@ -105,7 +105,7 @@ export default function FootageContactSheet({
                 {/* Sprocket frame header */}
                 <div className="flex items-center justify-between border-b border-line bg-inset px-2.5 py-1.5 font-tech text-[10px] text-ash">
                   <span>
-                    ROLL {String(index + 1).padStart(2, "0")} // {clip.id.toUpperCase()}
+                    ROLL {String(index + 1).padStart(2, "0")} {"//"} {clip.id.toUpperCase()}
                   </span>
                   <span className="text-stone-ink">
                     {highestRaster(clip)} · {clip.portrait ? "9:16" : "16:9"}

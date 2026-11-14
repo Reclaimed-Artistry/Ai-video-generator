@@ -1,25 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "fluid": true,
-  "functions": {
-    "src/app/api/projects/[id]/render/route.ts": {
-      "maxDuration": 300
-    },
-    "src/app/api/projects/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/projects/[id]/command/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/projects/[id]/script/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/tts/preview/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/files/[...file]/route.ts": {
-      "maxDuration": 60
-    }
-  }
+  "fluid": true
 }

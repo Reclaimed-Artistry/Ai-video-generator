@@ -121,7 +121,7 @@ export default async function HomePage() {
             <div className="lg:col-span-7">
               <div className="font-tech inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-amber-cue">
                 <span>Prompt-to-Picture Assembly</span>
-                <span className="text-line-strong">//</span>
+                <span className="text-line-strong">{"//"}</span>
                 <span className="text-stone-ink">240p · 360p · 1080p</span>
               </div>
 

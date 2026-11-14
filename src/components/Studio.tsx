@@ -190,7 +190,7 @@ export default function Studio({
   const hydrated = useRef(false);
   const saveSeqRef = useRef(0);
 
-  const scenes = project.script.scenes ?? [];
+  const scenes = useMemo(() => project.script.scenes ?? [], [project.script.scenes]);
   const activeIndex = useMemo(() => {
     const idx = scenes.findIndex((scene) => scene.id === activeSceneId);
     return idx >= 0 ? idx : 0;
@@ -204,13 +204,14 @@ export default function Studio({
   const musicVolume = project.script.options?.musicVolume ?? 0.16;
 
   const sceneTimings = useMemo(() => {
+    const timings: { id: string; start: number; duration: number; end: number }[] = [];
     let cursor = 0;
-    return scenes.map((scene) => {
+    for (const scene of scenes) {
       const duration = estimateSceneSeconds(scene.narration, scene.duration);
-      const start = cursor;
+      timings.push({ id: scene.id, start: cursor, duration, end: cursor + duration });
       cursor += duration;
-      return { id: scene.id, start, duration, end: cursor };
-    });
+    }
+    return timings;
   }, [scenes]);
 
   const totalEstimatedSeconds = useMemo(
@@ -252,7 +253,9 @@ export default function Studio({
       })
       .catch(() => undefined);
 
-    void searchMedia(initialProject.script.scenes[0]?.mediaQuery ?? "", "all");
+    // Defer the first B-roll search so no state is set synchronously in the effect.
+    const firstQuery = initialProject.script.scenes[0]?.mediaQuery ?? "";
+    void Promise.resolve().then(() => searchMedia(firstQuery, "all"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
