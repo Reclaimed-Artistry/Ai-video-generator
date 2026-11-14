@@ -217,6 +217,10 @@ export async function getProject(id: string): Promise<Project | null> {
 
 export async function listProjects(limit = 24): Promise<Project[]> {
   if (!hasDatabaseUrl()) {
+    // On Vercel without a DB, each serverless instance has isolated /tmp, so
+    // never advertise instance-local IDs that another container can't reopen;
+    // browser client-store hydrates the user's real sequence bin instead.
+    if (process.env.VERCEL === "1") return [];
     return Array.from(readFallbackStore().values())
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
       .slice(0, limit)
