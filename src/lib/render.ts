@@ -17,6 +17,7 @@ import {
   IS_VERCEL,
   isBlobConfigured,
   saveRenderArtifact,
+  storesArtifactsExternally,
 } from "./storage";
 import { estimateWordTimings, synthesizeSpeech, type WordTiming } from "./tts";
 import {
@@ -780,7 +781,7 @@ export async function renderProject(projectId: string): Promise<void> {
     ? await saveRenderArtifact(projectId, "poster.jpg", poster, "image/jpeg")
     : null;
 
-  if (IS_VERCEL || isBlobConfigured()) {
+  if (storesArtifactsExternally()) {
     fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
   } else {
     for (const file of fs.readdirSync(/* turbopackIgnore: true */ dir)) {

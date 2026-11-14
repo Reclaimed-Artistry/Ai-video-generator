@@ -1,13 +1,22 @@
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
-function resolveDatabaseUrl(): string | undefined {
-  return (
-    process.env.DATABASE_URL ||
-    process.env.POSTGRES_URL ||
-    process.env.POSTGRES_PRISMA_URL ||
-    process.env.POSTGRES_URL_NON_POOLING
-  );
+export function resolveDatabaseUrl(): string | undefined {
+  const candidates = [
+    process.env.DATABASE_URL,
+    process.env.POSTGRES_URL,
+    process.env.POSTGRES_PRISMA_URL,
+    process.env.POSTGRES_URL_NON_POOLING,
+  ];
+  for (const candidate of candidates) {
+    const trimmed = candidate?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
+export function hasDatabaseUrl(): boolean {
+  return Boolean(resolveDatabaseUrl());
 }
 
 function shouldUseSsl(connectionString: string): boolean {
@@ -80,6 +89,7 @@ export const db: NodePgDatabase = new Proxy({} as NodePgDatabase, {
  * databases (Neon, Vercel Postgres, Supabase) without requiring a shell step.
  */
 export async function ensureSchema(): Promise<void> {
+  if (!hasDatabaseUrl()) return;
   if (!globalForDb.__appSchemaReady) {
     globalForDb.__appSchemaReady = (async () => {
       const client = getPool();

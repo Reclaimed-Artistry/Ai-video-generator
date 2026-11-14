@@ -203,8 +203,18 @@ export default function Composer() {
           duration,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Failed to draft sequence");
+      const raw = await response.text();
+      let data: { project?: { id: string }; error?: string } = {};
+      try {
+        data = raw ? (JSON.parse(raw) as typeof data) : {};
+      } catch {
+        data = {};
+      }
+      if (!response.ok || !data.project?.id) {
+        throw new Error(
+          data.error ?? `Failed to draft sequence (HTTP ${response.status})`,
+        );
+      }
 
       const projectId: string = data.project.id;
       if (autoRender) {

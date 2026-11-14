@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { del, put } from "@vercel/blob";
 import { eq } from "drizzle-orm";
-import { db, ensureSchema } from "@/db";
+import { db, ensureSchema, hasDatabaseUrl } from "@/db";
 import { projectAssets } from "@/db/schema";
 
 export const IS_VERCEL = process.env.VERCEL === "1";
@@ -26,10 +26,19 @@ export function getProjectScratchDir(projectId: string): string {
   return path.join(getStorageRoot(), "renders", projectId);
 }
 
-export function storageDriverLabel(): "vercel-blob" | "postgres-bytea" | "local-disk" {
+export function storageDriverLabel():
+  | "vercel-blob"
+  | "postgres-bytea"
+  | "ephemeral-tmp"
+  | "local-disk" {
   if (isBlobConfigured()) return "vercel-blob";
-  if (IS_VERCEL) return "postgres-bytea";
+  if (IS_VERCEL && hasDatabaseUrl()) return "postgres-bytea";
+  if (IS_VERCEL) return "ephemeral-tmp";
   return "local-disk";
+}
+
+export function storesArtifactsExternally(): boolean {
+  return isBlobConfigured() || (IS_VERCEL && hasDatabaseUrl());
 }
 
 /**
@@ -57,8 +66,8 @@ export async function saveRenderArtifact(
     return blob.url;
   }
 
-  // Tier 2: Serverless Vercel without Blob token -> persist in PostgreSQL
-  if (IS_VERCEL) {
+  // Tier 2: Serverless Vercel with Postgres (without Blob token) -> persist in PostgreSQL
+  if (IS_VERCEL && hasDatabaseUrl()) {
     await ensureSchema();
     const buffer = fs.readFileSync(/* turbopackIgnore: true */ localFilePath);
     await db
@@ -83,7 +92,7 @@ export async function saveRenderArtifact(
     return key;
   }
 
-  // Tier 3: Local / Docker / Railway persistent volume
+  // Tier 3: Local / Docker / Railway persistent volume (or Vercel /tmp fallback without DB)
   return key;
 }
 
@@ -92,6 +101,7 @@ export async function readDbArtifact(key: string): Promise<{
   contentType: string;
   size: number;
 } | null> {
+  if (!hasDatabaseUrl()) return null;
   await ensureSchema();
   const rows = await db
     .select({
@@ -111,7 +121,6 @@ export async function deleteProjectArtifacts(
   projectId: string,
   urls: (string | null | undefined)[] = [],
 ): Promise<void> {
-  // Clean local scratch / disk directory
   const dir = getProjectScratchDir(projectId);
   try {
     fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
@@ -119,7 +128,6 @@ export async function deleteProjectArtifacts(
     // Ignore missing directory
   }
 
-  // Clean Vercel Blob objects if URLs were stored in Blob
   if (isBlobConfigured()) {
     const blobUrls = urls.filter(
       (value): value is string =>

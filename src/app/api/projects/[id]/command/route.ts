@@ -9,6 +9,7 @@ export const maxDuration = 60;
 type Context = { params: Promise<{ id: string }> };
 
 export async function POST(request: Request, context: Context) {
+  try {
   const { id } = await context.params;
   const project = await getProject(id);
   if (!project) {
@@ -52,4 +53,10 @@ export async function POST(request: Request, context: Context) {
     project: updated,
     changes: result.changes,
   });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Failed to apply command" },
+      { status: 500 },
+    );
+  }
 }
