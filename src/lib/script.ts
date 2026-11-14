@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { chatJSON, textProvider } from "./ai";
 import { defaultMusicForTone } from "./music";
 import {
   hydrateSceneMedia,
@@ -19,6 +20,8 @@ import {
   type Tone,
   type VideoScript,
   type Workflow,
+  type AiStyleId,
+  type VisualMode,
 } from "./types";
 
 type Category = {
@@ -530,6 +533,8 @@ export type GenerateScriptOptions = {
   captionMode?: CaptionMode;
   peopleRepresentation?: PeopleRepresentation;
   title?: string;
+  visualMode?: VisualMode;
+  aiStyle?: AiStyleId;
 };
 
 /**
@@ -704,48 +709,30 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
 }
 
 async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript | null> {
-  const key = process.env.OPENAI_API_KEY;
   const workflow = options.workflow ?? "explainer";
-  if (!key || workflow === "script") return null;
+  if (workflow === "script" || textProvider() === "none") return null;
 
   const count = sceneCountFor(options.duration, workflow);
   const wfMeta = WORKFLOWS[workflow];
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${key}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        temperature: 0.75,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a veteran video director & scriptwriter like InVideo AI. Write natural, vivid, spoken narration (no clichés, no robotic intros). Return strict JSON only.",
-          },
-          {
-            role: "user",
-            content: `Write a ${count}-scene ${wfMeta.label} video script in language "${options.language}" about: "${options.prompt}". Tone: ${options.tone}. Target total duration: ${options.duration}s. Cast / people representation: "${getPeopleRepresentation(options.peopleRepresentation).label}". Each scene narration should be 1-2 natural spoken sentences. Each scene needs a concise caption (max 5 words) and a concrete, real-world stock-video search query (2-4 filmable visual keywords showing real people or real places — NEVER abstract, neon, 3D, or motion-graphic animations). Return JSON: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string}]}`,
-          },
-        ],
-      }),
-    });
-    if (!response.ok) return null;
-    const data = (await response.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) return null;
-    const parsed = JSON.parse(content) as {
+    const reply = await chatJSON<{
       title?: string;
       summary?: string;
-      scenes?: { narration?: string; caption?: string; mediaQuery?: string }[];
-    };
-    if (!parsed.scenes?.length) return null;
+      scenes?: { narration?: string; caption?: string; mediaQuery?: string; visualPrompt?: string }[];
+    }>([
+      {
+        role: "system",
+        content:
+          "You are a veteran video director and scriptwriter. Write natural, vivid, spoken narration (no clichés, no robotic intros). Reply with ONLY a JSON object.",
+      },
+      {
+        role: "user",
+        content: `Write a ${count}-scene ${wfMeta.label} video script in language "${options.language}" about: "${options.prompt}". Tone: ${options.tone}. Target total duration: ${options.duration}s. Cast / people representation: "${getPeopleRepresentation(options.peopleRepresentation).label}". Each scene narration should be 1-2 natural spoken sentences. Each scene needs: a concise caption (max 5 words); a concrete real-world stock-video search query (2-4 filmable keywords showing real people or real places, never abstract or motion-graphic animation); and a visualPrompt: one vivid sentence describing a single striking still image for a text-to-image model (subject, setting, light, camera angle; no text in the image). Return JSON: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string, "visualPrompt": string}]}`,
+      },
+    ]);
+    if (!reply) return null;
+    const parsed = reply.data;
+    if (!Array.isArray(parsed.scenes) || !parsed.scenes.length) return null;
 
     const peopleRepresentation = options.peopleRepresentation ?? "all";
     const topic = cleanTopic(options.prompt);
@@ -777,6 +764,7 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
             narration,
             caption,
             mediaQuery: mediaQuery || scene.mediaQuery?.trim() || topic,
+            aiPrompt: scene.visualPrompt?.trim() || null,
             duration: null,
             transition: idx === 0 ? "fade" : "none",
           },
@@ -795,6 +783,7 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
         musicVolume: options.musicVolume ?? 0.16,
         captionMode: options.captionMode ?? wfMeta.defaultCaptionMode,
         peopleRepresentation,
+        scriptEngine: reply.provider,
       },
     };
   } catch {
@@ -802,18 +791,142 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
   }
 }
 
+/** Fallback image prompt when the AI writer did not supply one. */
+export function defaultVisualPrompt(scene: Pick<Scene, "narration" | "caption" | "mediaQuery">, topic: string): string {
+  const subject = (scene.mediaQuery || scene.caption || topic).trim();
+  const line = scene.narration.replace(/\s+/g, " ").trim().slice(0, 220);
+  return `${subject}, illustrating: ${line}`;
+}
+
 export async function generateScript(
   options: GenerateScriptOptions,
 ): Promise<VideoScript> {
-  const llm = await llmGenerate(options);
-  if (llm) return llm;
-  return localGenerate(options);
+  const script = (await llmGenerate(options)) ?? (await localGenerate(options));
+  const topic = cleanTopic(options.prompt);
+  return {
+    ...script,
+    scenes: script.scenes.map((scene) => ({
+      ...scene,
+      aiPrompt: scene.aiPrompt?.trim() || defaultVisualPrompt(scene, topic),
+    })),
+    options: {
+      ...script.options,
+      visualMode: options.visualMode ?? script.options?.visualMode ?? "stock",
+      aiStyle: options.aiStyle ?? script.options?.aiStyle ?? "cinematic",
+      scriptEngine: script.options?.scriptEngine ?? "built-in",
+    },
+  };
+}
+
+type RegenerateOptions = {
+  prompt: string;
+  tone: Tone;
+  peopleRepresentation?: PeopleRepresentation;
+  /** Optional free-form direction, e.g. "make it funnier" or "mention the price". */
+  instruction?: string;
+};
+
+/**
+ * Rewrite one scene with the best available LLM, using its neighbours as
+ * context. Returns null when no AI provider answers.
+ */
+async function rewriteSceneWithAI(
+  script: VideoScript,
+  sceneIndex: number,
+  options: RegenerateOptions,
+): Promise<{ scene: Scene; engine: string } | null> {
+  if (textProvider() === "none") return null;
+  const scene = script.scenes[sceneIndex];
+  const previous = script.scenes[sceneIndex - 1]?.narration ?? "(this is the opening scene)";
+  const next = script.scenes[sceneIndex + 1]?.narration ?? "(this is the closing scene)";
+  const direction = options.instruction?.trim()
+    ? `Follow this direction from the editor: "${options.instruction.trim().slice(0, 300)}".`
+    : "Make it fresher and more vivid than the current version.";
+  const reply = await chatJSON<{
+    narration?: string;
+    caption?: string;
+    mediaQuery?: string;
+    visualPrompt?: string;
+  }>(
+    [
+      {
+        role: "system",
+        content:
+          "You are a veteran video scriptwriter editing one scene of an existing video. Keep continuity with the surrounding scenes. Reply with ONLY a JSON object.",
+      },
+      {
+        role: "user",
+        content: `Video topic: "${options.prompt}". Tone: ${options.tone}.
+Previous scene narration: "${previous}"
+CURRENT scene narration: "${scene.narration}"
+Next scene narration: "${next}"
+Rewrite the CURRENT scene. ${direction} Narration: 1-2 natural spoken sentences. Caption: max 5 words. mediaQuery: 2-4 filmable real-world stock-video keywords. visualPrompt: one vivid sentence describing a single still image for a text-to-image model (no text in the image).
+Return JSON: {"narration": string, "caption": string, "mediaQuery": string, "visualPrompt": string}`,
+      },
+    ],
+    { timeoutMs: 30_000 },
+  );
+  const narration = reply?.data.narration?.trim();
+  if (!reply || !narration) return null;
+
+  const caption = reply.data.caption?.trim() || scene.caption;
+  const aiPrompt = reply.data.visualPrompt?.trim() || scene.aiPrompt || null;
+  const mediaQueryHint = reply.data.mediaQuery?.trim() || scene.mediaQuery;
+
+  // AI-generated visuals stay; only the words (and image prompt) change.
+  if (scene.mediaSource === "ai" || scene.mediaLocked) {
+    return {
+      scene: { ...scene, narration, caption, aiPrompt, mediaQuery: mediaQueryHint },
+      engine: reply.provider,
+    };
+  }
+
+  const peopleRepresentation =
+    options.peopleRepresentation ?? script.options?.peopleRepresentation ?? "all";
+  const excludeIds = script.scenes
+    .filter((_, i) => i !== sceneIndex)
+    .map((item) => item.mediaId)
+    .filter((id): id is string => Boolean(id));
+  const { asset: liveMatch, mediaQuery } = await matchVideoForNarration({
+    narration: `${mediaQueryHint} ${narration}`.trim(),
+    caption,
+    topicContext: cleanTopic(options.prompt),
+    excludeIds,
+    peopleRepresentation,
+  });
+  const matched =
+    liveMatch ?? matchLocalAsset(mediaQuery || mediaQueryHint, "video", excludeIds, peopleRepresentation);
+  return {
+    scene: sceneFromAsset(
+      { ...scene, narration, caption, aiPrompt, mediaQuery: mediaQuery || mediaQueryHint, mediaLocked: false },
+      matched,
+    ),
+    engine: reply.provider,
+  };
 }
 
 export async function regenerateScene(
   script: VideoScript,
   sceneIndex: number,
-  options: { prompt: string; tone: Tone; peopleRepresentation?: PeopleRepresentation },
+  options: RegenerateOptions,
+): Promise<Scene> {
+  return (await regenerateSceneDetailed(script, sceneIndex, options)).scene;
+}
+
+export async function regenerateSceneDetailed(
+  script: VideoScript,
+  sceneIndex: number,
+  options: RegenerateOptions,
+): Promise<{ scene: Scene; engine: string }> {
+  const ai = await rewriteSceneWithAI(script, sceneIndex, options).catch(() => null);
+  if (ai) return ai;
+  return { scene: await regenerateSceneBuiltIn(script, sceneIndex, options), engine: "built-in" };
+}
+
+async function regenerateSceneBuiltIn(
+  script: VideoScript,
+  sceneIndex: number,
+  options: RegenerateOptions,
 ): Promise<Scene> {
   const scene = script.scenes[sceneIndex];
   const workflow = script.options?.workflow ?? "explainer";
@@ -833,6 +946,9 @@ export async function regenerateScene(
     variant,
   );
   const caption = buildBeatCaption(beat, topic);
+  if (scene.mediaSource === "ai") {
+    return { ...scene, narration, caption };
+  }
   const excludeIds = script.scenes
     .map((item) => item.mediaId)
     .filter((id): id is string => Boolean(id));

@@ -76,6 +76,7 @@ function hydrateProject(project: Project): Project {
       summary: project.script?.summary ?? "",
       scenes,
       options: {
+        ...opts,
         workflow: opts?.workflow ?? "explainer",
         musicTrack: opts?.musicTrack ?? defaultMusicForTone(project.tone || "cinematic"),
         musicVolume: typeof opts?.musicVolume === "number" ? opts.musicVolume : 0.16,
@@ -119,6 +120,7 @@ export function toProject(row: ProjectRow): Project {
       summary: script.summary ?? "",
       scenes,
       options: {
+        ...script.options,
         workflow: script.options?.workflow ?? "explainer",
         musicTrack:
           script.options?.musicTrack ??

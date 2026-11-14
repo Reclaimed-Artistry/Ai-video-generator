@@ -125,3 +125,32 @@ body {
 .tally-dot {
   animation: tally-pulse 1.2s ease-in-out infinite;
 }
+
+/* Live preview of the camera move applied to AI-generated scene images */
+@keyframes ai-push-in {
+  from { transform: scale(1); }
+  to { transform: scale(1.18); }
+}
+@keyframes ai-pull-out {
+  from { transform: scale(1.18); }
+  to { transform: scale(1); }
+}
+@keyframes ai-pan-left {
+  from { transform: scale(1.15) translateX(6.5%); }
+  to { transform: scale(1.15) translateX(-6.5%); }
+}
+@keyframes ai-pan-right {
+  from { transform: scale(1.15) translateX(-6.5%); }
+  to { transform: scale(1.15) translateX(6.5%); }
+}
+.ai-motion-push-in { animation: ai-push-in 6s ease-in-out infinite alternate; }
+.ai-motion-pull-out { animation: ai-pull-out 6s ease-in-out infinite alternate; }
+.ai-motion-pan-left { animation: ai-pan-left 6s ease-in-out infinite alternate; }
+.ai-motion-pan-right { animation: ai-pan-right 6s ease-in-out infinite alternate; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-motion-push-in,
+  .ai-motion-pull-out,
+  .ai-motion-pan-left,
+  .ai-motion-pan-right { animation: none; }
+}

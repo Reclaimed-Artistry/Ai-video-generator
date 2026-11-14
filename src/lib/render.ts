@@ -18,6 +18,7 @@ import {
   getProjectScratchDir,
   IS_VERCEL,
   isBlobConfigured,
+  loadStoredMedia,
   saveRenderArtifact,
   storesArtifactsExternally,
 } from "./storage";
@@ -34,6 +35,7 @@ import {
   type Resolution,
   type Scene,
   type Style,
+  type AiMotion,
 } from "./types";
 
 export function projectDir(id: string): string {
@@ -387,7 +389,53 @@ async function download(url: string, destination: string): Promise<void> {
   }
 }
 
-type ResolvedMedia = { url: string; fallbackUrl?: string; kind: "video" | "generated" };
+const MOTION_CYCLE: AiMotion[] = ["push-in", "pan-right", "pull-out", "pan-left"];
+
+function defaultMotion(index: number): AiMotion {
+  return MOTION_CYCLE[index % MOTION_CYCLE.length];
+}
+
+/**
+ * Turn a still (AI-generated) image into a moving shot: upscale 1.5x for
+ * smooth sub-pixel motion, then push in / pull out / pan across the scene.
+ */
+function cameraMotionFilters(
+  motion: AiMotion,
+  width: number,
+  height: number,
+  duration: number,
+): string[] {
+  const frames = Math.max(1, Math.round(duration * 30));
+  const sw = Math.round((width * 1.5) / 2) * 2;
+  const sh = Math.round((height * 1.5) / 2) * 2;
+  const amount = 0.18;
+  let zoom: string;
+  let x = "iw/2-(iw/zoom/2)";
+  const y = "ih/2-(ih/zoom/2)";
+  switch (motion) {
+    case "pull-out":
+      zoom = `${1 + amount}-${amount}*on/${frames}`;
+      break;
+    case "pan-left":
+      zoom = "1.15";
+      x = `(iw-iw/zoom)*(1-on/${frames})`;
+      break;
+    case "pan-right":
+      zoom = "1.15";
+      x = `(iw-iw/zoom)*on/${frames}`;
+      break;
+    default:
+      zoom = `1+${amount}*on/${frames}`;
+  }
+  return [
+    `scale=${sw}:${sh}:force_original_aspect_ratio=increase`,
+    `crop=${sw}:${sh}`,
+    `zoompan=z='${zoom}':x='${x}':y='${y}':d=1:s=${width}x${height}:fps=30`,
+    "setsar=1",
+  ];
+}
+
+type ResolvedMedia = { url: string; fallbackUrl?: string; kind: "video" | "image" | "generated" };
 
 async function resolveMedia(
   scene: Scene,
@@ -406,6 +454,11 @@ async function resolveMedia(
   const fallbackUrl = localFallbackAsset
     ? pickSource(localFallbackAsset, targetHeight)?.url
     : undefined;
+
+  // Generated (AI) visual: render the stored image with camera motion.
+  if (scene.mediaSource === "ai" && scene.mediaUrl) {
+    return { url: scene.mediaUrl, fallbackUrl, kind: "image" };
+  }
 
   // Reject any stale abstract clip attached to an old project and replace with real footage
   const existingIsAbstract = Boolean(
@@ -537,16 +590,23 @@ async function renderSceneVideo(
   }
 
   let chosenUrl = media.url;
+  let isImage = media.kind === "image";
   const guessExt = (u: string) =>
     u.toLowerCase().includes(".webm") ? "webm" : "mp4";
   let mediaFile = path.join(
     dir,
-    `media-${String(index).padStart(2, "0")}.${guessExt(chosenUrl)}`,
+    `media-${String(index).padStart(2, "0")}.${isImage ? "img" : guessExt(chosenUrl)}`,
   );
 
   try {
-    await download(chosenUrl, mediaFile);
+    if (isImage) {
+      const loaded = await loadStoredMedia(chosenUrl, mediaFile);
+      if (!loaded) await download(chosenUrl, mediaFile);
+    } else {
+      await download(chosenUrl, mediaFile);
+    }
   } catch (err) {
+    isImage = false;
     if (media.fallbackUrl && media.fallbackUrl !== chosenUrl) {
       console.warn(
         `Scene ${index + 1} clip download failed (${err instanceof Error ? err.message : err}); using verified fallback clip`,
@@ -574,15 +634,19 @@ async function renderSceneVideo(
       : 0;
 
   const filters: string[] = [];
-  if (Math.abs(clipSpeed - 1) > 0.01) {
-    filters.push(`setpts=PTS/${clipSpeed.toFixed(2)}`);
+  if (isImage) {
+    filters.push(...cameraMotionFilters(scene.aiMotion ?? defaultMotion(index), width, height, duration));
+  } else {
+    if (Math.abs(clipSpeed - 1) > 0.01) {
+      filters.push(`setpts=PTS/${clipSpeed.toFixed(2)}`);
+    }
+    filters.push(
+      `scale=${width}:${height}:force_original_aspect_ratio=increase`,
+      `crop=${width}:${height}`,
+      "setsar=1",
+      "fps=30",
+    );
   }
-  filters.push(
-    `scale=${width}:${height}:force_original_aspect_ratio=increase`,
-    `crop=${width}:${height}`,
-    "setsar=1",
-    "fps=30",
-  );
 
   const colorGrade = ffmpegColorFilter(scene.mediaFilter);
   if (colorGrade) {
@@ -601,13 +665,18 @@ async function renderSceneVideo(
     filters.push(captionFilter);
   }
 
+  const inputArgs = isImage
+    ? ["-framerate", "30", "-loop", "1", "-i", mediaFile]
+    : [
+        "-stream_loop",
+        "-1",
+        ...(clipStart > 0 ? ["-ss", clipStart.toFixed(2)] : []),
+        "-i",
+        mediaFile,
+      ];
   const args: string[] = [
     "-y",
-    "-stream_loop",
-    "-1",
-    ...(clipStart > 0 ? ["-ss", clipStart.toFixed(2)] : []),
-    "-i",
-    mediaFile,
+    ...inputArgs,
     "-t",
     duration.toFixed(3),
     "-vf",

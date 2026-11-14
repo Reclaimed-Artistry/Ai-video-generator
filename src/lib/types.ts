@@ -148,6 +148,13 @@ export type Scene = {
   mediaSpeed?: number | null; // 0.75x .. 1.5x
   mediaFilter?: MediaFilter | null;
   mediaLocked?: boolean;
+  /** "ai" when the visual is a generated image (rendered with camera motion). */
+  mediaSource?: "stock" | "ai" | null;
+  /** Text-to-image prompt for this scene (written by the AI script writer). */
+  aiPrompt?: string | null;
+  aiStyle?: AiStyleId | null;
+  aiMotion?: AiMotion | null;
+  aiSeed?: number | null;
   duration: number | null;
   transition: "fade" | "none";
 };
@@ -161,6 +168,11 @@ export type ProductionOptions = {
   voiceRateOffset?: number; // -20 to +25 (%)
   autoMatchMedia?: boolean;
   peopleRepresentation?: PeopleRepresentation;
+  /** Where scene visuals come from: licensed stock video or generated images. */
+  visualMode?: VisualMode;
+  aiStyle?: AiStyleId;
+  /** Which engine wrote the script (shown in the studio for transparency). */
+  scriptEngine?: string;
 };
 
 export type VideoScript = {
@@ -405,3 +417,64 @@ export const LANGUAGES = [
 
 export const MAX_SCENES = 12;
 export const MIN_SCENES = 3;
+
+// ─── Generative AI ─────────────────────────────────────────────────────────
+
+export type VisualMode = "stock" | "ai";
+export type AiMotion = "push-in" | "pull-out" | "pan-left" | "pan-right";
+export type AiStyleId =
+  | "cinematic"
+  | "documentary"
+  | "illustration"
+  | "3d"
+  | "anime"
+  | "watercolor"
+  | "product";
+
+export const AI_STYLES: Record<AiStyleId, { label: string; suffix: string }> = {
+  cinematic: {
+    label: "Cinematic photo",
+    suffix: "cinematic film still, anamorphic lens, natural light, shallow depth of field, rich color grade, highly detailed",
+  },
+  documentary: {
+    label: "Documentary",
+    suffix: "documentary photograph, candid, realistic, available light, 35mm, authentic texture",
+  },
+  illustration: {
+    label: "Editorial illustration",
+    suffix: "editorial illustration, clean shapes, limited warm palette, subtle grain, modern magazine style",
+  },
+  "3d": {
+    label: "3D render",
+    suffix: "stylized 3D render, soft global illumination, clay materials, studio lighting, octane",
+  },
+  anime: {
+    label: "Anime",
+    suffix: "anime key visual, detailed background art, soft cel shading, cinematic composition",
+  },
+  watercolor: {
+    label: "Watercolor",
+    suffix: "watercolor painting, loose brush strokes, paper texture, soft washes of color",
+  },
+  product: {
+    label: "Product studio",
+    suffix: "premium product photography, seamless studio backdrop, softbox lighting, crisp reflections",
+  },
+};
+
+export const AI_STYLE_ORDER: AiStyleId[] = [
+  "cinematic",
+  "documentary",
+  "illustration",
+  "3d",
+  "anime",
+  "watercolor",
+  "product",
+];
+
+export const AI_MOTIONS: Record<AiMotion, string> = {
+  "push-in": "Slow push-in",
+  "pull-out": "Slow pull-out",
+  "pan-left": "Pan left",
+  "pan-right": "Pan right",
+};

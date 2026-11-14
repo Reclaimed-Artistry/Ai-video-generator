@@ -143,3 +143,109 @@ export async function deleteProjectArtifacts(
     }
   }
 }
+
+// ─── Generated (AI) images ──────────────────────────────────────────────────
+
+const MAX_INLINE_IMAGE_BYTES = 1_500_000;
+
+function imageExtension(contentType: string): string {
+  if (contentType.includes("png")) return "png";
+  if (contentType.includes("webp")) return "webp";
+  return "jpg";
+}
+
+/**
+ * Persist a generated image once, using the same tiers as rendered masters,
+ * and return a URL the studio can display and the renderer can read back:
+ *  1. Vercel Blob            → https CDN URL
+ *  2. Vercel + Postgres      → /api/files/ai/<project>/<id>.jpg (project_assets)
+ *  3. Local / Docker disk    → /api/files/ai/<project>/<id>.jpg (STORAGE_DIR)
+ *  4. Vercel without storage → data: URL embedded in the project itself
+ */
+export async function saveGeneratedImage(
+  projectId: string | null,
+  data: Buffer,
+  contentType: string,
+): Promise<string> {
+  const owner = projectId && /^[0-9a-f-]{36}$/i.test(projectId) ? projectId : "unsorted";
+  const key = `ai/${owner}/${crypto.randomUUID()}.${imageExtension(contentType)}`;
+
+  if (isBlobConfigured()) {
+    const blob = await put(key, data, {
+      access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType,
+    });
+    return blob.url;
+  }
+
+  if (IS_VERCEL && hasDatabaseUrl() && owner !== "unsorted") {
+    try {
+      await ensureSchema();
+      await db.insert(projectAssets).values({
+        key,
+        projectId: owner,
+        contentType,
+        size: data.length,
+        data,
+        updatedAt: new Date(),
+      });
+      return `/api/files/${key}`;
+    } catch {
+      // Project only exists in the browser (no DB row) → embed below.
+    }
+  }
+
+  if (!IS_VERCEL) {
+    const target = path.join(getStorageRoot(), key);
+    fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(target), { recursive: true });
+    fs.writeFileSync(/* turbopackIgnore: true */ target, data);
+    return `/api/files/${key}`;
+  }
+
+  if (data.length > MAX_INLINE_IMAGE_BYTES) {
+    throw new Error(
+      "This image is too large to keep without storage. Connect Vercel Blob or a Postgres database.",
+    );
+  }
+  return `data:${contentType};base64,${data.toString("base64")}`;
+}
+
+/**
+ * Materialise a stored media reference (data: URL, /api/files/<key>, or an
+ * absolute URL) into a local file for FFmpeg. Returns false for http(s) URLs
+ * so the caller can use its normal downloader.
+ */
+export async function loadStoredMedia(reference: string, destination: string): Promise<boolean> {
+  if (reference.startsWith("data:")) {
+    const comma = reference.indexOf(",");
+    const payload = reference.slice(comma + 1);
+    const isBase64 = reference.slice(0, comma).includes(";base64");
+    fs.writeFileSync(
+      /* turbopackIgnore: true */ destination,
+      isBase64 ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload)),
+    );
+    return true;
+  }
+
+  if (reference.startsWith("/api/files/")) {
+    const key = decodeURIComponent(reference.replace(/^\/api\/files\//, "").split("?")[0]);
+    if (key.split("/").some((part) => part === ".." || part.includes("\\"))) {
+      throw new Error("Invalid media path");
+    }
+    const local = path.join(getStorageRoot(), key);
+    if (fs.existsSync(/* turbopackIgnore: true */ local)) {
+      fs.copyFileSync(/* turbopackIgnore: true */ local, destination);
+      return true;
+    }
+    const stored = await readDbArtifact(key);
+    if (stored) {
+      fs.writeFileSync(/* turbopackIgnore: true */ destination, stored.data);
+      return true;
+    }
+    throw new Error("Stored image not found");
+  }
+
+  return false;
+}

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createProject, listProjects } from "@/lib/projects";
 import { generateScript } from "@/lib/script";
+import { AI_STYLES } from "@/lib/types";
 import type {
   AspectRatio,
   CaptionMode,
@@ -10,6 +11,8 @@ import type {
   Style,
   Tone,
   Workflow,
+  AiStyleId,
+  VisualMode,
 } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -45,6 +48,8 @@ export async function POST(request: Request) {
       musicVolume?: number;
       captionMode?: CaptionMode;
       peopleRepresentation?: PeopleRepresentation;
+      visualMode?: VisualMode;
+      aiStyle?: AiStyleId;
     };
 
     const prompt = (body.prompt ?? "").trim();
@@ -68,6 +73,8 @@ export async function POST(request: Request) {
       captionMode: body.captionMode,
       peopleRepresentation,
       title: body.title,
+      visualMode: body.visualMode === "ai" ? "ai" : "stock",
+      aiStyle: body.aiStyle && body.aiStyle in AI_STYLES ? body.aiStyle : undefined,
     });
 
     const project = await createProject({

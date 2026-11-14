@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getProject, updateProject } from "@/lib/projects";
-import { regenerateScene } from "@/lib/script";
+import { regenerateSceneDetailed } from "@/lib/script";
 import type { Scene } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -42,6 +42,7 @@ export async function POST(request: Request, context: Context) {
     const { id, sceneId } = await context.params;
     const body = (await request.json().catch(() => ({}))) as {
       project?: import("@/lib/types").Project;
+      instruction?: string;
     };
     const project = (await getProject(id)) ?? body.project ?? null;
     if (!project) {
@@ -53,9 +54,10 @@ export async function POST(request: Request, context: Context) {
       return NextResponse.json({ error: "Scene not found" }, { status: 404 });
     }
 
-    const next = await regenerateScene(project.script, index, {
+    const { scene: next, engine } = await regenerateSceneDetailed(project.script, index, {
       prompt: project.prompt,
       tone: project.tone,
+      instruction: typeof body.instruction === "string" ? body.instruction : undefined,
     });
 
     const scenes = project.script.scenes.map((scene, sceneIndex) =>
@@ -75,7 +77,7 @@ export async function POST(request: Request, context: Context) {
       stage: "Scene rewritten",
       updatedAt: new Date().toISOString(),
     };
-    return NextResponse.json({ project: updated });
+    return NextResponse.json({ project: updated, engine });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to rewrite scene" },

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, FileText, Loader2, Music, Play, Square, Users, Volume2 } from "lucide-react";
+import { ArrowRight, FileText, Loader2, Music, Play, Sparkles, Square, Users, Volume2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AspectGlyph, AudioMeter } from "@/components/BrandMark";
@@ -23,6 +23,10 @@ import {
   type Resolution,
   type Tone,
   type Workflow,
+  AI_STYLE_ORDER,
+  AI_STYLES,
+  type AiStyleId,
+  type VisualMode,
 } from "@/lib/types";
 import { VOICES } from "@/lib/voices";
 
@@ -108,6 +112,8 @@ export default function Composer() {
   const [captionMode, setCaptionMode] = useState<CaptionMode>("word-highlight");
   const [peopleRepresentation, setPeopleRepresentation] =
     useState<PeopleRepresentation>("all");
+  const [visualMode, setVisualMode] = useState<VisualMode>("stock");
+  const [aiStyle, setAiStyle] = useState<AiStyleId>("cinematic");
   const [duration, setDuration] = useState<number>(30);
   const [loadingMode, setLoadingMode] = useState<"render" | "draft" | null>(null);
   const [auditioning, setAuditioning] = useState(false);
@@ -207,6 +213,8 @@ export default function Composer() {
           captionMode,
           peopleRepresentation,
           duration,
+          visualMode,
+          aiStyle,
         }),
       });
       const raw = await response.text();
@@ -521,7 +529,64 @@ export default function Composer() {
           </label>
         </div>
 
-        {/* Row 3: People / Cast Representation (Real-world footage only) */}
+        {/* Row 3: Visual source — licensed stock video or AI-generated images */}
+        <div className="mt-3 rounded-[3px] border border-line bg-inset/60 p-2.5">
+          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+            <span className="font-tech inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-stone-ink">
+              <Sparkles className="h-3 w-3 text-amber-cue" />
+              <span>Visuals</span>
+            </span>
+            <span className="font-tech text-[10px] text-ash">
+              {visualMode === "ai"
+                ? "Generated for each scene, animated with camera moves"
+                : "Real stock video matched to every line"}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <div role="radiogroup" aria-label="Visual source" className="inline-flex rounded-[3px] border border-line bg-canvas p-0.5">
+              {(
+                [
+                  ["stock", "Stock video"],
+                  ["ai", "AI-generated"],
+                ] as const
+              ).map(([id, label]) => {
+                const active = visualMode === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setVisualMode(id)}
+                    className={`rounded-[2px] px-2.5 py-1 font-tech text-[10px] uppercase tracking-[0.06em] transition-colors ${
+                      active
+                        ? "bg-amber-cue font-semibold text-[#14110A]"
+                        : "text-stone-ink hover:text-paper"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            {visualMode === "ai" ? (
+              <select
+                aria-label="AI art style"
+                value={aiStyle}
+                onChange={(event) => setAiStyle(event.target.value as AiStyleId)}
+                className="rounded-[3px] border border-line bg-canvas px-2.5 py-1 text-xs text-paper outline-none focus:border-amber-cue"
+              >
+                {AI_STYLE_ORDER.map((id) => (
+                  <option key={id} value={id} className="bg-panel">
+                    {AI_STYLES[id].label}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Row 4: People / Cast Representation (Real-world footage only) */}
         <div className="mt-3 rounded-[3px] border border-line bg-inset/60 p-2.5">
           <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
             <span className="font-tech inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-stone-ink">

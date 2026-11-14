@@ -32,10 +32,30 @@ finished H.264/AAC MP4 master at **240p, 360p, or 1080p**.
 Next.js 16 (App Router) · React 19 · Tailwind CSS v4 · Drizzle ORM ·
 PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react`.
 
+## Generative AI
+
+| Feature | Where | What it does |
+| --- | --- | --- |
+| **AI script writer** | Home page brief | An LLM writes the narration, captions, stock-footage queries and an image prompt for every scene |
+| **AI visuals** | Home page → *Visuals: AI-generated*, or Studio → **AI** tab | Text-to-image for each scene in 7 art styles, animated with a camera move (push-in, pull-out, pan) so every shot moves |
+| **Generate all scenes** | Studio → **AI** tab | Fills every scene with AI visuals, with progress, auto-retry and cancel |
+| **AI rewrite** | Studio → **AI** tab | Rewrites one scene's narration and caption, optionally following a direction ("punchier", "mention the price") |
+
+**Engines** (picked automatically, best first):
+
+- **Text:** `OPENAI_API_KEY` (or any OpenAI-compatible API via `OPENAI_BASE_URL`) → `POLLINATIONS_API_KEY` → free Pollinations tier → built-in script engine.
+- **Images:** `POLLINATIONS_API_KEY` (Flux, HD) → `OPENAI_API_KEY` (gpt-image-1) → free Pollinations tier (1024×576).
+
+**Free tier:** works with no keys, but is shared and rate-limited (about one request every 45 seconds per server IP, best effort). The studio shows a countdown and retries automatically; if the AI writer is busy, the built-in engine writes the script. For production traffic, add a key.
+
+Generated images are stored once (Vercel Blob → Postgres → local disk → embedded in the project) and stay locked to their scene, so stock auto-matching never replaces them.
+
 ## API Surface
 
 | Route | Method | Description |
 | --- | --- | --- |
+| `/api/ai/status` | `GET` | Active generative engines (no secrets) |
+| `/api/ai/image` | `POST` | Generate and store a scene image (`prompt`, `style`, `aspect`, `seed`, `projectId`) |
 | `/api/projects` | `GET` / `POST` | List sequences / draft sequence from brief |
 | `/api/projects/[id]` | `GET` / `PATCH` / `DELETE` | Read, autosave, or delete sequence & disk files |
 | `/api/projects/[id]/script` | `POST` | Redraft all cues from project brief |

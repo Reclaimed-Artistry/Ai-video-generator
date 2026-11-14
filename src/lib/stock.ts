@@ -658,6 +658,11 @@ export function hydrateSceneMedia(
   scene: Scene,
   peopleRepresentation: PeopleRepresentation = "all",
 ): Scene {
+  // Generated (AI) visuals are owned by the scene; never swap them for stock.
+  if (scene.mediaSource === "ai" && scene.mediaUrl) {
+    return { ...scene, mediaLocked: true };
+  }
+
   // Reject any legacy abstract clip titles/URLs and re-match to real footage
   const existingLooksAbstract = Boolean(
     scene.mediaTitle &&

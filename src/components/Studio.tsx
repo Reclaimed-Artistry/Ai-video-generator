@@ -21,6 +21,7 @@ import {
   Search,
   Send,
   Sliders,
+  Sparkles,
   Square,
   Terminal,
   Trash2,
@@ -41,6 +42,7 @@ import {
   formatClock,
   formatSmpte,
 } from "@/components/BrandMark";
+import AiPanel from "@/components/AiPanel";
 import {
   loadLocalVideoBlob,
   saveLocalProject,
@@ -78,7 +80,7 @@ import {
 } from "@/lib/types";
 import type { Voice } from "@/lib/voices";
 
-type RightTab = "media" | "voices" | "settings";
+type RightTab = "media" | "voices" | "settings" | "ai";
 type MonitorMode = "storyboard" | "master";
 
 type RenderState = {
@@ -155,7 +157,9 @@ export default function Studio({
   const [activeSceneId, setActiveSceneId] = useState<string>(
     initialProject.script.scenes[0]?.id ?? "",
   );
-  const [tab, setTab] = useState<RightTab>("media");
+  const [tab, setTab] = useState<RightTab>(
+    initialProject.script.options?.visualMode === "ai" ? "ai" : "media",
+  );
   const [monitorMode, setMonitorMode] = useState<MonitorMode>(
     initialProject.status === "done" ? "master" : "storyboard",
   );
@@ -812,6 +816,53 @@ export default function Studio({
       list.splice(target, 0, item);
       return { ...curr, script: { ...curr.script, scenes: list } };
     });
+  }
+
+  function applyAiVisual(sceneId: string, patch: Partial<Scene>) {
+    updateScene(sceneId, patch);
+    if (hasMasterFile) setHasUnrenderedEdits(true);
+  }
+
+  function revertSceneToStock(sceneId: string) {
+    const scene = project.script.scenes.find((s) => s.id === sceneId);
+    if (!scene) return;
+    updateScene(sceneId, {
+      mediaSource: "stock",
+      mediaType: "video",
+      mediaUrl: null,
+      mediaThumb: null,
+      mediaId: null,
+      mediaTitle: null,
+      mediaCreator: null,
+      mediaProvider: null,
+      mediaLocked: false,
+    });
+    void matchSceneToNarration(sceneId, scene.narration, scene.caption, true);
+  }
+
+  async function rewriteSceneWithInstruction(
+    sceneId: string,
+    instruction: string,
+  ): Promise<string | null> {
+    setRewritingSceneId(sceneId);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/scenes/${sceneId}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project, instruction }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.project) {
+        const nextProject = data.project as Project;
+        setProject(nextProject);
+        saveLocalProject(nextProject);
+        if (hasMasterFile) setHasUnrenderedEdits(true);
+        return typeof data.engine === "string" ? data.engine : "built-in";
+      }
+      return null;
+    } finally {
+      setRewritingSceneId(null);
+    }
   }
 
   async function regenerateCue(sceneId: string) {
@@ -1553,7 +1604,21 @@ export default function Studio({
                         : "items-end"
                   } ${monitorFrameClass}`}
                 >
-                  {activeScene?.mediaUrl ? (
+                  {activeScene?.mediaSource === "ai" && activeScene.mediaUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      key={`${activeScene.mediaUrl}-${activeScene.aiMotion ?? "push-in"}`}
+                      src={activeScene.mediaUrl}
+                      alt={activeScene.aiPrompt ?? activeScene.caption}
+                      style={{
+                        filter:
+                          MEDIA_FILTERS.find(
+                            (f) => f.id === (activeScene.mediaFilter ?? "none"),
+                          )?.css ?? "none",
+                      }}
+                      className={`absolute inset-0 h-full w-full object-cover ai-motion-${activeScene.aiMotion ?? "push-in"}`}
+                    />
+                  ) : activeScene?.mediaUrl ? (
                     <video
                       ref={previewVideoRef}
                       key={activeScene.mediaUrl}
@@ -2132,10 +2197,11 @@ export default function Studio({
 
         {/* RIGHT PANE: Multi-Site Stock Video Bin / VO & Music Booth / Master Specs */}
         <section className="flex flex-col border-t border-line bg-panel xl:max-h-[calc(100vh-57px)] xl:border-l xl:border-t-0">
-          <div className="grid grid-cols-3 border-b border-line bg-inset">
+          <div className="grid grid-cols-4 border-b border-line bg-inset">
             {(
               [
-                ["media", "Stock Video", Film],
+                ["ai", "AI", Sparkles],
+                ["media", "Stock", Film],
                 ["voices", "VO & Music", Volume2],
                 ["settings", "Settings", Sliders],
               ] as const
@@ -2828,6 +2894,22 @@ export default function Studio({
                 </div>
               </div>
             ) : null}
+
+            {/* AI panel stays mounted so a batch keeps generating on other tabs */}
+            <div className={tab === "ai" ? "" : "hidden"}>
+              <AiPanel
+                project={project}
+                activeScene={activeScene}
+                activeIndex={activeIndex}
+                onApplyVisual={applyAiVisual}
+                onRevertToStock={revertSceneToStock}
+                onRewriteScene={rewriteSceneWithInstruction}
+                onSelectScene={(sceneId) => {
+                  setActiveSceneId(sceneId);
+                  setMonitorMode("storyboard");
+                }}
+              />
+            </div>
           </div>
         </section>
       </div>
