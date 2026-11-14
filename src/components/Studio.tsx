@@ -24,7 +24,7 @@ import {
   AspectGlyph,
   AudioMeter,
   countWords,
-  CutlineMark,
+  BrandMark,
   estimateSceneSeconds,
   formatClock,
   formatSmpte,
@@ -525,7 +525,7 @@ export default function Studio({
               <span className="hidden sm:inline">Bin</span>
             </Link>
 
-            <CutlineMark className="hidden h-4 w-4 shrink-0 text-stone-ink md:block" />
+            <BrandMark className="hidden h-4 w-4 shrink-0 text-stone-ink md:block" />
 
             <div className="min-w-0">
               <input
@@ -652,7 +652,7 @@ export default function Studio({
             {hasMasterFile && render.status !== "rendering" ? (
               <a
                 href={downloadUrl}
-                download={`cutline-${project.id.slice(0, 8)}-${project.resolution}.mp4`}
+                download={`reclaimed-artistry-${project.id.slice(0, 8)}-${project.resolution}.mp4`}
                 className="inline-flex items-center gap-1.5 rounded-[3px] border border-nominal/45 bg-nominal/10 px-3 py-1.5 font-tech text-[11px] font-medium text-nominal transition-colors hover:bg-nominal/20"
               >
                 <Download className="h-3 w-3" />

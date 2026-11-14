@@ -91,8 +91,8 @@ export default function Composer() {
       textareaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       setTimeout(() => textareaRef.current?.focus(), 250);
     }
-    window.addEventListener("cutline:use-brief", handleBrief);
-    return () => window.removeEventListener("cutline:use-brief", handleBrief);
+    window.addEventListener("reclaimed-artistry:use-brief", handleBrief);
+    return () => window.removeEventListener("reclaimed-artistry:use-brief", handleBrief);
   }, []);
 
   const raster = useMemo(() => computeRaster(resolution, aspect), [resolution, aspect]);

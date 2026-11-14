@@ -1,4 +1,4 @@
-# Cutline — Prompt-to-Picture Assembly & H.264 Master Desk
+# Reclaimed Artistry — Prompt-to-Picture Assembly & H.264 Master Desk
 
 Write a plain-English production brief, inspect and edit every spoken cue and
 lower-third super in the three-pane NLE Cut Desk, audition 24kHz neural
@@ -48,9 +48,9 @@ PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react
 
 ## Deploy on Vercel (One-Click or GitHub Import)
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FReclaimed-Artistry%2FAi-video-generator&env=DATABASE_URL&project-name=cutline-studio)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FReclaimed-Artistry%2FAi-video-generator&env=DATABASE_URL&project-name=reclaimed-artistry)
 
-Cutline is configured out of the box for **Vercel Fluid Compute**:
+Reclaimed Artistry is configured out of the box for **Vercel Fluid Compute**:
 - **`vercel.json`** enables Fluid Compute (`maxDuration: 300` on `/api/projects/[id]/render`, compatible with both Hobby & Pro).
 - **`after()` (`next/server`)** runs FFmpeg video encoding cleanly after returning HTTP 202.
 - **Zero-migration Postgres bootstrap** automatically creates `projects` and `project_assets` tables on first connection (supports `DATABASE_URL`, `POSTGRES_URL`, or `POSTGRES_PRISMA_URL` with automatic cloud TLS).

@@ -52,8 +52,8 @@ export function getFontsDir(): string | null {
 function ensureFontconfigPath(): string | undefined {
   const fontsDir = getFontsDir();
   if (!fontsDir) return undefined;
-  const confPath = path.join(os.tmpdir(), "cutline-fonts.conf");
-  const cacheDir = path.join(os.tmpdir(), "cutline-fc-cache");
+  const confPath = path.join(os.tmpdir(), "reclaimed-artistry-fonts.conf");
+  const cacheDir = path.join(os.tmpdir(), "reclaimed-artistry-fc-cache");
   try {
     fs.mkdirSync(/* turbopackIgnore: true */ cacheDir, { recursive: true });
     const xml = `<?xml version="1.0"?>

@@ -1,6 +1,6 @@
 import { Plus } from "lucide-react";
 import Link from "next/link";
-import { CutlineMark } from "@/components/BrandMark";
+import { BrandMark } from "@/components/BrandMark";
 import ProjectsBin from "@/components/ProjectsBin";
 import { listProjects } from "@/lib/projects";
 
@@ -15,9 +15,9 @@ export default async function ProjectsPage() {
         <div className="mx-auto flex h-13 max-w-[1380px] items-center justify-between gap-4 px-4 sm:px-6">
           <div className="flex items-center gap-4">
             <Link href="/" className="flex items-center gap-2.5 text-paper">
-              <CutlineMark className="h-5 w-5 text-paper" />
+              <BrandMark className="h-5 w-5 text-paper" />
               <span className="text-[15px] font-semibold tracking-[-0.02em]">
-                Cutline
+                Reclaimed Artistry
               </span>
             </Link>
             <span className="font-tech text-xs text-ash">/</span>

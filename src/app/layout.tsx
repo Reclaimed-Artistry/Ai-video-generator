@@ -24,7 +24,7 @@ const techMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Cutline — Prompt-to-Picture Assembly & H.264 Master Desk",
+  title: "Reclaimed Artistry — Prompt-to-Picture Assembly & H.264 Master Desk",
   description:
     "Write a brief, edit the scene rundown, record neural voiceover, pull licensed B-roll from Pexels & Pixabay, and export H.264 MP4s at 240p, 360p, or 1080p.",
 };

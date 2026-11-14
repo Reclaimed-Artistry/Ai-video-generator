@@ -14,11 +14,11 @@ export function isBlobConfigured(): boolean {
 
 /**
  * Writable scratch directory for FFmpeg scene rendering. On Vercel `/var/task`
- * is read-only, so scratch files always live under `/tmp/cutline-storage`.
+ * is read-only, so scratch files always live under `/tmp/reclaimed-artistry-storage`.
  */
 export function getStorageRoot(): string {
   if (process.env.STORAGE_DIR) return process.env.STORAGE_DIR;
-  if (IS_VERCEL) return path.join(os.tmpdir(), "cutline-storage");
+  if (IS_VERCEL) return path.join(os.tmpdir(), "reclaimed-artistry-storage");
   return path.join(/* turbopackIgnore: true */ process.cwd(), "storage");
 }
 

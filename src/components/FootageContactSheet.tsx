@@ -57,7 +57,7 @@ export default function FootageContactSheet({
     const subject = clip.tags.slice(0, 3).join(", ");
     const prompt = `A 30 second editorial video featuring ${clip.title.toLowerCase()} (${subject})`;
     window.dispatchEvent(
-      new CustomEvent("cutline:use-brief", { detail: { prompt, aspect } }),
+      new CustomEvent("reclaimed-artistry:use-brief", { detail: { prompt, aspect } }),
     );
   }
 

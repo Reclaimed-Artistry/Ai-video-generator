@@ -15,5 +15,5 @@ npx drizzle-kit push \
   --url="$DATABASE_URL" \
   --force
 
-echo "Starting Cutline production server on port ${PORT:-3000}..."
+echo "Starting Reclaimed Artistry production server on port ${PORT:-3000}..."
 exec npx next start -H 0.0.0.0 -p "${PORT:-3000}"

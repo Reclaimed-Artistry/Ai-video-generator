@@ -96,7 +96,7 @@ export default function ProjectsBin({
           </p>
           <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-stone-ink">
             {projects.length === 0
-              ? "Return to the Sequence Slate, write a brief, and Cutline will assemble your scene rundown, moving B-roll, and neural voiceover."
+              ? "Return to the Sequence Slate, write a brief, and Reclaimed Artistry will assemble your scene rundown, moving B-roll, and neural voiceover."
               : "Clear the search filter or switch status tabs above."}
           </p>
           <Link
@@ -241,7 +241,7 @@ export default function ProjectsBin({
                         {isDone && masterUrl ? (
                           <a
                             href={masterUrl}
-                            download={`cutline-${project.id.slice(0, 8)}.mp4`}
+                            download={`reclaimed-artistry-${project.id.slice(0, 8)}.mp4`}
                             className="inline-flex items-center gap-1 rounded-[2px] border border-line bg-panel px-2 py-1 font-tech text-[10px] uppercase text-stone-ink transition-colors hover:border-line-strong hover:text-paper"
                           >
                             <Download className="h-3 w-3" />

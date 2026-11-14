@@ -1,23 +1,23 @@
 databases:
-  - name: cutline-db
-    databaseName: cutline
-    user: cutline
+  - name: reclaimed-artistry-db
+    databaseName: reclaimed_artistry
+    user: reclaimed_artistry
     plan: starter
 
 services:
   - type: web
-    name: cutline-studio
+    name: reclaimed-artistry
     runtime: docker
     plan: starter
     healthCheckPath: /api/health
     disk:
-      name: cutline-renders
+      name: reclaimed-artistry-renders
       mountPath: /app/storage
       sizeGB: 10
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: cutline-db
+          name: reclaimed-artistry-db
           property: connectionString
       - key: STORAGE_DIR
         value: /app/storage

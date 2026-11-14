@@ -1,6 +1,6 @@
 import type { AspectRatio } from "@/lib/types";
 
-export function CutlineMark({ className = "h-5 w-5" }: { className?: string }) {
+export function BrandMark({ className = "h-5 w-5" }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 24 24"
