@@ -1,0 +1,25 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# Next.js build output
+/.next/
+/out/
+/build
+
+# Environment secrets (keep .env.example committed)
+.env
+.env.*
+!.env.example
+
+# Rendered video masters & temporary FFmpeg artifacts
+/storage/
+
+# TypeScript & debug artifacts
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.DS_Store

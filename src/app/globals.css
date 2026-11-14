@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #0b0b0a;
+  --color-panel: #121210;
+  --color-inset: #171714;
+  --color-elevated: #1f1f1b;
+  --color-line: #262521;
+  --color-line-strong: #3a3832;
+  --color-paper: #f2efe9;
+  --color-stone-ink: #a6a196;
+  --color-ash: #6e6a61;
+  --color-amber-cue: #e5a93c;
+  --color-amber-hover: #f0b84d;
+  --color-tally: #d94e34;
+  --color-nominal: #4ca973;
+
+  --font-sans: var(--font-ui), "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-serif: var(--font-editorial), "Instrument Serif", Georgia, serif;
+  --font-mono: var(--font-tech), "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html,
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-paper);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(229, 169, 60, 0.28);
+  color: #f2efe9;
+}
+
+@layer utilities {
+  .font-editorial {
+    font-family: var(--font-serif);
+  }
+
+  .font-tech {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .timecode {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+  }
+
+  .console-surface {
+    background-color: var(--color-panel);
+    border: 1px solid var(--color-line);
+  }
+
+  .inset-well {
+    background-color: var(--color-inset);
+    border: 1px solid var(--color-line);
+  }
+
+  .scroll-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #32302b transparent;
+  }
+
+  .scroll-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scroll-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scroll-thin::-webkit-scrollbar-thumb {
+    background: #32302b;
+    border-radius: 2px;
+  }
+
+  .scroll-thin::-webkit-scrollbar-thumb:hover {
+    background: #47443d;
+  }
+}
+
+@keyframes eq-bounce {
+  0%,
+  100% {
+    transform: scaleY(0.28);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.eq-bar {
+  transform-origin: bottom;
+  animation: eq-bounce 0.72s ease-in-out infinite;
+}
+
+.eq-bar:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.eq-bar:nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+.eq-bar:nth-child(4) {
+  animation-delay: 0.08s;
+}
+
+@keyframes tally-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.tally-dot {
+  animation: tally-pulse 1.2s ease-in-out infinite;
+}

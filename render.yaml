@@ -1,0 +1,31 @@
+databases:
+  - name: cutline-db
+    databaseName: cutline
+    user: cutline
+    plan: starter
+
+services:
+  - type: web
+    name: cutline-studio
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    disk:
+      name: cutline-renders
+      mountPath: /app/storage
+      sizeGB: 10
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cutline-db
+          property: connectionString
+      - key: STORAGE_DIR
+        value: /app/storage
+      - key: PEXELS_API_KEY
+        sync: false
+      - key: PIXABAY_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
