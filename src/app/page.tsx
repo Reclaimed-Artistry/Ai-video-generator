@@ -1,6 +1,6 @@
 import { ArrowRight, ArrowUpRight, CheckCircle2, Download, Film } from "lucide-react";
 import Link from "next/link";
-import { ReclaimedMark, Wordmark } from "@/components/BrandMark";
+import { BrandMark } from "@/components/BrandMark";
 import Composer from "@/components/Composer";
 import FootageContactSheet from "@/components/FootageContactSheet";
 import ReferenceMonitor from "@/components/ReferenceMonitor";
@@ -77,8 +77,10 @@ export default async function HomePage() {
         <div className="mx-auto flex h-13 max-w-[1380px] items-center justify-between gap-4 px-4 sm:px-6">
           <div className="flex items-center gap-6">
             <Link href="/" className="flex items-center gap-2.5 text-paper">
-              <ReclaimedMark className="h-5 w-5 text-paper" />
-              <Wordmark />
+              <BrandMark className="h-5 w-5 text-paper" />
+              <span className="text-[15px] font-semibold tracking-[-0.02em]">
+                Reclaimed Artistry
+              </span>
             </Link>
             <span className="font-tech hidden border-l border-line pl-4 text-[11px] text-ash lg:inline">
               FFMPEG 7.0 · H.264 / AAC · {VOICES.length} NEURAL VOICES
@@ -130,10 +132,10 @@ export default async function HomePage() {
               </h1>
 
               <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-stone-ink">
-                Paste rough talking points or a one-line concept. Reclaimed Artistry drafts
-                the scene rundown, pulls licensed moving B-roll from Pexels and
-                Pixabay, records a 24kHz neural voiceover, and muxes a finished
-                MP4 on the server.
+                Paste rough talking points or a one-line concept. Reclaimed
+                Artistry drafts the scene rundown, pulls licensed moving B-roll
+                from Pexels and Pixabay, records a 24kHz neural voiceover, and
+                muxes a finished MP4 on the server.
               </p>
 
               <div className="mt-7">
@@ -283,8 +285,9 @@ export default async function HomePage() {
               </h2>
               <p className="mt-3 text-sm leading-relaxed text-stone-ink">
                 Most prompt-to-video tools hide the timeline behind a black box.
-                Reclaimed Artistry exposes every cue, spoken line, lower-third super, and
-                source video file before running a deterministic FFmpeg encode.
+                Reclaimed Artistry exposes every cue, spoken line, lower-third
+                super, and source video file before running a deterministic
+                FFmpeg encode.
               </p>
 
               <dl className="mt-6 divide-y divide-line border-y border-line font-tech text-xs">
@@ -429,8 +432,8 @@ export default async function HomePage() {
       <footer className="border-t border-line bg-panel/60">
         <div className="mx-auto flex max-w-[1380px] flex-col justify-between gap-4 px-4 py-7 text-xs text-ash sm:flex-row sm:items-center sm:px-6">
           <div className="flex items-center gap-3">
-            <ReclaimedMark className="h-4 w-4 text-stone-ink" />
-            <Wordmark className="text-stone-ink opacity-90" />
+            <BrandMark className="h-4 w-4 text-stone-ink" />
+            <span className="font-medium text-stone-ink">Reclaimed Artistry</span>
             <span className="font-tech text-[11px]">
               · PostgreSQL + Drizzle · FFmpeg libx264/libass · 24kHz Neural TTS
             </span>

@@ -30,7 +30,7 @@ function shouldUseSsl(connectionString: string): boolean {
 const globalForDb = globalThis as typeof globalThis & {
   __arenaNextJsPostgresqlPool?: Pool;
   __arenaNextJsPostgresqlDb?: NodePgDatabase;
-  __reclaimedArtistrySchemaReady?: Promise<void> | null;
+  __appSchemaReady?: Promise<void> | null;
 };
 
 function createPool(): Pool {
@@ -80,8 +80,8 @@ export const db: NodePgDatabase = new Proxy({} as NodePgDatabase, {
  * databases (Neon, Vercel Postgres, Supabase) without requiring a shell step.
  */
 export async function ensureSchema(): Promise<void> {
-  if (!globalForDb.__reclaimedArtistrySchemaReady) {
-    globalForDb.__reclaimedArtistrySchemaReady = (async () => {
+  if (!globalForDb.__appSchemaReady) {
+    globalForDb.__appSchemaReady = (async () => {
       const client = getPool();
       await client.query(`
         CREATE TABLE IF NOT EXISTS projects (
@@ -117,9 +117,9 @@ export async function ensureSchema(): Promise<void> {
         );
       `);
     })().catch((err) => {
-      globalForDb.__reclaimedArtistrySchemaReady = null;
+      globalForDb.__appSchemaReady = null;
       throw err;
     });
   }
-  await globalForDb.__reclaimedArtistrySchemaReady;
+  await globalForDb.__appSchemaReady;
 }
