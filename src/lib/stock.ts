@@ -168,7 +168,7 @@ const VISUAL_CONCEPTS: VisualConcept[] = [
     displayQuery: "modern house interior",
   },
   {
-    triggers: ["guitar", "piano", "music", "musician", "concert", "band", "singer", "dj", "audio", "podcast", "microphone", "studio"],
+    triggers: ["guitar", "piano", "music", "musician", "concert", "band", "singer", "dj", "audio", "podcast", "microphone", "music studio", "recording studio"],
     slugs: ["guitar", "music", "concert", "microphone"],
     displayQuery: "music guitar studio",
   },
@@ -198,7 +198,7 @@ const VISUAL_CONCEPTS: VisualConcept[] = [
     displayQuery: "sunrise morning routine",
   },
   {
-    triggers: ["art", "painting", "craft", "woodworking", "pottery", "sculpture", "artist", "reclaimed", "handmade", "artisan", "gallery"],
+    triggers: ["art", "artistry", "painting", "woodworking", "woodcraft", "pottery", "ceramic", "ceramics", "sculpture", "artist", "reclaimed", "handmade", "artisan", "gallery", "handcraft"],
     slugs: ["painting", "art", "craft", "artist"],
     displayQuery: "artisan craft studio",
   },
