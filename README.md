@@ -57,6 +57,7 @@ offline. Scripts use a deterministic built-in engine, narration uses
 | `DATABASE_URL` | Production Postgres (falls back to embedded PGlite) |
 | `OPENAI_API_KEY` | LLM script drafting + DALL·E imagery |
 | `STABILITY_API_KEY` / `REPLICATE_API_TOKEN` / `GEMINI_API_KEY` | Alternative image providers |
+| `POLLINATIONS_API_KEY` | [Pollinations](https://pollinations.ai) scene images + LLM script drafting (OpenAI-compatible). Used when no other image/LLM key is set. Optional `POLLINATIONS_IMAGE_MODEL` / `POLLINATIONS_TEXT_MODEL` overrides. Server-side only — never expose an `sk_` key in the browser. |
 | `ELEVENLABS_API_KEY` | Neural voices + real voice cloning |
 | `PEXELS_API_KEY` / `PIXABAY_API_KEY` | Live stock video search |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob CDN storage for masters |

@@ -651,22 +651,65 @@ const wfMeta = workflowMeta(workflow);
   };
 }
 
+/**
+ * Resolves which OpenAI-compatible Chat Completions endpoint to use.
+ *
+ * Pollinations speaks the same wire format, so it drops in as a fallback —
+ * only the base URL, the key and the default model differ.
+ */
+function llmConfig(): { baseUrl: string; key: string; model: string } | null {
+  if (process.env.OPENAI_API_KEY) {
+    return {
+      baseUrl: "https://api.openai.com/v1",
+      key: process.env.OPENAI_API_KEY,
+      model: process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini",
+    };
+  }
+  if (process.env.POLLINATIONS_API_KEY) {
+    return {
+      baseUrl: "https://gen.pollinations.ai/v1",
+      key: process.env.POLLINATIONS_API_KEY,
+      model: process.env.POLLINATIONS_TEXT_MODEL || "openai/gpt-5.4-nano",
+    };
+  }
+  return null;
+}
+
+/**
+ * Not every model honours `response_format: json_object` — some wrap the JSON
+ * in a ```json fence or add a chatty preamble. Recover the object anyway so a
+ * formatting quirk does not silently drop us to the offline beat engine.
+ */
+function parseJsonLoose(text: string): unknown {
+  const trimmed = text.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)```$/i.exec(trimmed);
+  const body = fenced ? fenced[1].trim() : trimmed;
+  try {
+    return JSON.parse(body);
+  } catch {
+    const start = body.indexOf("{");
+    const end = body.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(body.slice(start, end + 1));
+    throw new Error("Model did not return JSON");
+  }
+}
+
 async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript | null> {
-  const key = process.env.OPENAI_API_KEY;
+  const llm = llmConfig();
   const workflow = asWorkflow(options.workflow);
-  if (!key || workflow === "script") return null;
+  if (!llm || workflow === "script") return null;
 
   const count = sceneCountFor(options.duration, workflow);
   const wfMeta = workflowMeta(workflow);
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch(`${llm.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${key}`,
+        authorization: `Bearer ${llm.key}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
+        model: llm.model,
         temperature: 0.75,
         response_format: { type: "json_object" },
         messages: [
@@ -688,7 +731,7 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
     };
     const content = data.choices?.[0]?.message?.content;
     if (!content) return null;
-    const parsed = JSON.parse(content) as {
+    const parsed = parseJsonLoose(content) as {
       title?: string;
       summary?: string;
       scenes?: { narration?: string; caption?: string; mediaQuery?: string }[];
