@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { getStorageRoot, readDbArtifact } from "@/lib/storage";
 
 export const runtime = "nodejs";
@@ -90,7 +91,7 @@ export async function GET(request: Request, context: Context) {
             start,
             end: safeEnd,
           });
-          return new Response(chunk as unknown as ReadableStream, {
+          return new Response(Readable.toWeb(chunk) as ReadableStream, {
             status: 206,
             headers: {
               "content-type": type,
@@ -105,7 +106,7 @@ export async function GET(request: Request, context: Context) {
     }
 
     const stream = fs.createReadStream(/* turbopackIgnore: true */ target);
-    return new Response(stream as unknown as ReadableStream, {
+    return new Response(Readable.toWeb(stream) as ReadableStream, {
       headers: {
         "content-type": type,
         "content-length": String(stat.size),

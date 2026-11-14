@@ -420,7 +420,15 @@ export const MIN_SCENES = 3;
 
 // ─── Generative AI ─────────────────────────────────────────────────────────
 
-export type VisualMode = "stock" | "ai";
+/** "ai" is the legacy value from before AI video existed (= AI images). */
+export type VisualMode = "stock" | "ai-video" | "ai-image" | "ai";
+export type AiKind = "video" | "image";
+
+export function aiKindForMode(mode: VisualMode | undefined): AiKind | null {
+  if (mode === "ai-video") return "video";
+  if (mode === "ai-image" || mode === "ai") return "image";
+  return null;
+}
 export type AiMotion = "push-in" | "pull-out" | "pan-left" | "pan-right";
 export type AiStyleId =
   | "cinematic"

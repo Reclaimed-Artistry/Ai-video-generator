@@ -37,7 +37,9 @@ PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react
 | Feature | Where | What it does |
 | --- | --- | --- |
 | **AI script writer** | Home page brief | An LLM writes the narration, captions, stock-footage queries and an image prompt for every scene |
-| **AI visuals** | Home page → *Visuals: AI-generated*, or Studio → **AI** tab | Text-to-image for each scene in 7 art styles, animated with a camera move (push-in, pull-out, pan) so every shot moves |
+| **AI video** | Home page → *Visuals: AI video*, Studio → **AI** tab, or the AI edit box | A real text-to-video clip generated for each scene (Pollinations: Wan, Seedance, Veo, Kling…). Clips are stored once and slowed slightly to fill longer scenes |
+| **AI images** | Home page → *Visuals: AI images*, Studio → **AI** tab, or the AI edit box | Text-to-image in 7 looks, animated with a camera move (push-in, pull-out, pan) so every shot moves |
+| **Ask in plain English** | Studio → AI edit box | “generate a video of waves at dusk for scene 2”, “make an image of a cabin for all scenes”, “create AI videos for every scene” |
 | **Generate all scenes** | Studio → **AI** tab | Fills every scene with AI visuals, with progress, auto-retry and cancel |
 | **AI rewrite** | Studio → **AI** tab | Rewrites one scene's narration and caption, optionally following a direction ("punchier", "mention the price") |
 
@@ -45,10 +47,11 @@ PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react
 
 - **Text:** `OPENAI_API_KEY` (or any OpenAI-compatible API via `OPENAI_BASE_URL`) → `POLLINATIONS_API_KEY` → free Pollinations tier → built-in script engine.
 - **Images:** `POLLINATIONS_API_KEY` (Flux, HD) → `OPENAI_API_KEY` (gpt-image-1) → free Pollinations tier (1024×576).
+- **Video:** `POLLINATIONS_API_KEY` (default model `alibaba/wan-2.2-fast`, 5-second clips; change with `AI_VIDEO_MODEL` / `AI_VIDEO_DURATION`). There is **no free text-to-video service**: without a key, “AI video” falls back to a motion shot made from an AI image, and the studio says so. (OpenAI's Sora video API was shut down in September 2026, so it is not used.)
 
 **Free tier:** works with no keys, but is shared and rate-limited (about one request every 45 seconds per server IP, best effort). The studio shows a countdown and retries automatically; if the AI writer is busy, the built-in engine writes the script. For production traffic, add a key.
 
-Generated images are stored once (Vercel Blob → Postgres → local disk → embedded in the project) and stay locked to their scene, so stock auto-matching never replaces them.
+Generated videos and images are stored once (Vercel Blob → Postgres → local disk → embedded in the project) and stay locked to their scene, so stock auto-matching never replaces them.
 
 ## API Surface
 
@@ -56,6 +59,7 @@ Generated images are stored once (Vercel Blob → Postgres → local disk → em
 | --- | --- | --- |
 | `/api/ai/status` | `GET` | Active generative engines (no secrets) |
 | `/api/ai/image` | `POST` | Generate and store a scene image (`prompt`, `style`, `aspect`, `seed`, `projectId`) |
+| `/api/ai/video` | `POST` | Generate and store a text-to-video clip + poster (409 when no video key is set) |
 | `/api/projects` | `GET` / `POST` | List sequences / draft sequence from brief |
 | `/api/projects/[id]` | `GET` / `PATCH` / `DELETE` | Read, autosave, or delete sequence & disk files |
 | `/api/projects/[id]/script` | `POST` | Redraft all cues from project brief |

@@ -537,9 +537,11 @@ export default function Composer() {
               <span>Visuals</span>
             </span>
             <span className="font-tech text-[10px] text-ash">
-              {visualMode === "ai"
-                ? "Generated for each scene, animated with camera moves"
-                : "Real stock video matched to every line"}
+              {visualMode === "ai-video"
+                ? "A text-to-video clip generated for every scene"
+                : visualMode === "ai-image"
+                  ? "AI images for every scene, animated with camera moves"
+                  : "Real stock video matched to every line"}
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -547,7 +549,8 @@ export default function Composer() {
               {(
                 [
                   ["stock", "Stock video"],
-                  ["ai", "AI-generated"],
+                  ["ai-video", "AI video"],
+                  ["ai-image", "AI images"],
                 ] as const
               ).map(([id, label]) => {
                 const active = visualMode === id;
@@ -569,7 +572,7 @@ export default function Composer() {
                 );
               })}
             </div>
-            {visualMode === "ai" ? (
+            {visualMode !== "stock" ? (
               <select
                 aria-label="AI art style"
                 value={aiStyle}

@@ -73,7 +73,12 @@ export async function POST(request: Request) {
       captionMode: body.captionMode,
       peopleRepresentation,
       title: body.title,
-      visualMode: body.visualMode === "ai" ? "ai" : "stock",
+      visualMode:
+        body.visualMode === "ai-video" || body.visualMode === "ai-image"
+          ? body.visualMode
+          : body.visualMode === "ai"
+            ? "ai-image"
+            : "stock",
       aiStyle: body.aiStyle && body.aiStyle in AI_STYLES ? body.aiStyle : undefined,
     });
 

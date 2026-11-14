@@ -43,6 +43,7 @@ import {
   formatSmpte,
 } from "@/components/BrandMark";
 import AiPanel from "@/components/AiPanel";
+import { AI_GENERATE_EVENT, parseGenerateIntent } from "@/lib/ai-client";
 import {
   loadLocalVideoBlob,
   saveLocalProject,
@@ -158,7 +159,10 @@ export default function Studio({
     initialProject.script.scenes[0]?.id ?? "",
   );
   const [tab, setTab] = useState<RightTab>(
-    initialProject.script.options?.visualMode === "ai" ? "ai" : "media",
+    initialProject.script.options?.visualMode &&
+      initialProject.script.options.visualMode !== "stock"
+      ? "ai"
+      : "media",
   );
   const [monitorMode, setMonitorMode] = useState<MonitorMode>(
     initialProject.status === "done" ? "master" : "storyboard",
@@ -1077,6 +1081,30 @@ export default function Studio({
   async function submitEditCommand(rawCmd?: string) {
     const command = (rawCmd ?? commandInput).trim();
     if (!command || commandRunning) return;
+
+    // "Generate a video/image of …" requests go to the generative AI panel.
+    const intent = parseGenerateIntent(command);
+    if (intent) {
+      setTab("ai");
+      setMonitorMode("storyboard");
+      window.dispatchEvent(new CustomEvent(AI_GENERATE_EVENT, { detail: intent }));
+      const where =
+        intent.target === "all"
+          ? "every scene"
+          : typeof intent.target === "number"
+            ? `scene ${intent.target + 1}`
+            : `scene ${activeIndex + 1}`;
+      setCommandInput("");
+      setCommandFeedback({
+        ok: true,
+        lines: [
+          `Generating AI ${intent.kind} for ${where}${intent.prompt ? `: “${intent.prompt}”` : ""}.`,
+          "Progress is shown in the AI tab.",
+        ],
+      });
+      return;
+    }
+
     setCommandRunning(true);
     setCommandFeedback(null);
     try {
@@ -1604,7 +1632,9 @@ export default function Studio({
                         : "items-end"
                   } ${monitorFrameClass}`}
                 >
-                  {activeScene?.mediaSource === "ai" && activeScene.mediaUrl ? (
+                  {activeScene?.mediaSource === "ai" &&
+                  activeScene.mediaType !== "video" &&
+                  activeScene.mediaUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
                       key={`${activeScene.mediaUrl}-${activeScene.aiMotion ?? "push-in"}`}

@@ -2,6 +2,7 @@
 
 import {
   Check,
+  Clapperboard,
   ImagePlus,
   Loader2,
   RefreshCw,
@@ -12,13 +13,20 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  generateWithRetry,
+  AI_GENERATE_EVENT,
+  generateSceneImage,
+  generateSceneVideo,
+  VideoUnavailableError,
+  withRetry,
   type AiStatus,
+  type GenerateIntent,
 } from "@/lib/ai-client";
 import {
   AI_MOTIONS,
   AI_STYLE_ORDER,
   AI_STYLES,
+  aiKindForMode,
+  type AiKind,
   type AiMotion,
   type AiStyleId,
   type Project,
@@ -35,6 +43,15 @@ type Props = {
   onSelectScene: (sceneId: string) => void;
 };
 
+type GenerateOptions = {
+  kind: AiKind;
+  prompt: string;
+  style: AiStyleId;
+  motion: AiMotion;
+  newSeed: boolean;
+  signal: AbortSignal;
+};
+
 const MOTION_ORDER: AiMotion[] = ["push-in", "pan-right", "pull-out", "pan-left"];
 
 function engineName(provider: string): string {
@@ -42,6 +59,10 @@ function engineName(provider: string): string {
   if (provider === "pollinations") return "Pollinations";
   if (provider === "pollinations-free") return "Pollinations (free)";
   return "built-in engine";
+}
+
+function shortModel(model: string): string {
+  return model.split("/").pop() || model;
 }
 
 export default function AiPanel({
@@ -57,14 +78,19 @@ export default function AiPanel({
   const defaultStyle: AiStyleId = project.script.options?.aiStyle ?? "cinematic";
 
   const [status, setStatus] = useState<AiStatus | null>(null);
+  const [kind, setKind] = useState<AiKind>(
+    aiKindForMode(project.script.options?.visualMode) ?? "video",
+  );
   const [prompt, setPrompt] = useState(activeScene?.aiPrompt ?? "");
   const [style, setStyle] = useState<AiStyleId>(activeScene?.aiStyle ?? defaultStyle);
   const [motion, setMotion] = useState<AiMotion>(
     activeScene?.aiMotion ?? MOTION_ORDER[activeIndex % MOTION_ORDER.length],
   );
   const [busySceneId, setBusySceneId] = useState<string | null>(null);
+  const [busyKind, setBusyKind] = useState<AiKind>("video");
   const [waitSeconds, setWaitSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const [batch, setBatch] = useState<{ done: number; total: number; current: number } | null>(null);
   const batchAbort = useRef<AbortController | null>(null);
@@ -74,6 +100,8 @@ export default function AiPanel({
   const [instruction, setInstruction] = useState("");
   const [rewriting, setRewriting] = useState(false);
   const [rewriteNote, setRewriteNote] = useState<string | null>(null);
+
+  const videoReady = status ? status.video === "pollinations" : true;
 
   useEffect(() => {
     fetch("/api/ai/status")
@@ -93,69 +121,111 @@ export default function AiPanel({
     setRewriteNote(null);
   }
 
-  const applyImage = useCallback(
-    (scene: Scene, url: string, seed: number, provider: string, opts: { prompt: string; style: AiStyleId; motion: AiMotion }) => {
+  /**
+   * Generate a visual for one scene. Video is attempted first when asked;
+   * without a video provider it falls back to a motion shot from an AI image.
+   */
+  const generateFor = useCallback(
+    async (scene: Scene, opts: GenerateOptions): Promise<void> => {
+      const base = {
+        style: opts.style,
+        aspect: project.aspect,
+        projectId: project.id,
+        signal: opts.signal,
+        seed: opts.newSeed || !scene.aiSeed ? undefined : scene.aiSeed,
+      };
+
+      if (opts.kind === "video") {
+        try {
+          const clip = await withRetry(
+            () => generateSceneVideo({ ...base, prompt: opts.prompt }),
+            setWaitSeconds,
+            opts.signal,
+          );
+          onApplyVisual(scene.id, {
+            mediaSource: "ai",
+            mediaType: "video",
+            mediaUrl: clip.url,
+            mediaThumb: clip.thumbUrl,
+            mediaId: `ai-video-${clip.seed}`,
+            mediaTitle: `AI video · ${shortModel(clip.model)}`,
+            mediaCreator: engineName(clip.provider),
+            mediaProvider: "ai",
+            mediaLocked: true,
+            mediaSpeed: null,
+            mediaStart: null,
+            aiPrompt: opts.prompt,
+            aiStyle: opts.style,
+            aiSeed: clip.seed,
+          });
+          return;
+        } catch (err) {
+          if (!(err instanceof VideoUnavailableError)) throw err;
+          setNotice(
+            "No AI video key is configured, so this is a motion shot made from an AI image. Add POLLINATIONS_API_KEY for real AI video.",
+          );
+        }
+      }
+
+      const image = await withRetry(
+        () => generateSceneImage({ ...base, prompt: opts.prompt }),
+        setWaitSeconds,
+        opts.signal,
+      );
       onApplyVisual(scene.id, {
         mediaSource: "ai",
         mediaType: "photo",
-        mediaUrl: url,
-        mediaThumb: url,
-        mediaId: `ai-${seed}`,
-        mediaTitle: `AI · ${AI_STYLES[opts.style].label}`,
-        mediaCreator: engineName(provider),
+        mediaUrl: image.url,
+        mediaThumb: image.url,
+        mediaId: `ai-${image.seed}`,
+        mediaTitle: `AI image · ${AI_STYLES[opts.style].label}`,
+        mediaCreator: engineName(image.provider),
         mediaProvider: "ai",
         mediaLocked: true,
         aiPrompt: opts.prompt,
         aiStyle: opts.style,
         aiMotion: opts.motion,
-        aiSeed: seed,
+        aiSeed: image.seed,
       });
     },
-    [onApplyVisual],
+    [project.aspect, project.id, onApplyVisual],
   );
 
-  async function generateForActive(newSeed: boolean) {
-    if (!activeScene) return;
-    const scene = activeScene;
-    const usePrompt = prompt.trim() || scene.aiPrompt || scene.narration;
-    if (usePrompt.trim().length < 3) {
-      setError("Describe the image you want first.");
-      return;
-    }
-    singleAbort.current?.abort();
-    const ctrl = new AbortController();
-    singleAbort.current = ctrl;
-    setBusySceneId(scene.id);
-    setError(null);
-    try {
-      const result = await generateWithRetry(
-        {
-          prompt: usePrompt,
-          style,
-          aspect: project.aspect,
-          projectId: project.id,
-          seed: newSeed || !scene.aiSeed ? undefined : scene.aiSeed,
-          signal: ctrl.signal,
-        },
-        setWaitSeconds,
-      );
-      applyImage(scene, result.url, result.seed, result.provider, { prompt: usePrompt, style, motion });
-    } catch (err) {
-      if (!ctrl.signal.aborted) setError(err instanceof Error ? err.message : "Image generation failed");
-    } finally {
-      setBusySceneId(null);
-      setWaitSeconds(0);
-    }
-  }
+  const generateSingle = useCallback(
+    async (scene: Scene, opts: Omit<GenerateOptions, "signal">) => {
+      if (opts.prompt.trim().length < 3) {
+        setError("Describe the shot you want first.");
+        return;
+      }
+      singleAbort.current?.abort();
+      const ctrl = new AbortController();
+      singleAbort.current = ctrl;
+      setBusySceneId(scene.id);
+      setBusyKind(opts.kind);
+      setError(null);
+      try {
+        await generateFor(scene, { ...opts, signal: ctrl.signal });
+      } catch (err) {
+        if (!ctrl.signal.aborted) {
+          setError(err instanceof Error ? err.message : "Generation failed");
+        }
+      } finally {
+        setBusySceneId(null);
+        setWaitSeconds(0);
+      }
+    },
+    [generateFor],
+  );
 
   const runBatch = useCallback(
-    async (onlyMissing: boolean) => {
+    async (onlyMissing: boolean, batchKind: AiKind, promptOverride?: string | null) => {
       const targets = scenes.filter((s) => !onlyMissing || s.mediaSource !== "ai");
       if (targets.length === 0) return;
       batchAbort.current?.abort();
       const ctrl = new AbortController();
       batchAbort.current = ctrl;
       setError(null);
+      setBusyKind(batchKind);
       setBatch({ done: 0, total: targets.length, current: 0 });
       let done = 0;
       for (const scene of targets) {
@@ -163,31 +233,21 @@ export default function AiPanel({
         const index = scenes.findIndex((s) => s.id === scene.id);
         setBatch({ done, total: targets.length, current: index });
         setBusySceneId(scene.id);
-        const scenePrompt = scene.aiPrompt?.trim() || scene.narration;
-        const sceneStyle = scene.aiStyle ?? defaultStyle;
-        const sceneMotion = scene.aiMotion ?? MOTION_ORDER[index % MOTION_ORDER.length];
         try {
-          const result = await generateWithRetry(
-            {
-              prompt: scenePrompt,
-              style: sceneStyle,
-              aspect: project.aspect,
-              projectId: project.id,
-              signal: ctrl.signal,
-            },
-            setWaitSeconds,
-          );
-          applyImage(scene, result.url, result.seed, result.provider, {
-            prompt: scenePrompt,
-            style: sceneStyle,
-            motion: sceneMotion,
+          await generateFor(scene, {
+            kind: batchKind,
+            prompt: promptOverride?.trim() || scene.aiPrompt?.trim() || scene.narration,
+            style: scene.aiStyle ?? defaultStyle,
+            motion: scene.aiMotion ?? MOTION_ORDER[index % MOTION_ORDER.length],
+            newSeed: true,
+            signal: ctrl.signal,
           });
           done += 1;
           setBatch({ done, total: targets.length, current: index });
         } catch (err) {
           if (ctrl.signal.aborted) break;
           setError(
-            `Scene ${index + 1}: ${err instanceof Error ? err.message : "generation failed"} — it keeps its stock clip.`,
+            `Scene ${index + 1}: ${err instanceof Error ? err.message : "generation failed"} (it keeps its current visual).`,
           );
         }
       }
@@ -195,17 +255,55 @@ export default function AiPanel({
       setWaitSeconds(0);
       setBatch(null);
     },
-    [scenes, defaultStyle, project.aspect, project.id, applyImage],
+    [scenes, defaultStyle, generateFor],
   );
 
-  // Projects created with "AI-generated visuals" start generating right away.
+  // Requests typed into the AI edit box ("generate a video of …").
+  const intentHandler = useRef<(intent: GenerateIntent) => void>(() => undefined);
+  useEffect(() => {
+    intentHandler.current = (intent: GenerateIntent) => {
+      setKind(intent.kind);
+      if (intent.target === "all") {
+        void runBatch(false, intent.kind, intent.prompt);
+        return;
+      }
+      const scene =
+        typeof intent.target === "number" ? scenes[intent.target] ?? null : activeScene;
+      if (!scene) {
+        setError(`There is no scene ${Number(intent.target) + 1} in this video.`);
+        return;
+      }
+      onSelectScene(scene.id);
+      const scenePrompt = intent.prompt || scene.aiPrompt || scene.narration;
+      setPrompt(scenePrompt);
+      const index = scenes.findIndex((s) => s.id === scene.id);
+      void generateSingle(scene, {
+        kind: intent.kind,
+        prompt: scenePrompt,
+        style: scene.aiStyle ?? defaultStyle,
+        motion: scene.aiMotion ?? MOTION_ORDER[index % MOTION_ORDER.length],
+        newSeed: true,
+      });
+    };
+  });
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<GenerateIntent>).detail;
+      if (detail) intentHandler.current(detail);
+    };
+    window.addEventListener(AI_GENERATE_EVENT, listener);
+    return () => window.removeEventListener(AI_GENERATE_EVENT, listener);
+  }, []);
+
+  // Projects created with AI visuals start generating right away.
   useEffect(() => {
     if (autoStarted.current) return;
-    if (project.script.options?.visualMode !== "ai") return;
+    const modeKind = aiKindForMode(project.script.options?.visualMode);
+    if (!modeKind) return;
     if (scenes.length === 0 || scenes.some((s) => s.mediaSource === "ai")) return;
     const timer = setTimeout(() => {
       autoStarted.current = true;
-      void runBatch(true);
+      void runBatch(true, modeKind);
     }, 400);
     return () => clearTimeout(timer);
   }, [project.script.options?.visualMode, scenes, runBatch]);
@@ -240,6 +338,14 @@ export default function AiPanel({
   const aiCount = scenes.filter((s) => s.mediaSource === "ai").length;
   const isBusyActive = busySceneId !== null && busySceneId === activeScene?.id && !batch;
   const engine = project.script.options?.scriptEngine;
+  const activeIsAiVideo = activeScene?.mediaSource === "ai" && activeScene.mediaType === "video";
+  const activeIsAiImage = activeScene?.mediaSource === "ai" && activeScene.mediaType !== "video";
+  const busyLabel =
+    waitSeconds > 0
+      ? `Service busy · ${waitSeconds}s`
+      : busyKind === "video" && videoReady
+        ? "Generating video… (1–2 min)"
+        : "Generating…";
 
   return (
     <div className="space-y-4">
@@ -249,30 +355,82 @@ export default function AiPanel({
           <Sparkles className="h-3 w-3 text-amber-cue" />
           <span>Generative engines</span>
         </div>
-        <p>Writer: {status ? status.textLabel : "…"}</p>
+        <p>Video: {status ? status.videoLabel : "…"}</p>
         <p>Images: {status ? status.imageLabel : "…"}</p>
+        <p>Writer: {status ? status.textLabel : "…"}</p>
         {engine ? <p>This script was written by: {engineName(engine)}</p> : null}
-        {status?.freeTier ? (
-          <p className="mt-1 text-ash">
-            Free tier is rate-limited. Add POLLINATIONS_API_KEY or OPENAI_API_KEY for faster, HD
-            results.
-          </p>
-        ) : null}
+        <p className="mt-1 text-ash">
+          Tip: type requests in the AI edit box, e.g. “generate a video of waves at dusk for
+          scene 2” or “make an image of a cabin for all scenes”.
+        </p>
       </div>
 
-      {/* Active scene visual */}
+      {/* Video / Image switch */}
+      <div
+        role="radiogroup"
+        aria-label="What to generate"
+        className="grid grid-cols-2 rounded-[3px] border border-line bg-canvas p-0.5"
+      >
+        {(
+          [
+            ["video", "AI video", Clapperboard],
+            ["image", "AI image", ImagePlus],
+          ] as const
+        ).map(([id, label, Icon]) => {
+          const active = kind === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => setKind(id)}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-[2px] px-2 py-1.5 font-tech text-[11px] uppercase tracking-[0.06em] transition-colors ${
+                active ? "bg-amber-cue font-semibold text-[#14110A]" : "text-stone-ink hover:text-paper"
+              }`}
+            >
+              <Icon className="h-3 w-3" />
+              <span>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+      {kind === "video" && !videoReady ? (
+        <p className="font-tech text-[10px] leading-relaxed text-ash">
+          AI video needs POLLINATIONS_API_KEY (there is no free text-to-video service). Until then,
+          “Generate video” makes a motion shot from an AI image.
+        </p>
+      ) : null}
+
+      {/* Active scene */}
       {activeScene ? (
         <section className="space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="font-tech text-[10px] uppercase tracking-[0.14em] text-ash">
-              Scene {String(activeIndex + 1).padStart(2, "0")} · AI visual
+              Scene {String(activeIndex + 1).padStart(2, "0")}
             </h3>
             <span className="font-tech text-[10px] text-stone-ink">
-              {activeScene.mediaSource === "ai" ? "AI image" : "Stock video"}
+              {activeIsAiVideo ? "AI video" : activeIsAiImage ? "AI image" : "Stock video"}
             </span>
           </div>
 
-          {activeScene.mediaSource === "ai" && activeScene.mediaUrl ? (
+          {activeIsAiVideo && activeScene.mediaUrl ? (
+            <div className="relative aspect-video overflow-hidden rounded-[3px] border border-line bg-black">
+              <video
+                key={activeScene.mediaUrl}
+                src={activeScene.mediaUrl}
+                poster={activeScene.mediaThumb ?? undefined}
+                autoPlay
+                muted
+                loop
+                playsInline
+                className="h-full w-full object-cover"
+              />
+              <span className="absolute bottom-1 left-1 rounded-[2px] bg-black/75 px-1.5 py-0.5 font-tech text-[9px] text-paper">
+                {activeScene.mediaTitle}
+              </span>
+            </div>
+          ) : activeIsAiImage && activeScene.mediaUrl ? (
             <div className="relative aspect-video overflow-hidden rounded-[3px] border border-line bg-black">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={activeScene.mediaUrl} alt="" className="h-full w-full object-cover" />
@@ -286,14 +444,18 @@ export default function AiPanel({
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             rows={3}
-            placeholder="Describe the shot: subject, setting, light, camera angle…"
+            placeholder={
+              kind === "video"
+                ? "Describe the shot and its motion: subject, action, setting, light, camera…"
+                : "Describe the image: subject, setting, light, camera angle…"
+            }
             className="w-full resize-none rounded-[3px] border border-line bg-canvas px-2.5 py-2 text-xs leading-relaxed text-paper outline-none transition-colors placeholder:text-ash focus:border-amber-cue"
           />
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className={`grid gap-2 ${kind === "image" ? "grid-cols-2" : "grid-cols-1"}`}>
             <label className="block">
               <span className="font-tech mb-1 block text-[9px] uppercase tracking-[0.12em] text-ash">
-                Art style
+                Look
               </span>
               <select
                 value={style}
@@ -307,50 +469,62 @@ export default function AiPanel({
                 ))}
               </select>
             </label>
-            <label className="block">
-              <span className="font-tech mb-1 block text-[9px] uppercase tracking-[0.12em] text-ash">
-                Camera move
-              </span>
-              <select
-                value={motion}
-                onChange={(event) => {
-                  const next = event.target.value as AiMotion;
-                  setMotion(next);
-                  if (activeScene.mediaSource === "ai") {
-                    onApplyVisual(activeScene.id, { aiMotion: next });
-                  }
-                }}
-                className="w-full rounded-[3px] border border-line bg-canvas px-2 py-1.5 text-xs text-paper outline-none focus:border-amber-cue"
-              >
-                {MOTION_ORDER.map((id) => (
-                  <option key={id} value={id} className="bg-panel">
-                    {AI_MOTIONS[id]}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {kind === "image" ? (
+              <label className="block">
+                <span className="font-tech mb-1 block text-[9px] uppercase tracking-[0.12em] text-ash">
+                  Camera move
+                </span>
+                <select
+                  value={motion}
+                  onChange={(event) => {
+                    const next = event.target.value as AiMotion;
+                    setMotion(next);
+                    if (activeIsAiImage) onApplyVisual(activeScene.id, { aiMotion: next });
+                  }}
+                  className="w-full rounded-[3px] border border-line bg-canvas px-2 py-1.5 text-xs text-paper outline-none focus:border-amber-cue"
+                >
+                  {MOTION_ORDER.map((id) => (
+                    <option key={id} value={id} className="bg-panel">
+                      {AI_MOTIONS[id]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
           </div>
 
           <div className="flex flex-wrap gap-1.5">
             <button
               type="button"
-              onClick={() => void generateForActive(true)}
+              onClick={() =>
+                void generateSingle(activeScene, {
+                  kind,
+                  prompt: prompt.trim() || activeScene.aiPrompt || activeScene.narration,
+                  style,
+                  motion,
+                  newSeed: true,
+                })
+              }
               disabled={Boolean(busySceneId)}
               className="inline-flex items-center gap-1.5 rounded-[3px] bg-amber-cue px-3 py-1.5 font-tech text-[11px] font-semibold uppercase tracking-[0.06em] text-[#14110A] transition-colors hover:bg-amber-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isBusyActive ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
+              ) : kind === "video" ? (
+                <Clapperboard className="h-3 w-3" />
               ) : (
                 <ImagePlus className="h-3 w-3" />
               )}
               <span>
                 {isBusyActive
-                  ? waitSeconds > 0
-                    ? `Free tier · ${waitSeconds}s`
-                    : "Generating…"
-                  : activeScene.mediaSource === "ai"
-                    ? "New variation"
-                    : "Generate visual"}
+                  ? busyLabel
+                  : kind === "video"
+                    ? activeIsAiVideo
+                      ? "New video take"
+                      : "Generate video"
+                    : activeIsAiImage
+                      ? "New image variation"
+                      : "Generate image"}
               </span>
             </button>
             {isBusyActive ? (
@@ -375,9 +549,6 @@ export default function AiPanel({
               </button>
             ) : null}
           </div>
-          <p className="font-tech text-[10px] leading-relaxed text-ash">
-            AI images become moving shots in the final video with the camera move above.
-          </p>
         </section>
       ) : null}
 
@@ -392,8 +563,7 @@ export default function AiPanel({
             <div className="flex items-center justify-between font-tech text-[11px] text-paper">
               <span className="inline-flex items-center gap-1.5">
                 <Loader2 className="h-3 w-3 animate-spin text-amber-cue" />
-                Scene {batch.current + 1}
-                {waitSeconds > 0 ? ` · free tier wait ${waitSeconds}s` : " · generating"}
+                Scene {batch.current + 1} · {busyLabel.toLowerCase()}
               </span>
               <span className="text-amber-cue">
                 {batch.done}/{batch.total}
@@ -418,19 +588,21 @@ export default function AiPanel({
           <div className="flex flex-wrap gap-1.5">
             <button
               type="button"
-              onClick={() => void runBatch(true)}
+              onClick={() => void runBatch(true, kind)}
               disabled={Boolean(busySceneId) || aiCount === scenes.length}
               className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-elevated px-3 py-1.5 font-tech text-[11px] text-paper transition-colors hover:border-amber-cue hover:text-amber-cue disabled:opacity-45"
             >
               <Sparkles className="h-3 w-3" />
               <span>
-                {aiCount === 0 ? "Generate visuals for every scene" : "Fill remaining scenes"}
+                {aiCount === 0
+                  ? `Generate ${kind === "video" ? "videos" : "images"} for every scene`
+                  : `Fill remaining scenes with ${kind === "video" ? "video" : "images"}`}
               </span>
             </button>
             {aiCount > 0 ? (
               <button
                 type="button"
-                onClick={() => void runBatch(false)}
+                onClick={() => void runBatch(false, kind)}
                 disabled={Boolean(busySceneId)}
                 className="inline-flex items-center gap-1 rounded-[3px] border border-line bg-inset px-2.5 py-1.5 font-tech text-[11px] text-stone-ink transition-colors hover:text-paper disabled:opacity-45"
               >
@@ -440,11 +612,6 @@ export default function AiPanel({
             ) : null}
           </div>
         )}
-        {status?.freeTier && !batch ? (
-          <p className="font-tech text-[10px] text-ash">
-            Free tier: about 45 seconds per image. The studio waits and retries automatically.
-          </p>
-        ) : null}
         <div className="grid grid-cols-4 gap-1">
           {scenes.map((scene, index) => (
             <button
@@ -466,7 +633,7 @@ export default function AiPanel({
                 </span>
               ) : scene.mediaSource === "ai" ? (
                 <span className="absolute right-0.5 top-0.5 rounded-[2px] bg-amber-cue px-1 font-tech text-[8px] font-bold text-[#14110A]">
-                  AI
+                  {scene.mediaType === "video" ? "AI ▶" : "AI"}
                 </span>
               ) : null}
             </button>
@@ -507,6 +674,11 @@ export default function AiPanel({
         </section>
       ) : null}
 
+      {notice ? (
+        <p className="rounded-[3px] border border-amber-cue/40 bg-amber-cue/10 px-2.5 py-2 font-tech text-[10px] leading-relaxed text-paper">
+          {notice}
+        </p>
+      ) : null}
       {error ? (
         <p className="rounded-[3px] border border-tally/40 bg-tally/10 px-2.5 py-2 font-tech text-[10px] text-[#f4b4a8]">
           {error}

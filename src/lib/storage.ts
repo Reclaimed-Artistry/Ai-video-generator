@@ -148,7 +148,9 @@ export async function deleteProjectArtifacts(
 
 const MAX_INLINE_IMAGE_BYTES = 1_500_000;
 
-function imageExtension(contentType: string): string {
+function mediaExtension(contentType: string): string {
+  if (contentType.includes("mp4")) return "mp4";
+  if (contentType.includes("webm")) return "webm";
   if (contentType.includes("png")) return "png";
   if (contentType.includes("webp")) return "webp";
   return "jpg";
@@ -167,8 +169,17 @@ export async function saveGeneratedImage(
   data: Buffer,
   contentType: string,
 ): Promise<string> {
+  return saveGeneratedMedia(projectId, data, contentType);
+}
+
+/** Same storage tiers for generated images, AI video clips and their posters. */
+export async function saveGeneratedMedia(
+  projectId: string | null,
+  data: Buffer,
+  contentType: string,
+): Promise<string> {
   const owner = projectId && /^[0-9a-f-]{36}$/i.test(projectId) ? projectId : "unsorted";
-  const key = `ai/${owner}/${crypto.randomUUID()}.${imageExtension(contentType)}`;
+  const key = `ai/${owner}/${crypto.randomUUID()}.${mediaExtension(contentType)}`;
 
   if (isBlobConfigured()) {
     const blob = await put(key, data, {
@@ -204,9 +215,11 @@ export async function saveGeneratedImage(
     return `/api/files/${key}`;
   }
 
-  if (data.length > MAX_INLINE_IMAGE_BYTES) {
+  if (data.length > MAX_INLINE_IMAGE_BYTES || contentType.startsWith("video/")) {
     throw new Error(
-      "This image is too large to keep without storage. Connect Vercel Blob or a Postgres database.",
+      contentType.startsWith("video/")
+        ? "AI video clips need storage on Vercel. Connect Vercel Blob or a Postgres database (Storage tab), then redeploy."
+        : "This image is too large to keep without storage. Connect Vercel Blob or a Postgres database.",
     );
   }
   return `data:${contentType};base64,${data.toString("base64")}`;

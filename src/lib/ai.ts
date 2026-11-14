@@ -4,7 +4,10 @@ import { AI_STYLES, type AiStyleId, type AspectRatio } from "./types";
  * Generative AI provider layer.
  *
  * Text (scripts, rewrites)   : OpenAI-compatible key → Pollinations key → free Pollinations → null
- * Images (scene visuals)     : Pollinations key → OpenAI key → browser-side free Pollinations
+ * Images (scene visuals)     : Pollinations key → OpenAI key → free Pollinations
+ * Video  (scene clips)       : Pollinations key (text-to-video models). There is
+ *                              no free text-to-video tier, so without a key the
+ *                              studio makes a motion shot from an AI image.
  *
  * The free Pollinations tier allows ~1 request per 45s *per IP* and is
  * best-effort. It rejects browser-origin requests without a Cloudflare
@@ -26,6 +29,8 @@ export class AiRateLimitError extends Error {
 }
 
 const FREE_TIER_ENABLED = process.env.AI_FREE_TIER !== "off";
+/** Overridable for self-hosted gateways and tests. */
+const POLLINATIONS_GEN_URL = (process.env.POLLINATIONS_GEN_URL || "https://gen.pollinations.ai").replace(/\/$/, "");
 
 export function textProvider(): TextProvider {
   if (process.env.OPENAI_API_KEY) return "openai";
@@ -40,10 +45,33 @@ export function imageProvider(): ImageProvider {
   return "pollinations-free";
 }
 
+export type VideoProvider = "pollinations" | "none";
+
+export function videoProvider(): VideoProvider {
+  if (process.env.POLLINATIONS_API_KEY && process.env.AI_VIDEO !== "off") return "pollinations";
+  return "none";
+}
+
+/** Cheapest solid default (0.01 pollen / second, 5s clips). Override with AI_VIDEO_MODEL. */
+export function videoModel(): string {
+  return process.env.AI_VIDEO_MODEL || "alibaba/wan-2.2-fast";
+}
+
+export function videoDuration(): number {
+  const requested = Number(process.env.AI_VIDEO_DURATION);
+  return Number.isFinite(requested) && requested >= 2 && requested <= 15 ? Math.round(requested) : 5;
+}
+
 export function aiStatus() {
   const text = textProvider();
   const image = imageProvider();
+  const video = videoProvider();
   return {
+    video,
+    videoLabel:
+      video === "pollinations"
+        ? `Pollinations text-to-video (${videoModel()}, ${videoDuration()}s clips)`
+        : "Not configured: add POLLINATIONS_API_KEY for real AI video (AI image + camera motion is used instead)",
     text,
     image,
     imageMode: "server" as const,
@@ -351,4 +379,61 @@ export async function generateImageOnServer(
   }
 
   return generateFreeImage(prompt, aspect, seed);
+}
+
+// ─── Video ────────────────────────────────────────────────────────────────
+
+export class AiVideoUnavailableError extends Error {
+  constructor() {
+    super(
+      "Real AI video needs a Pollinations API key (POLLINATIONS_API_KEY). There is no free text-to-video service.",
+    );
+    this.name = "AiVideoUnavailableError";
+  }
+}
+
+/**
+ * Generate a short video clip with a text-to-video model. Pollinations
+ * returns the finished MP4 in the response, which can take a minute or two.
+ */
+export async function generateVideoOnServer(
+  prompt: string,
+  aspect: AspectRatio,
+  seed: number,
+): Promise<{ data: Buffer; contentType: string; provider: VideoProvider; model: string }> {
+  if (videoProvider() === "none") throw new AiVideoUnavailableError();
+  const model = videoModel();
+  const params = new URLSearchParams({
+    model,
+    duration: String(videoDuration()),
+    aspectRatio: aspect,
+    audio: "false",
+    seed: String(seed),
+  });
+  const response = await fetchWithTimeout(
+    `${POLLINATIONS_GEN_URL}/video/${encodeURIComponent(prompt)}?${params}`,
+    { headers: { authorization: `Bearer ${process.env.POLLINATIONS_API_KEY}` } },
+    280_000,
+  );
+  const type = response.headers.get("content-type") ?? "";
+  if (response.ok && type.startsWith("video/")) {
+    return { data: Buffer.from(await response.arrayBuffer()), contentType: type, provider: "pollinations", model };
+  }
+  const body = await response.text().catch(() => "");
+  let message = "";
+  try {
+    message = (JSON.parse(body) as { error?: { message?: string } }).error?.message ?? "";
+  } catch {
+    message = body.slice(0, 200);
+  }
+  if (response.status === 429) {
+    throw new AiRateLimitError("The video service is busy.", parseRetryAfter(response, body, 30));
+  }
+  if (response.status === 402) {
+    throw new Error("Your Pollinations balance is too low for video generation. Top up at enter.pollinations.ai.");
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new Error("Pollinations rejected the API key for video generation. Check POLLINATIONS_API_KEY.");
+  }
+  throw new Error(`Video generation failed (${response.status})${message ? `: ${message}` : ""}`);
 }

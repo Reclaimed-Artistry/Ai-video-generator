@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import { getFontsDir, probeDuration, runFfmpeg } from "./ffmpeg";
 import { defaultMusicForTone, getMusicTrack } from "./music";
 import { getProject, updateProject } from "./projects";
@@ -368,6 +367,7 @@ function buildAssFile(
 async function download(url: string, destination: string): Promise<void> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 35000);
+  const out = fs.createWriteStream(/* turbopackIgnore: true */ destination);
   try {
     const response = await fetch(url, {
       redirect: "follow",
@@ -380,12 +380,24 @@ async function download(url: string, destination: string): Promise<void> {
     if (!response.ok || !response.body) {
       throw new Error(`Could not download media (${response.status})`);
     }
-    const stream = Readable.fromWeb(
-      response.body as unknown as WebReadableStream<Uint8Array>,
-    );
-    await pipeline(stream, fs.createWriteStream(destination));
+    // Explicit read loop (instead of Readable.fromWeb + pipeline): an abort or
+    // dropped connection rejects here as a normal, catchable error and can
+    // never surface as an uncaught "ReadableStream is already closed".
+    const reader = response.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!out.write(value)) await once(out, "drain");
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      throw error;
+    }
   } finally {
     clearTimeout(timer);
+    out.end();
+    await finished(out).catch(() => undefined);
   }
 }
 
@@ -455,9 +467,13 @@ async function resolveMedia(
     ? pickSource(localFallbackAsset, targetHeight)?.url
     : undefined;
 
-  // Generated (AI) visual: render the stored image with camera motion.
+  // Generated (AI) visual: AI video clips play as footage; AI images get camera motion.
   if (scene.mediaSource === "ai" && scene.mediaUrl) {
-    return { url: scene.mediaUrl, fallbackUrl, kind: "image" };
+    return {
+      url: scene.mediaUrl,
+      fallbackUrl,
+      kind: scene.mediaType === "video" ? "video" : "image",
+    };
   }
 
   // Reject any stale abstract clip attached to an old project and replace with real footage
@@ -599,12 +615,9 @@ async function renderSceneVideo(
   );
 
   try {
-    if (isImage) {
-      const loaded = await loadStoredMedia(chosenUrl, mediaFile);
-      if (!loaded) await download(chosenUrl, mediaFile);
-    } else {
-      await download(chosenUrl, mediaFile);
-    }
+    // Stored references (/api/files/..., data:) load locally; remote URLs download.
+    const loaded = await loadStoredMedia(chosenUrl, mediaFile);
+    if (!loaded) await download(chosenUrl, mediaFile);
   } catch (err) {
     isImage = false;
     if (media.fallbackUrl && media.fallbackUrl !== chosenUrl) {
@@ -622,12 +635,22 @@ async function renderSceneVideo(
     }
   }
 
-  const clipSpeed =
+  let clipSpeed =
     typeof scene.mediaSpeed === "number" &&
     scene.mediaSpeed >= 0.5 &&
     scene.mediaSpeed <= 2.0
       ? scene.mediaSpeed
       : 1;
+
+  // AI video clips are short (~5s): ease them into slow motion to fill the
+  // scene instead of visibly looping (loops only beyond a 0.6x slowdown).
+  const isAiVideo = scene.mediaSource === "ai" && !isImage && chosenUrl === media.url;
+  if (isAiVideo && typeof scene.mediaSpeed !== "number") {
+    const clipLength = await probeDuration(mediaFile).catch(() => 0);
+    if (clipLength > 0 && clipLength < duration) {
+      clipSpeed = Math.max(0.6, clipLength / duration);
+    }
+  }
   const clipStart =
     typeof scene.mediaStart === "number" && scene.mediaStart > 0
       ? Math.min(60, scene.mediaStart)
