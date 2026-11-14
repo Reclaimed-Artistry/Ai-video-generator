@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getProject, updateProject } from "@/lib/projects";
 import { generateScript } from "@/lib/script";
-import { syncScenesToNarration } from "@/lib/narration-match";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,9 +25,6 @@ export async function POST(request: Request, context: Context) {
       tone: project.tone,
       language: project.language,
     });
-    script.scenes = (
-      await syncScenesToNarration(script.scenes, { topic: project.prompt })
-    ).scenes;
 
     await updateProject(id, {
       script,

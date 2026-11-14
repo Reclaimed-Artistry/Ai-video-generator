@@ -6,13 +6,11 @@ import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { getFontsDir, probeDuration, runFfmpeg } from "./ffmpeg";
 import { defaultMusicForTone, getMusicTrack } from "./music";
 import { getProject, updateProject } from "./projects";
-import { narrationVisualQuery, syncScenesToNarration } from "./narration-match";
 import {
   getLocalAsset,
-  matchBestStockVideo,
   matchLocalAsset,
+  matchVideoForNarration,
   pickSource,
-  previewUrlForAsset,
   VIDEO_CATALOG,
 } from "./stock";
 import {
@@ -28,6 +26,8 @@ import {
   RESOLUTIONS,
   type AspectRatio,
   type CaptionMode,
+  type CaptionPosition,
+  type MediaFilter,
   type Project,
   type Resolution,
   type Scene,
@@ -90,12 +90,15 @@ function captionStyle(
   width: number,
   height: number,
   captionMode: CaptionMode,
+  captionPosition: CaptionPosition = "bottom",
 ): CaptionStyleConfig {
   const isVertical = height > width;
   const baseFont = Math.max(
     14,
     Math.round(height / (isVertical ? 24 : captionMode === "word-highlight" ? 16 : 18)),
   );
+  const posAlignment =
+    captionPosition === "top" ? 8 : captionPosition === "center" ? 5 : 2;
   const base: CaptionStyleConfig = {
     fontname: "DejaVu Sans",
     fontsize: baseFont,
@@ -106,10 +109,13 @@ function captionStyle(
     borderStyle: 1,
     outline: Math.max(1.8, Number((height / 170).toFixed(1))),
     shadow: Math.max(1.0, Number((height / 320).toFixed(1))),
-    alignment: 2,
+    alignment: posAlignment,
     marginL: Math.max(20, Math.round(width * 0.06)),
     marginR: Math.max(20, Math.round(width * 0.06)),
-    marginV: Math.max(16, Math.round(height * (isVertical ? 0.14 : 0.09))),
+    marginV:
+      captionPosition === "center"
+        ? 0
+        : Math.max(16, Math.round(height * (isVertical ? 0.14 : 0.09))),
     bold: true,
   };
   switch (style) {
@@ -120,7 +126,10 @@ function captionStyle(
         highlight: "&H00FFFFFF",
         outline: Math.max(1.2, base.outline * 0.6),
         shadow: 0.8,
-        alignment: captionMode === "headline" ? 1 : 2,
+        alignment:
+          captionMode === "headline" && captionPosition === "bottom"
+            ? 1
+            : posAlignment,
       };
     case "cinematic":
       return {
@@ -128,7 +137,10 @@ function captionStyle(
         fontsize: Math.max(12, Math.round(baseFont * 0.9)),
         highlight: "&H00C4DCE8",
         outlineColour: "&H00000000",
-        marginV: Math.max(16, Math.round(height * 0.11)),
+        marginV:
+          captionPosition === "center"
+            ? 0
+            : Math.max(16, Math.round(height * 0.11)),
       };
     case "energetic":
       return {
@@ -147,6 +159,21 @@ function captionStyle(
       };
     default:
       return base;
+  }
+}
+
+function ffmpegColorFilter(grade?: MediaFilter | null): string | null {
+  switch (grade) {
+    case "warm":
+      return "eq=contrast=1.06:saturation=1.18,colorbalance=rs=0.06:gs=0.02:bs=-0.05";
+    case "cool":
+      return "eq=contrast=1.08:saturation=1.12,colorbalance=rs=-0.04:gs=0.01:bs=0.07";
+    case "vivid":
+      return "eq=contrast=1.2:saturation=1.28:brightness=0.02";
+    case "noir":
+      return "hue=s=0,eq=contrast=1.24";
+    default:
+      return null;
   }
 }
 
@@ -212,8 +239,9 @@ function buildAssFile(
   height: number,
   style: Style,
   captionMode: CaptionMode,
+  captionPosition: CaptionPosition = "bottom",
 ): string {
-  const cfg = captionStyle(style, width, height, captionMode);
+  const cfg = captionStyle(style, width, height, captionMode, captionPosition);
   const header = [
     "[Script Info]",
     "ScriptType: v4.00+",
@@ -362,10 +390,13 @@ type ResolvedMedia = { url: string; fallbackUrl?: string; kind: "video" | "gener
 async function resolveMedia(
   scene: Scene,
   targetHeight: number,
+  topicContext = "",
 ): Promise<ResolvedMedia> {
   const localFallbackAsset =
-    matchLocalAsset(scene.mediaQuery || scene.caption || "city", "video") ??
-    VIDEO_CATALOG[0];
+    matchLocalAsset(
+      scene.mediaQuery || scene.narration || scene.caption || topicContext || "city",
+      "video",
+    ) ?? VIDEO_CATALOG[0];
   const fallbackUrl = localFallbackAsset
     ? pickSource(localFallbackAsset, targetHeight)?.url
     : undefined;
@@ -378,7 +409,6 @@ async function resolveMedia(
     }
   }
   if (scene.mediaUrl && scene.mediaType !== "photo") {
-    // For Mixkit clips, automatically upgrade 360p preview URL to 720p when rendering 1080p
     let renderUrl = scene.mediaUrl;
     if (
       targetHeight >= 720 &&
@@ -389,6 +419,18 @@ async function resolveMedia(
     }
     return { url: renderUrl, fallbackUrl, kind: "video" };
   }
+
+  // If scene has no assigned URL yet, match live footage directly to its narration!
+  const live = await matchVideoForNarration({
+    narration: scene.narration || scene.mediaQuery || scene.caption,
+    caption: scene.caption,
+    topicContext,
+  }).catch(() => ({ asset: null, mediaQuery: "" }));
+  if (live.asset) {
+    const src = pickSource(live.asset, targetHeight);
+    if (src) return { url: src.url, fallbackUrl, kind: "video" };
+  }
+
   if (fallbackUrl) {
     return { url: fallbackUrl, kind: "video" };
   }
@@ -404,9 +446,11 @@ async function renderSceneVideo(
   height: number,
   style: Style,
   captionMode: CaptionMode,
+  captionPosition: CaptionPosition,
   duration: number,
   spokenDuration: number,
   wordTimings: WordTiming[],
+  topicContext: string,
 ): Promise<string> {
   const output = path.join(dir, `scene-${String(index).padStart(2, "0")}.mp4`);
   const captionFile = path.join(dir, `caption-${String(index).padStart(2, "0")}.ass`);
@@ -424,6 +468,7 @@ async function renderSceneVideo(
         height,
         style,
         captionMode,
+        captionPosition,
       ),
       "utf8",
     );
@@ -437,7 +482,7 @@ async function renderSceneVideo(
       : `ass=${escapedAss}`;
   }
 
-  const media = await resolveMedia(scene, height);
+  const media = await resolveMedia(scene, height, topicContext);
 
   if (media.kind === "generated" || !media.url) {
     const gradient = `gradients=s=${width}x${height}:c0=0x121210:c1=0x262521:x0=0:y0=0:x1=${width}:y1=${height}:d=${Math.ceil(duration)}:r=30`;
@@ -491,93 +536,56 @@ async function renderSceneVideo(
     }
   }
 
-  const normalize = [
+  const clipSpeed =
+    typeof scene.mediaSpeed === "number" &&
+    scene.mediaSpeed >= 0.5 &&
+    scene.mediaSpeed <= 2.0
+      ? scene.mediaSpeed
+      : 1;
+  const clipStart =
+    typeof scene.mediaStart === "number" && scene.mediaStart > 0
+      ? Math.min(60, scene.mediaStart)
+      : 0;
+
+  const filters: string[] = [];
+  if (Math.abs(clipSpeed - 1) > 0.01) {
+    filters.push(`setpts=PTS/${clipSpeed.toFixed(2)}`);
+  }
+  filters.push(
     `scale=${width}:${height}:force_original_aspect_ratio=increase`,
     `crop=${width}:${height}`,
     "setsar=1",
     "fps=30",
-  ].join(",");
+  );
 
-  const post: string[] = [];
+  const colorGrade = ffmpegColorFilter(scene.mediaFilter);
+  if (colorGrade) {
+    filters.push(colorGrade);
+  }
+
   // Subtle scene transitions when enabled
   if (scene.transition === "fade" || index === 0) {
-    post.push("fade=t=in:st=0:d=0.32");
+    filters.push("fade=t=in:st=0:d=0.32");
   }
   if (index === totalScenes - 1 && duration > 1.0) {
-    post.push(`fade=t=out:st=${Math.max(0, duration - 0.4).toFixed(2)}:d=0.38`);
+    filters.push(`fade=t=out:st=${Math.max(0, duration - 0.4).toFixed(2)}:d=0.38`);
   }
+
   if (captionFilter) {
-    post.push(captionFilter);
+    filters.push(captionFilter);
   }
-
-  // Honour the scene's in-point inside the source clip.
-  const clipLength = await probeDuration(mediaFile).catch(() => 0);
-  const requestedStart = Math.max(0, Number(scene.mediaStart ?? 0) || 0);
-  const start =
-    clipLength > 0 ? Math.min(requestedStart, Math.max(0, clipLength - 0.6)) : requestedStart;
-  const available = clipLength > 0 ? clipLength - start : Infinity;
-
-  // If the clip runs out before the narration does, continue with a second
-  // narration-matched clip instead of visibly looping the first one.
-  let fillerFile: string | null = null;
-  if (Number.isFinite(available) && available + 0.25 < duration) {
-    try {
-      const fillerQuery =
-        scene.mediaQuery ||
-        narrationVisualQuery(scene.narration || scene.caption || "", { caption: scene.caption });
-      const filler = await matchBestStockVideo(
-        fillerQuery,
-        scene.mediaId ? [scene.mediaId] : [],
-      );
-      const fillerUrl = filler
-        ? (pickSource(filler, height)?.url ?? previewUrlForAsset(filler))
-        : null;
-      if (fillerUrl && fillerUrl !== chosenUrl) {
-        fillerFile = path.join(dir, `filler-${String(index).padStart(2, "0")}.${guessExt(fillerUrl)}`);
-        await download(fillerUrl, fillerFile);
-      }
-    } catch (err) {
-      console.warn(
-        `Scene ${index + 1}: no filler clip (${err instanceof Error ? err.message : err}); looping source clip`,
-      );
-      if (fillerFile) fs.rmSync(/* turbopackIgnore: true */ fillerFile, { force: true });
-      fillerFile = null;
-    }
-  }
-
-  const postChain = post.length ? post.join(",") : "null";
-  const inputAndFilter: string[] = fillerFile
-    ? [
-        "-ss",
-        start.toFixed(3),
-        "-i",
-        mediaFile,
-        "-stream_loop",
-        "-1",
-        "-i",
-        fillerFile,
-        "-filter_complex",
-        `[0:v]trim=duration=${available.toFixed(3)},setpts=PTS-STARTPTS,${normalize}[v0];` +
-          `[1:v]trim=duration=${(duration - available + 0.1).toFixed(3)},setpts=PTS-STARTPTS,${normalize}[v1];` +
-          `[v0][v1]concat=n=2:v=1:a=0[vc];[vc]${postChain}[vout]`,
-        "-map",
-        "[vout]",
-      ]
-    : [
-        ...(start > 0 ? ["-ss", start.toFixed(3)] : []),
-        "-stream_loop",
-        "-1",
-        "-i",
-        mediaFile,
-        "-vf",
-        [normalize, ...post].join(","),
-      ];
 
   const args: string[] = [
     "-y",
-    ...inputAndFilter,
+    "-stream_loop",
+    "-1",
+    ...(clipStart > 0 ? ["-ss", clipStart.toFixed(2)] : []),
+    "-i",
+    mediaFile,
     "-t",
     duration.toFixed(3),
+    "-vf",
+    filters.join(","),
     "-c:v",
     "libx264",
     "-preset",
@@ -598,7 +606,6 @@ async function renderSceneVideo(
   try {
     await runFfmpeg(args);
   } finally {
-    if (fillerFile) fs.rmSync(/* turbopackIgnore: true */ fillerFile, { force: true });
     fs.rmSync(/* turbopackIgnore: true */ mediaFile, { force: true });
     fs.rmSync(/* turbopackIgnore: true */ captionFile, { force: true });
   }
@@ -620,22 +627,17 @@ async function renderProjectInternal(
   fs.mkdirSync(/* turbopackIgnore: true */ dir, { recursive: true });
 
   const { width, height } = targetSize(project.resolution, project.aspect);
-  // Guarantee every unlocked scene's footage matches its current narration,
-  // even if the narration changed after the clip was picked (edits, AI
-  // commands, rewrites). Locked/hand-picked clips are left untouched.
-  const synced = await syncScenesToNarration(project.script.scenes ?? [], {
-    topic: project.prompt,
-  });
-  const scenes = synced.scenes;
-  if (synced.changed > 0) {
-    await updateProject(projectId, {
-      script: { ...project.script, scenes },
-    }).catch(() => undefined);
-  }
+  const scenes = project.script.scenes ?? [];
   if (scenes.length === 0) throw new Error("The script has no scenes");
 
   const captionMode: CaptionMode =
     project.script.options?.captionMode ?? "word-highlight";
+  const captionPosition: CaptionPosition =
+    project.script.options?.captionPosition ?? "bottom";
+  const voiceRateOffset =
+    typeof project.script.options?.voiceRateOffset === "number"
+      ? project.script.options.voiceRateOffset
+      : 0;
   const musicTrackId =
     project.script.options?.musicTrack ?? defaultMusicForTone(project.tone);
   const musicVolume = Math.min(
@@ -643,12 +645,14 @@ async function renderProjectInternal(
     Math.max(0, project.script.options?.musicVolume ?? 0.16),
   );
 
-  await updateProject(projectId, {
-    status: "rendering",
-    progress: 3,
-    stage: "Preparing neural voiceover & script cues",
-    error: null,
-  });
+  if (!inline) {
+    await updateProject(projectId, {
+      status: "rendering",
+      progress: 3,
+      stage: "Preparing neural voiceover & script cues",
+      error: null,
+    });
+  }
 
   const sceneFiles: string[] = [];
   const sceneAudioSpecs: { file: string; duration: number }[] = [];
@@ -656,27 +660,49 @@ async function renderProjectInternal(
 
   for (let index = 0; index < scenes.length; index += 1) {
     const scene = scenes[index];
-    await updateProject(projectId, {
-      progress: Math.round(5 + (index / scenes.length) * 72),
-      stage: `Scene ${index + 1} of ${scenes.length}: recording neural voiceover`,
-    });
+    if (!inline) {
+      await updateProject(projectId, {
+        progress: Math.round(5 + (index / scenes.length) * 72),
+        stage: `Scene ${index + 1} of ${scenes.length}: recording neural voiceover`,
+      });
+    }
 
-    const speechText = scene.narration?.trim().length
-      ? scene.narration
-      : scene.caption || " ";
-    const speech = await synthesizeSpeech(
-      speechText,
-      project.voice,
-      project.language,
-    );
-    const audioFile = path.join(
-      dir,
-      `audio-${String(index).padStart(2, "0")}.${speech.ext}`,
-    );
-    fs.writeFileSync(audioFile, speech.data);
+    const speechText = (scene.narration?.trim() || scene.caption?.trim() || "").trim();
+    let audioFile: string;
+    let spoken = 0;
+    let wordTimings: WordTiming[] = [];
 
-    const probed = await probeDuration(audioFile);
-    const spoken = probed > 0 ? probed : speech.durationSec || 3.2;
+    if (speechText.length > 0) {
+      const speech = await synthesizeSpeech(
+        speechText,
+        project.voice,
+        project.language,
+        voiceRateOffset,
+      );
+      audioFile = path.join(
+        dir,
+        `audio-${String(index).padStart(2, "0")}.${speech.ext}`,
+      );
+      fs.writeFileSync(audioFile, speech.data);
+      const probed = await probeDuration(audioFile);
+      spoken = probed > 0 ? probed : speech.durationSec || 3.2;
+      wordTimings = speech.wordTimings;
+    } else {
+      const silentDur = Math.max(3, scene.duration ?? 3);
+      audioFile = path.join(dir, `audio-${String(index).padStart(2, "0")}.wav`);
+      await runFfmpeg([
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-t",
+        silentDur.toFixed(2),
+        audioFile,
+      ]);
+      spoken = silentDur;
+    }
+
     const manual = scene.duration ?? 0;
     const duration = Math.min(
       45,
@@ -685,10 +711,12 @@ async function renderProjectInternal(
     totalTargetDuration += duration;
     sceneAudioSpecs.push({ file: audioFile, duration });
 
-    await updateProject(projectId, {
-      progress: Math.round(5 + ((index + 0.5) / scenes.length) * 72),
-      stage: `Scene ${index + 1} of ${scenes.length}: cutting footage & burning captions`,
-    });
+    if (!inline) {
+      await updateProject(projectId, {
+        progress: Math.round(5 + ((index + 0.5) / scenes.length) * 72),
+        stage: `Scene ${index + 1} of ${scenes.length}: cutting footage & burning captions`,
+      });
+    }
 
     const file = await renderSceneVideo(
       scene,
@@ -699,9 +727,11 @@ async function renderProjectInternal(
       height,
       project.style,
       captionMode,
+      captionPosition,
       duration,
       spoken,
-      speech.wordTimings,
+      wordTimings,
+      project.prompt || project.title,
     );
     sceneFiles.push(file);
   }

@@ -20,6 +20,25 @@ export type StockProvider =
   | "nasa"
   | "pixabay";
 
+export type MediaFilter = "none" | "warm" | "cool" | "vivid" | "noir";
+export type CaptionPosition = "bottom" | "center" | "top";
+
+export const MEDIA_FILTERS: { id: MediaFilter; label: string; css: string }[] = [
+  { id: "none", label: "Natural", css: "none" },
+  { id: "warm", label: "Cinema Warm", css: "sepia(0.18) saturate(1.18) contrast(1.06)" },
+  { id: "cool", label: "Cool Tech", css: "hue-rotate(-10deg) saturate(1.12) contrast(1.08)" },
+  { id: "vivid", label: "High Contrast", css: "contrast(1.22) saturate(1.25)" },
+  { id: "noir", label: "Noir B&W", css: "grayscale(1) contrast(1.25)" },
+];
+
+export const MEDIA_SPEEDS = [0.75, 1, 1.25, 1.5] as const;
+
+export const CAPTION_POSITIONS: { id: CaptionPosition; label: string }[] = [
+  { id: "bottom", label: "Bottom" },
+  { id: "center", label: "Center" },
+  { id: "top", label: "Top" },
+];
+
 export type Scene = {
   id: string;
   narration: string;
@@ -32,12 +51,10 @@ export type Scene = {
   mediaTitle?: string | null;
   mediaCreator?: string | null;
   mediaProvider?: string | null;
-  /** In-point (seconds) inside the source clip where playback starts. */
-  mediaStart?: number | null;
-  /** User picked this clip by hand: never auto-replace it. */
+  mediaStart?: number | null; // Clip trim in-point (seconds)
+  mediaSpeed?: number | null; // 0.75x .. 1.5x
+  mediaFilter?: MediaFilter | null;
   mediaLocked?: boolean;
-  /** Fingerprint of the narration the current clip was matched to. */
-  mediaMatchedFor?: string | null;
   duration: number | null;
   transition: "fade" | "none";
 };
@@ -47,6 +64,9 @@ export type ProductionOptions = {
   musicTrack?: MusicTrackId;
   musicVolume?: number; // 0 to 0.5
   captionMode?: CaptionMode;
+  captionPosition?: CaptionPosition;
+  voiceRateOffset?: number; // -20 to +25 (%)
+  autoMatchMedia?: boolean;
 };
 
 export type VideoScript = {

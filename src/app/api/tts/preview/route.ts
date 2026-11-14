@@ -9,11 +9,18 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
     voiceId?: string;
     text?: string;
+    language?: string;
+    rateOffset?: number;
   };
   const voice = getVoice(body.voiceId ?? "ava");
-  const text = (body.text ?? voice.previewText).slice(0, 240);
+  const text = (body.text ?? voice.previewText).slice(0, 280);
   try {
-    const speech = await synthesizeSpeech(text, voice.id);
+    const speech = await synthesizeSpeech(
+      text,
+      voice.id,
+      body.language ?? "en",
+      typeof body.rateOffset === "number" ? body.rateOffset : 0,
+    );
     return new Response(new Uint8Array(speech.data), {
       headers: {
         "content-type": speech.ext === "wav" ? "audio/wav" : "audio/mpeg",

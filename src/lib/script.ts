@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { defaultMusicForTone } from "./music";
 import {
   hydrateSceneMedia,
-  matchBestStockVideo,
   matchLocalAsset,
+  matchVideoForNarration,
   previewUrlForAsset,
 } from "./stock";
 import type {
@@ -98,10 +98,53 @@ const CATEGORIES: Category[] = [
     ctaExplainer: "Pick one core lever, commit to a weekly cadence, and cut everything that doesn't move the needle.",
   },
   {
+    key: "wildlife",
+    words: [
+      "lion", "lions", "safari", "savanna", "elephant", "tiger", "wildlife",
+      "animal", "animals", "dog", "dogs", "puppy", "cat", "bird", "whale",
+      "shark", "species", "habitat", "predator", "africa",
+    ],
+    visuals: [
+      "lion wildlife african savanna",
+      "wild animals nature reserve",
+      "golden sunset savanna wildlife",
+      "playful dogs park nature",
+      "aerial river forest wildlife",
+    ],
+    painPoint: "Across wild habitats, survival comes down to instinct, patience, and balance with the landscape",
+    craft: "Every movement across the terrain follows ancient rhythms shaped by water, seasons, and territory",
+    payoff: "Up close, you see the quiet power, intelligence, and resilience that define life in the wild",
+    proof: "Protecting open corridors and natural habitats keeps these ecosystems thriving for generations to come",
+    ctaCommercial: "Explore the wild up close — watch the full story and support wildlife conservation.",
+    ctaExplainer: "Look closer at the natural world, and you discover how every species keeps the whole ecosystem alive.",
+  },
+  {
+    key: "craft",
+    words: [
+      "art", "artistry", "artist", "reclaimed", "wood", "woodworking", "pottery",
+      "ceramic", "handmade", "artisan", "craft", "painting", "sculpture",
+      "furniture", "workshop", "carving", "music", "guitar", "band", "concert",
+      "studio", "fashion", "design",
+    ],
+    visuals: [
+      "artisan woodworking craft workshop",
+      "artist painting ceramic pottery studio",
+      "handmade art studio close up",
+      "musician playing guitar studio",
+      "craftsperson shaping materials",
+    ],
+    painPoint: "Mass-produced objects fill every room yet carry none of the character that makes something worth keeping",
+    craft: "Each piece is shaped by hand from reclaimed materials, honoring grain, texture, and honest studio craft",
+    payoff: "One-of-a-kind work with soul, weight, and patina that only gets richer with every passing year",
+    proof: "Collectors and makers alike know you can feel the difference of true handwork the moment you pick it up",
+    ctaCommercial: "Explore the collection and bring genuine handmade artistry into your space.",
+    ctaExplainer: "Slow down, respect the raw material, and let deliberate craftsmanship outlast every passing trend.",
+  },
+  {
     key: "nature",
     words: [
       "nature", "environment", "climate", "forest", "ocean", "mountain",
-      "wildlife", "sustainability", "sustainable", "green", "earth", "weather",
+      "sustainability", "sustainable", "green", "earth", "weather",
       "renewable", "conservation", "eco", "water", "bottle", "solar", "river",
       "trees", "wild", "planet", "space", "coral",
     ],
@@ -516,32 +559,33 @@ async function scriptToVideoGenerate(
   }
 
   blocks = blocks.slice(0, MAX_SCENES);
-  const category = detectCategory(raw);
+  const topicContext = extractVisualKeywords(raw, "cinematic");
   const usedAssets: string[] = [];
   const scenes: Scene[] = [];
 
   for (let idx = 0; idx < blocks.length; idx += 1) {
     const narration = blocks[idx];
-    const keywords = extractVisualKeywords(
-      narration,
-      category.visuals[idx % category.visuals.length],
-    );
-    const matched = await matchBestStockVideo(keywords, usedAssets);
-    if (matched) usedAssets.push(matched.id);
-
     const headlineWords = narration
       .replace(/[.!?,;:]+/g, "")
       .split(/\s+/)
       .slice(0, 5)
       .join(" ");
+    const caption = titleCase(headlineWords || `Scene ${idx + 1}`);
+    const { asset: matched, mediaQuery } = await matchVideoForNarration({
+      narration,
+      caption,
+      topicContext,
+      excludeIds: usedAssets,
+    });
+    if (matched) usedAssets.push(matched.id);
 
     scenes.push(
       sceneFromAsset(
         {
           id: randomUUID(),
           narration,
-          caption: titleCase(headlineWords || `Scene ${idx + 1}`),
-          mediaQuery: keywords,
+          caption,
+          mediaQuery,
           duration: null,
           transition: idx === 0 ? "fade" : "none",
         },
@@ -577,7 +621,6 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
   const category = detectCategory(options.prompt);
   const count = sceneCountFor(options.duration, workflow);
   const beats = beatSequence(count);
-  const topicKeywords = extractVisualKeywords(topic, category.visuals[0]);
   const usedAssets: string[] = [];
   const scenes: Scene[] = [];
 
@@ -593,15 +636,13 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
     );
     const caption = buildBeatCaption(beat, topic);
 
-    // Combine concrete topic nouns on lead scenes with curated category visuals
-    const mediaQuery =
-      index === 0
-        ? topicKeywords
-        : index === 1
-          ? `${topicKeywords.split(" ")[0]} ${category.visuals[0].split(" ").slice(0, 2).join(" ")}`.trim()
-          : category.visuals[index % category.visuals.length];
-
-    const matched = await matchBestStockVideo(mediaQuery, usedAssets);
+    // Match each scene's footage directly from its own spoken narration + video topic
+    const { asset: matched, mediaQuery } = await matchVideoForNarration({
+      narration,
+      caption,
+      topicContext: topic,
+      excludeIds: usedAssets,
+    });
     if (matched) usedAssets.push(matched.id);
 
     scenes.push(
@@ -681,20 +722,27 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
     };
     if (!parsed.scenes?.length) return null;
 
+    const topic = cleanTopic(options.prompt);
     const usedAssets: string[] = [];
     const scenes: Scene[] = [];
     for (let idx = 0; idx < parsed.scenes.length; idx += 1) {
       const scene = parsed.scenes[idx];
-      const mediaQuery = scene.mediaQuery?.trim() || extractVisualKeywords(scene.narration || options.prompt);
-      const matched = await matchBestStockVideo(mediaQuery, usedAssets);
+      const narration = scene.narration ?? "";
+      const caption = scene.caption ?? "";
+      const { asset: matched, mediaQuery } = await matchVideoForNarration({
+        narration: `${scene.mediaQuery ?? ""} ${narration}`.trim(),
+        caption,
+        topicContext: topic,
+        excludeIds: usedAssets,
+      });
       if (matched) usedAssets.push(matched.id);
       scenes.push(
         sceneFromAsset(
           {
             id: randomUUID(),
-            narration: scene.narration ?? "",
-            caption: scene.caption ?? "",
-            mediaQuery,
+            narration,
+            caption,
+            mediaQuery: scene.mediaQuery?.trim() || mediaQuery,
             duration: null,
             transition: idx === 0 ? "fade" : "none",
           },
@@ -748,13 +796,16 @@ export async function regenerateScene(
     variant,
   );
   const caption = buildBeatCaption(beat, topic);
-  const mediaQuery = category.visuals[variant % category.visuals.length];
   const excludeIds = script.scenes
     .map((item) => item.mediaId)
     .filter((id): id is string => Boolean(id));
-  const matched =
-    (await matchBestStockVideo(mediaQuery, excludeIds)) ??
-    matchLocalAsset(mediaQuery, "video", excludeIds);
+  const { asset: liveMatch, mediaQuery } = await matchVideoForNarration({
+    narration,
+    caption,
+    topicContext: topic,
+    excludeIds,
+  });
+  const matched = liveMatch ?? matchLocalAsset(mediaQuery, "video", excludeIds);
 
   return sceneFromAsset(
     {
@@ -762,6 +813,7 @@ export async function regenerateScene(
       narration,
       caption,
       mediaQuery,
+      mediaLocked: false,
     },
     matched,
   );

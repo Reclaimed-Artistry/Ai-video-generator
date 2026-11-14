@@ -8,7 +8,203 @@ export function getLocalAsset(id: string): StockAsset | undefined {
   return LOCAL_CATALOG.find((asset) => asset.id === id);
 }
 
-function tokenize(query: string): string[] {
+const VISUAL_STOP_WORDS = new Set([
+  // Common 3-letter & grammatical words
+  "the", "and", "for", "are", "you", "all", "can", "had", "her", "was", "one",
+  "our", "out", "day", "get", "has", "him", "his", "how", "its", "let", "may",
+  "new", "now", "old", "see", "two", "way", "who", "did", "own", "say", "she",
+  "too", "use", "but", "not", "top", "try", "why", "yet", "put", "set", "big",
+  "end", "far", "few", "cut", "add", "fit", "hit", "low", "mix", "pay", "win",
+  // Abstract / narrative filler words (never concrete filmable subjects)
+  "about", "after", "again", "against", "almost", "already", "also", "always",
+  "another", "around", "because", "before", "being", "below", "best", "better",
+  "between", "both", "breakthrough", "brief", "build", "built", "carry",
+  "change", "changes", "changing", "clear", "clicks", "clip", "clips", "closer",
+  "comes", "comment", "compounds", "could", "create", "created", "creates",
+  "creating", "cutting", "daily", "decision", "deliver", "delivers", "designed",
+  "difference", "different", "disposables", "does", "done", "dont", "double",
+  "down", "draft", "durable", "easier", "easily", "easy", "edit", "editing",
+  "effort", "enough", "every", "everyday", "everything", "experience", "explain",
+  "explained", "explainer", "explaining", "fast", "faster", "feel", "feels",
+  "film", "finally", "first", "five", "follow", "four", "framework", "friendly",
+  "from", "full", "generate", "getting", "give", "goes", "going", "good",
+  "great", "guess", "guesswork", "guide", "half", "happens", "have", "help",
+  "helps", "here", "high", "hours", "idea", "ideas", "imagine", "important",
+  "instead", "into", "just", "keep", "keeps", "know", "lands", "last", "launch",
+  "less", "like", "link", "little", "look", "looks", "make", "makes", "making",
+  "many", "materials", "matter", "matters", "maybe", "meet", "minute", "minutes",
+  "modern", "more", "most", "motion", "much", "need", "needs", "never", "next",
+  "noise", "none", "nothing", "notice", "obvious", "once", "only", "other",
+  "others", "over", "part", "people", "picture", "piece", "play", "post",
+  "practical", "problem", "project", "promo", "proof", "quality", "quick",
+  "quickly", "quietly", "real", "really", "reason", "reel", "repeatable",
+  "replace", "responsible", "result", "results", "right", "same", "save",
+  "scene", "scenes", "script", "scroll", "scrolling", "second", "seconds",
+  "seem", "seems", "shift", "short", "shorts", "should", "show", "shows", "side",
+  "simple", "simpler", "simply", "single", "small", "some", "something", "soon",
+  "sourcing", "start", "started", "starting", "stays", "step", "steps", "still",
+  "stop", "story", "strong", "subscribe", "such", "sure", "switch", "system",
+  "take", "takes", "talk", "tell", "than", "that", "their", "them", "then",
+  "there", "these", "they", "thing", "things", "think", "third", "this", "those",
+  "thousands", "three", "through", "time", "today", "together", "told", "tone",
+  "treat", "trend", "true", "turn", "turns", "under", "until", "using",
+  "version", "very", "video", "videos", "want", "wasted", "watch", "watching",
+  "ways", "week", "weeks", "well", "were", "what", "when", "where", "which",
+  "while", "whole", "will", "with", "without", "word", "words", "work", "works",
+  "worth", "would", "write", "your", "yourself",
+]);
+
+type VisualConcept = {
+  triggers: string[];
+  slugs: string[];
+  displayQuery: string;
+  preferNasa?: boolean;
+};
+
+/**
+ * Concrete visual concept dictionary mapping narrative subjects & synonyms
+ * to filmable B-roll slugs verified to return rich HD footage.
+ */
+const VISUAL_CONCEPTS: VisualConcept[] = [
+  {
+    triggers: ["bottle", "water bottle", "hydration", "flask", "reusable", "thermos", "plastic"],
+    slugs: ["water-bottle", "water", "drinking-water", "nature"],
+    displayQuery: "water bottle hydration",
+  },
+  {
+    triggers: ["coffee", "espresso", "barista", "latte", "roastery", "roaster", "cappuccino", "cafe", "beans", "brew"],
+    slugs: ["coffee-barista", "coffee", "cafe", "espresso"],
+    displayQuery: "barista coffee espresso",
+  },
+  {
+    triggers: ["pasta", "cooking", "recipe", "chef", "kitchen", "baking", "bread", "restaurant", "meal", "dinner", "food", "ingredient", "dish", "smoothie", "cake"],
+    slugs: ["cooking", "kitchen", "chef", "food"],
+    displayQuery: "chef cooking kitchen",
+  },
+  {
+    triggers: ["robot", "robotics", "ai", "agent", "agents", "artificial intelligence", "chatbot", "automation", "machine learning", "neural", "algorithm", "llm"],
+    slugs: ["robot", "technology", "coding", "computer"],
+    displayQuery: "ai robot technology",
+  },
+  {
+    triggers: ["code", "coding", "software", "developer", "programming", "app", "saas", "cybersecurity", "cloud", "server", "data", "analytics", "dashboard", "digital", "network", "tech", "technology"],
+    slugs: ["coding", "technology", "computer", "data"],
+    displayQuery: "software technology data",
+  },
+  {
+    triggers: ["dog", "puppy", "dogs", "pet", "pets"],
+    slugs: ["dog", "dog-park", "puppy"],
+    displayQuery: "dog playing park",
+  },
+  {
+    triggers: ["cat", "kitten", "cats"],
+    slugs: ["cat", "kitten"],
+    displayQuery: "cat indoor portrait",
+  },
+  {
+    triggers: ["lion", "safari", "elephant", "tiger", "wildlife", "animal", "animals", "savanna", "zoo"],
+    slugs: ["lion", "wildlife", "animals", "nature"],
+    displayQuery: "lion wildlife safari",
+  },
+  {
+    triggers: ["space", "astronaut", "rocket", "galaxy", "planet", "mars", "moon", "cosmos", "stars", "universe", "nasa", "orbit", "satellite"],
+    slugs: ["space", "stars", "earth", "galaxy"],
+    displayQuery: "space galaxy stars",
+    preferNasa: true,
+  },
+  {
+    triggers: ["ocean", "waves", "sea", "surf", "underwater", "coral", "marine", "coast", "shore", "beach", "island"],
+    slugs: ["ocean", "beach", "waves", "sea"],
+    displayQuery: "ocean waves coast",
+  },
+  {
+    triggers: ["mountain", "mountains", "hiking", "hike", "trail", "alps", "summit", "peak", "climbing", "trek"],
+    slugs: ["mountain-hiking", "mountain", "forest", "nature"],
+    displayQuery: "mountain hiking landscape",
+  },
+  {
+    triggers: ["forest", "trees", "woods", "jungle", "rainforest", "sustainable", "sustainability", "climate", "eco", "green", "environment", "earth", "river", "waterfall", "wildlife", "nature"],
+    slugs: ["forest", "nature", "river", "water"],
+    displayQuery: "forest nature river",
+  },
+  {
+    triggers: ["gym", "workout", "fitness", "training", "running", "runner", "marathon", "exercise", "muscle", "weightlifting", "cardio", "athlete", "sport", "yoga", "stretch", "mobility"],
+    slugs: ["gym", "workout", "running", "yoga"],
+    displayQuery: "gym workout fitness",
+  },
+  {
+    triggers: ["doctor", "hospital", "medical", "medicine", "clinic", "healthcare", "nurse", "surgery", "stethoscope", "microscope", "laboratory", "vaccine", "pharmacy"],
+    slugs: ["doctor", "medical", "hospital", "laboratory"],
+    displayQuery: "doctor medical clinic",
+  },
+  {
+    triggers: ["money", "finance", "invest", "investing", "stock", "stocks", "crypto", "banking", "bank", "revenue", "profit", "wealth", "budget", "economy", "trading"],
+    slugs: ["money", "finance", "business", "office"],
+    displayQuery: "finance money business",
+  },
+  {
+    triggers: ["car", "cars", "driving", "drive", "vehicle", "electric", "highway", "road", "roadtrip", "traffic", "supercar", "automotive"],
+    slugs: ["car", "driving", "highway", "traffic"],
+    displayQuery: "car driving highway",
+  },
+  {
+    triggers: ["airplane", "flight", "airport", "plane", "travel", "vacation", "holiday", "hotel", "passport", "destination", "tourist", "adventure"],
+    slugs: ["airplane", "travel", "beach", "hotel"],
+    displayQuery: "airplane flight travel",
+  },
+  {
+    triggers: ["train", "railway", "subway", "metro", "commute", "rail", "station"],
+    slugs: ["train", "city", "street", "skyline"],
+    displayQuery: "train city transit",
+  },
+  {
+    triggers: ["city", "skyline", "downtown", "urban", "architecture", "skyscraper", "building", "buildings", "street", "nightlife", "rooftop"],
+    slugs: ["city", "skyline", "street", "architecture"],
+    displayQuery: "city skyline architecture",
+  },
+  {
+    triggers: ["house", "home", "apartment", "interior", "real estate", "living room", "property", "furniture", "design", "minimalist"],
+    slugs: ["house", "interior", "architecture", "living-room"],
+    displayQuery: "modern house interior",
+  },
+  {
+    triggers: ["guitar", "piano", "music", "musician", "concert", "band", "singer", "dj", "audio", "podcast", "microphone", "studio"],
+    slugs: ["guitar", "music", "concert", "microphone"],
+    displayQuery: "music guitar studio",
+  },
+  {
+    triggers: ["camera", "filming", "cinema", "photographer", "creator", "youtube", "tiktok", "instagram", "social", "marketing", "brand", "advertising", "campaign", "smartphone", "neon"],
+    slugs: ["camera", "smartphone", "neon", "studio"],
+    displayQuery: "camera creator studio",
+  },
+  {
+    triggers: ["student", "school", "university", "college", "study", "studying", "library", "book", "books", "reading", "teacher", "classroom", "course", "learn", "education", "workshop"],
+    slugs: ["studying", "books", "library", "laptop"],
+    displayQuery: "studying books workspace",
+  },
+  {
+    triggers: ["fashion", "clothing", "dress", "model", "skincare", "beauty", "cosmetics", "makeup", "jewelry", "luxury", "watch", "perfume"],
+    slugs: ["fashion", "beauty", "portrait", "luxury"],
+    displayQuery: "fashion beauty portrait",
+  },
+  {
+    triggers: ["startup", "founder", "founders", "team", "meeting", "office", "workspace", "desk", "laptop", "productivity", "remote", "support", "customer", "client", "business", "company", "sales", "strategy", "entrepreneur"],
+    slugs: ["startup-office", "office", "meeting", "laptop"],
+    displayQuery: "startup team office",
+  },
+  {
+    triggers: ["morning", "sunrise", "sunset", "routine", "habit", "meditation", "mindfulness", "calm", "journal", "focus", "wellness", "sleep"],
+    slugs: ["sunrise", "morning", "sunset", "coffee"],
+    displayQuery: "sunrise morning routine",
+  },
+  {
+    triggers: ["art", "painting", "craft", "woodworking", "pottery", "sculpture", "artist", "reclaimed", "handmade", "artisan", "gallery"],
+    slugs: ["painting", "art", "craft", "artist"],
+    displayQuery: "artisan craft studio",
+  },
+];
+
+export function tokenize(query: string): string[] {
   return query
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, " ")
@@ -16,15 +212,141 @@ function tokenize(query: string): string[] {
     .filter((token) => token.length > 2);
 }
 
+function extractConcreteWords(text: string): string[] {
+  return tokenize(text).filter((word) => !VISUAL_STOP_WORDS.has(word));
+}
+
+export type VisualSearchPlan = {
+  displayQuery: string;
+  slugs: string[];
+  targetTokens: string[];
+  preferNasa: boolean;
+};
+
+/**
+ * Turns any scene's spoken narration (+ caption + overall video topic) into an
+ * ordered list of concrete filmable search slugs and relevance-scoring tokens.
+ */
+export function buildVisualSearchPlan(
+  narration: string,
+  caption = "",
+  topicContext = "",
+): VisualSearchPlan {
+  const primaryText = `${narration} ${caption}`.trim();
+  const primaryLower = primaryText.toLowerCase();
+  const contextLower = topicContext.toLowerCase();
+
+  const concretePrimary = extractConcreteWords(primaryText);
+  const concreteContext = extractConcreteWords(topicContext);
+
+  const matchedPrimaryConcepts: VisualConcept[] = [];
+  const matchedContextConcepts: VisualConcept[] = [];
+
+  for (const concept of VISUAL_CONCEPTS) {
+    const inPrimary = concept.triggers.some((t) =>
+      new RegExp(`(^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "i").test(
+        primaryLower,
+      ),
+    );
+    if (inPrimary) {
+      matchedPrimaryConcepts.push(concept);
+      continue;
+    }
+    const inContext =
+      contextLower.length > 0 &&
+      concept.triggers.some((t) =>
+        new RegExp(`(^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "i").test(
+          contextLower,
+        ),
+      );
+    if (inContext) {
+      matchedContextConcepts.push(concept);
+    }
+  }
+
+  const orderedConcepts =
+    matchedPrimaryConcepts.length > 0
+      ? [...matchedPrimaryConcepts, ...matchedContextConcepts]
+      : matchedContextConcepts;
+
+  const slugs: string[] = [];
+  const pushSlug = (raw: string) => {
+    const clean = raw
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]+/g, " ")
+      .trim()
+      .replace(/\s+/g, "-");
+    if (clean.length >= 3 && !slugs.includes(clean)) {
+      slugs.push(clean);
+    }
+  };
+
+  // 1. Verified matched visual concepts first (primary narration -> overall topic)
+  for (const concept of matchedPrimaryConcepts) {
+    for (const s of concept.slugs) pushSlug(s);
+  }
+  for (const concept of matchedContextConcepts) {
+    for (const s of concept.slugs) pushSlug(s);
+  }
+
+  // 2. Concrete nouns extracted directly from narration & topic
+  if (concretePrimary.length >= 2) {
+    pushSlug(`${concretePrimary[0]}-${concretePrimary[1]}`);
+  }
+  for (const word of concretePrimary.slice(0, 3)) {
+    pushSlug(word);
+  }
+  for (const word of concreteContext.slice(0, 3)) {
+    pushSlug(word);
+  }
+
+  if (slugs.length === 0) {
+    pushSlug("cinematic");
+    pushSlug("city");
+  }
+
+  const targetTokens = [
+    ...new Set([
+      ...matchedPrimaryConcepts.flatMap((c) => c.slugs.flatMap((s) => s.split("-"))),
+      ...concretePrimary.slice(0, 5),
+      ...matchedContextConcepts.flatMap((c) => c.slugs.flatMap((s) => s.split("-"))),
+      ...concreteContext.slice(0, 4),
+    ]),
+  ].filter((t) => t.length > 2);
+
+  const displayQuery =
+    matchedPrimaryConcepts[0]?.displayQuery ||
+    matchedContextConcepts[0]?.displayQuery ||
+    (concretePrimary.length >= 2
+      ? concretePrimary.slice(0, 3).join(" ")
+      : concretePrimary[0]
+        ? `${concretePrimary[0]} ${concreteContext[0] ?? ""}`.trim()
+        : concreteContext.slice(0, 3).join(" ") || "cinematic footage");
+
+  return {
+    displayQuery,
+    slugs: slugs.slice(0, 6),
+    targetTokens,
+    preferNasa: orderedConcepts.some((c) => c.preferNasa),
+  };
+}
+
 function scoreAsset(asset: StockAsset, tokens: string[]): number {
   if (tokens.length === 0) return 1;
   const title = asset.title.toLowerCase();
+  const titleWords = new Set(tokenize(title));
   const tags = asset.tags.map((tag) => tag.toLowerCase());
   let score = 0;
-  for (const token of tokens) {
-    if (title.includes(token)) score += 4;
-    if (tags.some((tag) => tag === token)) score += 3;
-    else if (tags.some((tag) => tag.includes(token))) score += 1;
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    // Earlier tokens come directly from the scene's own narration -> higher weight
+    const weight = i < 3 ? 2 : 1;
+    if (titleWords.has(token)) score += 6 * weight;
+    else if (title.includes(token)) score += 3 * weight;
+
+    if (tags.some((tag) => tag === token)) score += 4 * weight;
+    else if (tags.some((tag) => tag.includes(token))) score += 2 * weight;
   }
   return score;
 }
@@ -34,10 +356,11 @@ export function searchLocalCatalog(
   query: string,
   opts: { type?: MediaType; limit?: number } = {},
 ): StockAsset[] {
-  const tokens = tokenize(query);
+  const tokens = extractConcreteWords(query);
+  const fallbackTokens = tokens.length > 0 ? tokens : tokenize(query);
   const limit = opts.limit ?? 24;
   return LOCAL_CATALOG.filter((asset) => !opts.type || asset.type === opts.type)
-    .map((asset) => ({ asset, score: scoreAsset(asset, tokens) }))
+    .map((asset) => ({ asset, score: scoreAsset(asset, fallbackTokens) }))
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score || a.asset.title.localeCompare(b.asset.title))
     .slice(0, limit)
@@ -45,11 +368,12 @@ export function searchLocalCatalog(
 }
 
 export function topLocalVideoScore(query: string): number {
-  const tokens = tokenize(query);
-  if (tokens.length === 0) return 0;
+  const tokens = extractConcreteWords(query);
+  const effective = tokens.length > 0 ? tokens : tokenize(query);
+  if (effective.length === 0) return 0;
   let best = 0;
   for (const asset of VIDEO_CATALOG) {
-    const score = scoreAsset(asset, tokens);
+    const score = scoreAsset(asset, effective);
     if (score > best) best = score;
   }
   return best;
@@ -87,17 +411,16 @@ export function previewUrlForAsset(asset: StockAsset): string | null {
 }
 
 export function hydrateSceneMedia(scene: Scene): Scene {
-  // Keep external live provider clips (Mixkit / Wikimedia / NASA / Pixabay / Live Pexels)
+  // Keep custom uploaded/pasted URLs and live external provider clips intact
   if (
     scene.mediaUrl &&
     scene.mediaType === "video" &&
-    scene.mediaId &&
-    !scene.mediaId.startsWith("v")
+    (!scene.mediaId || !scene.mediaId.startsWith("v"))
   ) {
     return {
       ...scene,
       mediaType: "video",
-      mediaProvider: scene.mediaProvider || "mixkit",
+      mediaProvider: scene.mediaProvider || "custom",
     };
   }
 
@@ -105,7 +428,7 @@ export function hydrateSceneMedia(scene: Scene): Scene {
   const videoAsset =
     fromId && fromId.type === "video"
       ? fromId
-      : matchLocalAsset(scene.mediaQuery || scene.caption || "city", "video");
+      : matchLocalAsset(scene.mediaQuery || scene.narration || scene.caption || "city", "video");
 
   if (!videoAsset) return scene;
 
@@ -143,11 +466,12 @@ export function pickSource(
 }
 
 // ---------------------------------------------------------------------------
-// Live Stock Video Providers
+// Live Multi-Site Stock Video Providers
 // ---------------------------------------------------------------------------
 
 function mapPexelsVideo(item: Record<string, unknown>): StockAsset {
-  const files = (item.video_files as Record<string, unknown>[] | undefined) ??
+  const files =
+    (item.video_files as Record<string, unknown>[] | undefined) ??
     (item.files as Record<string, unknown>[] | undefined) ??
     [];
   const sources: StockSource[] = files
@@ -216,25 +540,29 @@ async function searchPexelsLive(
   }
 }
 
-/**
- * Mixkit free stock video search (Envato Mixkit License) — live HD MP4s +
- * thumbnails with zero API key required.
- */
-async function searchMixkitLive(
-  query: string,
-  limit: number,
-): Promise<StockAsset[]> {
-  const clean = query
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\s]+/g, " ")
-    .replace(/\s+/g, " ");
-  const slug = clean ? clean.split(" ").slice(0, 3).join("-") : "cinematic";
-  const url = `https://mixkit.co/free-stock-video/${encodeURIComponent(slug)}/`;
+const globalMixkit = globalThis as typeof globalThis & {
+  __raMixkitCache?: Map<string, { ts: number; items: StockAsset[] }>;
+  __raMixkitCooldownUntil?: number;
+};
 
+function mixkitCache() {
+  if (!globalMixkit.__raMixkitCache) globalMixkit.__raMixkitCache = new Map();
+  return globalMixkit.__raMixkitCache;
+}
+
+async function fetchMixkitSlug(slug: string, limit: number): Promise<StockAsset[]> {
+  const cached = mixkitCache().get(slug);
+  if (cached && Date.now() - cached.ts < 30 * 60 * 1000) {
+    return cached.items.slice(0, limit);
+  }
+  if (globalMixkit.__raMixkitCooldownUntil && Date.now() < globalMixkit.__raMixkitCooldownUntil) {
+    return [];
+  }
+
+  const url = `https://mixkit.co/free-stock-video/${encodeURIComponent(slug)}/`;
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 7500);
+    const timer = setTimeout(() => ctrl.abort(), 6000);
     const response = await fetch(url, {
       headers: {
         "user-agent":
@@ -244,7 +572,15 @@ async function searchMixkitLive(
       signal: ctrl.signal,
     });
     clearTimeout(timer);
-    if (!response.ok) return [];
+    if (response.status === 429) {
+      // Back off for 90s on rate-limit so we don't stall renders
+      globalMixkit.__raMixkitCooldownUntil = Date.now() + 90_000;
+      return [];
+    }
+    if (!response.ok) {
+      mixkitCache().set(slug, { ts: Date.now(), items: [] });
+      return [];
+    }
 
     const html = await response.text();
     const idMatches = [
@@ -255,19 +591,25 @@ async function searchMixkitLive(
     const uniqueIds = [...new Set(idMatches.map((m) => m[1]))].slice(0, limit);
     if (uniqueIds.length === 0) return [];
 
-    const queryTokens = tokenize(query);
+    const slugTokens = slug.split("-").filter((t) => t.length > 2);
     return uniqueIds.map((id) => {
       const altMatch = new RegExp(
-        `alt="([^"]{4,140})"[^>]{0,240}assets\\.mixkit\\.co/videos/${id}/|assets\\.mixkit\\.co/videos/${id}/[^"]{0,120}"[^>]{0,240}alt="([^"]{4,140})"`,
+        `alt="([^"]{4,160})"[^>]{0,280}assets\\.mixkit\\.co/videos/${id}/|assets\\.mixkit\\.co/videos/${id}/[^"]{0,140}"[^>]{0,280}alt="([^"]{4,160})"`,
       ).exec(html);
-      const rawTitle = (altMatch?.[1] || altMatch?.[2] || `Mixkit ${clean || "stock"} footage`)
+      const rawTitle = (
+        altMatch?.[1] ||
+        altMatch?.[2] ||
+        `Mixkit ${slug.replace(/-/g, " ")} footage`
+      )
         .replace(/&#39;/g, "'")
         .replace(/&quot;/g, '"')
         .replace(/&amp;/g, "&")
         .replace(/\.$/, "")
         .trim();
 
-      const has1080InHtml = html.includes(`assets.mixkit.co/videos/${id}/${id}-1080.mp4`);
+      const has1080InHtml = html.includes(
+        `assets.mixkit.co/videos/${id}/${id}-1080.mp4`,
+      );
       const sources: StockSource[] = [
         {
           url: `https://assets.mixkit.co/videos/${id}/${id}-360.mp4`,
@@ -291,16 +633,19 @@ async function searchMixkitLive(
         });
       }
 
-      const tags = [...new Set([...queryTokens, ...tokenize(rawTitle)])].slice(0, 6);
+      const tags = [...new Set([...slugTokens, ...extractConcreteWords(rawTitle)])].slice(
+        0,
+        7,
+      );
 
       return {
         id: `mixkit-${id}`,
         provider: "mixkit",
-        type: "video" as const,
+        type: "video",
         title: rawTitle,
         tags,
         creator: "Mixkit",
-        pageUrl: `https://mixkit.co/free-stock-video/${encodeURIComponent(slug)}/`,
+        pageUrl: url,
         thumb: `https://assets.mixkit.co/videos/${id}/${id}-thumb-360-0.jpg`,
         duration: 12,
         portrait: false,
@@ -310,6 +655,55 @@ async function searchMixkitLive(
   } catch {
     return [];
   }
+}
+
+async function fetchMixkitSlugCached(slug: string, limit: number): Promise<StockAsset[]> {
+  const items = await fetchMixkitSlug(slug, Math.max(limit, 18));
+  if (items.length > 0) {
+    mixkitCache().set(slug, { ts: Date.now(), items });
+  }
+  return items.slice(0, limit);
+}
+
+/**
+ * Rate-limit-friendly Mixkit live search: tries candidate slugs sequentially
+ * (using the 30-min cache) and stops at the first slug with real hits so we
+ * never burst Mixkit into HTTP 429.
+ */
+async function searchMixkitLive(
+  query: string,
+  limit: number,
+  extraSlugs: string[] = [],
+): Promise<StockAsset[]> {
+  const words = extractConcreteWords(query);
+  const rawWords = words.length > 0 ? words : tokenize(query);
+
+  const candidates: string[] = [];
+  const add = (s: string) => {
+    const clean = s
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-|-$/g, "");
+    if (clean.length >= 3 && !candidates.includes(clean)) candidates.push(clean);
+  };
+
+  for (const s of extraSlugs) add(s);
+  if (rawWords.length >= 2) add(`${rawWords[0]}-${rawWords[1]}`);
+  for (const w of rawWords.slice(0, 3)) add(w);
+  if (candidates.length === 0) add("cinematic");
+
+  const tokens = rawWords.length > 0 ? rawWords : tokenize(query);
+  for (const slug of candidates.slice(0, 4)) {
+    const hits = await fetchMixkitSlugCached(slug, limit);
+    if (hits.length > 0) {
+      return hits
+        .map((asset) => ({ asset, score: scoreAsset(asset, tokens) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map((e) => e.asset);
+    }
+  }
+  return [];
 }
 
 /**
@@ -352,7 +746,6 @@ async function searchWikimediaLive(
       const fileUrl = String(info.url ?? "").split("?")[0];
       const thumb = String(info.thumburl ?? "");
       const sizeBytes = Number(info.size ?? 0);
-      // Skip giant 100MB+ archival dumps so server downloads stay fast
       if (!fileUrl || !thumb || sizeBytes > 45 * 1024 * 1024) continue;
 
       const width = Number(info.width ?? 1280);
@@ -368,7 +761,7 @@ async function searchWikimediaLive(
         provider: "wikimedia",
         type: "video",
         title: cleanTitle,
-        tags: tokenize(`${q} ${cleanTitle}`).slice(0, 6),
+        tags: extractConcreteWords(`${q} ${cleanTitle}`).slice(0, 6),
         creator: String(info.user ?? "Wikimedia Commons"),
         pageUrl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(String(page.title ?? ""))}`,
         thumb,
@@ -433,15 +826,19 @@ async function searchNasaLive(
           const large = pickBySuffix("~large.mp4") || pickBySuffix("~orig.mp4");
           if (mobile) sources.push({ url: mobile, width: 640, height: 360 });
           if (medium) sources.push({ url: medium, width: 1280, height: 720 });
-          if (large && sources.length === 0) sources.push({ url: large, width: 1920, height: 1080 });
-          if (sources.length === 0) sources.push({ url: mp4s[0], width: 1280, height: 720 });
+          if (large && sources.length === 0) {
+            sources.push({ url: large, width: 1920, height: 1080 });
+          }
+          if (sources.length === 0) {
+            sources.push({ url: mp4s[0], width: 1280, height: 720 });
+          }
 
           return {
             id: `nasa-${meta.nasa_id}`,
             provider: "nasa",
             type: "video",
             title: meta.title || "NASA Footage",
-            tags: (meta.keywords ?? tokenize(meta.title || q)).slice(0, 6),
+            tags: (meta.keywords ?? extractConcreteWords(meta.title || q)).slice(0, 6),
             creator: meta.center ? `NASA / ${meta.center}` : "NASA",
             pageUrl: `https://images.nasa.gov/details/${encodeURIComponent(meta.nasa_id)}`,
             thumb: thumb.replace(/^http:\/\//, "https://"),
@@ -486,7 +883,9 @@ async function searchPixabayLive(
           height: Number(variant.height ?? 0),
           bytes: Number(variant.size ?? 0),
         }));
-      const mediumThumb = (videos.medium?.thumbnail ?? videos.small?.thumbnail ?? "") as string;
+      const mediumThumb = (videos.medium?.thumbnail ??
+        videos.small?.thumbnail ??
+        "") as string;
       return {
         id: `pixabay-${hit.id}`,
         provider: "pixabay",
@@ -554,7 +953,8 @@ export async function searchStock(
   }
 
   if (provider === "mixkit") {
-    const mixkit = await searchMixkitLive(effectiveQuery || "cinematic", limit);
+    const plan = buildVisualSearchPlan(effectiveQuery);
+    const mixkit = await searchMixkitLive(effectiveQuery || "cinematic", limit, plan.slugs);
     if (mixkit.length > 0) return { assets: mixkit, source: "mixkit-live" };
     return { assets: VIDEO_CATALOG.slice(0, limit), source: "pexels-pool" };
   }
@@ -571,17 +971,24 @@ export async function searchStock(
 
   if (provider === "pixabay") {
     const pixabay = await searchPixabayLive(effectiveQuery, limit);
-    if (pixabay && pixabay.length > 0) return { assets: pixabay, source: "pixabay-live" };
-    // Clear fallback to live Mixkit + Pexels if Pixabay key isn't set
-    const mixkit = await searchMixkitLive(effectiveQuery || "cinematic", limit);
-    if (mixkit.length > 0) return { assets: mixkit, source: "mixkit-live (pixabay key unset)" };
+    if (pixabay && pixabay.length > 0) {
+      return { assets: pixabay, source: "pixabay-live" };
+    }
+    const plan = buildVisualSearchPlan(effectiveQuery);
+    const mixkit = await searchMixkitLive(effectiveQuery || "cinematic", limit, plan.slugs);
+    if (mixkit.length > 0) {
+      return { assets: mixkit, source: "mixkit-live (pixabay key unset)" };
+    }
     return { assets: VIDEO_CATALOG.slice(0, limit), source: "pexels-pool" };
   }
 
-  // provider === "all": merge Pexels + Mixkit (+ Pixabay if key configured) in parallel!
+  // provider === "all": merge Pexels + Mixkit (+ Pixabay if key configured) in parallel
+  const plan = effectiveQuery ? buildVisualSearchPlan(effectiveQuery) : null;
   const [pexelsLive, mixkitLive, pixabayLive] = await Promise.all([
     searchPexelsLive(effectiveQuery, Math.ceil(limit / 2)),
-    effectiveQuery ? searchMixkitLive(effectiveQuery, Math.ceil(limit / 2)) : Promise.resolve([]),
+    effectiveQuery
+      ? searchMixkitLive(effectiveQuery, Math.ceil(limit / 2), plan?.slugs ?? [])
+      : Promise.resolve([]),
     searchPixabayLive(effectiveQuery, Math.ceil(limit / 3)),
   ]);
 
@@ -609,43 +1016,124 @@ export async function searchStock(
 }
 
 /**
- * Smart topic-aware clip matcher for AI script generation and Command Box
- * scene swaps. Prefers live Pexels/Mixkit when the topic isn't strongly
- * covered in the local Pexels pool so obscure topics still get accurate video!
+ * Semantic narration-to-video matcher: extracts filmable visual concepts from
+ * the scene's actual narration + caption + video topic, searches Pexels,
+ * Mixkit (with decomposed slugs), NASA, Wikimedia, and Pixabay, scores every
+ * candidate's real title & tags against the narration tokens, and returns the
+ * highest-relevance unused clip so each video ALWAYS matches its narration.
  */
+export async function matchVideoForNarration(opts: {
+  narration: string;
+  caption?: string;
+  topicContext?: string;
+  excludeIds?: string[];
+  preferredProvider?: string;
+}): Promise<{ asset: StockAsset | null; mediaQuery: string }> {
+  const excludeIds = opts.excludeIds ?? [];
+  const plan = buildVisualSearchPlan(
+    opts.narration,
+    opts.caption ?? "",
+    opts.topicContext ?? "",
+  );
+  const query = plan.displayQuery;
+
+  if (opts.preferredProvider && opts.preferredProvider !== "all") {
+    const { assets } = await searchStock(query, {
+      provider: opts.preferredProvider,
+      limit: 12,
+    });
+    const best = rankCandidates(assets, plan.targetTokens, excludeIds);
+    if (best) return { asset: best, mediaQuery: query };
+  }
+
+  // 1. Check our 82-clip verified Pexels CDN library first (instant, zero 429)
+  const localCandidates = searchLocalCatalog(
+    `${query} ${plan.targetTokens.slice(0, 6).join(" ")}`,
+    { type: "video", limit: 14 },
+  );
+  const unusedLocalBest = localCandidates.find((a) => !excludeIds.includes(a.id));
+  const localBestScore = unusedLocalBest
+    ? scoreAsset(unusedLocalBest, plan.targetTokens)
+    : 0;
+
+  // If we have no live Pexels/Pixabay keys and not a space/NASA topic, a strong
+  // unused verified Pexels clip (score >= 16) is fast, reliable, and spot-on!
+  if (
+    !process.env.PEXELS_API_KEY &&
+    !process.env.PIXABAY_API_KEY &&
+    !plan.preferNasa &&
+    unusedLocalBest &&
+    localBestScore >= 16
+  ) {
+    return { asset: unusedLocalBest, mediaQuery: query };
+  }
+
+  // 2. Otherwise query live providers in parallel (cached Mixkit + Pexels + NASA + Pixabay)
+  const [pexelsLive, mixkitLive, nasaLive, pixabayLive] = await Promise.all([
+    process.env.PEXELS_API_KEY ? searchPexelsLive(query, 10) : Promise.resolve(null),
+    searchMixkitLive(query, 12, plan.slugs),
+    plan.preferNasa ? searchNasaLive(query, 6) : Promise.resolve([]),
+    process.env.PIXABAY_API_KEY ? searchPixabayLive(query, 8) : Promise.resolve(null),
+  ]);
+
+  const pool = interleave(
+    [
+      pexelsLive ?? [],
+      nasaLive,
+      mixkitLive,
+      pixabayLive ?? [],
+      localCandidates,
+    ].filter((l) => l.length > 0),
+    36,
+  );
+
+  let best = rankCandidates(pool, plan.targetTokens, excludeIds);
+
+  // 3. If still weak (score < 10), also check Wikimedia Commons for real-world subjects
+  if (!best || scoreAsset(best, plan.targetTokens) < 10) {
+    const wiki = await searchWikimediaLive(query, 8);
+    if (wiki.length > 0) {
+      best = rankCandidates([...pool, ...wiki], plan.targetTokens, excludeIds);
+    }
+  }
+
+  return {
+    asset: best ?? matchLocalAsset(query, "video", excludeIds),
+    mediaQuery: query,
+  };
+}
+
+function rankCandidates(
+  candidates: StockAsset[],
+  tokens: string[],
+  excludeIds: string[],
+): StockAsset | null {
+  if (candidates.length === 0) return null;
+  const scored = candidates.map((asset) => {
+    const baseScore = scoreAsset(asset, tokens);
+    const alreadyUsed = excludeIds.includes(asset.id);
+    // Prefer unused clips strongly while still honoring semantic relevance
+    const total = baseScore + (alreadyUsed ? -10 : 5);
+    return { asset, baseScore, total };
+  });
+  scored.sort((a, b) => b.total - a.total || b.baseScore - a.baseScore);
+  return scored[0]?.asset ?? null;
+}
+
+/** Backwards-compatible wrapper for direct query-based clip matching. */
 export async function matchBestStockVideo(
   query: string,
   excludeIds: string[] = [],
   preferredProvider?: string,
+  topicContext?: string,
 ): Promise<StockAsset | null> {
-  if (preferredProvider && preferredProvider !== "all") {
-    const { assets } = await searchStock(query, { provider: preferredProvider, limit: 8 });
-    const picked = assets.find((a) => !excludeIds.includes(a.id)) ?? assets[0];
-    if (picked) return picked;
-  }
-
-  // If Pexels API key is active, query live Pexels first
-  if (process.env.PEXELS_API_KEY) {
-    const live = await searchPexelsLive(query, 8);
-    const picked = live?.find((a) => !excludeIds.includes(a.id)) ?? live?.[0];
-    if (picked) return picked;
-  }
-
-  // If the local Pexels pool has a strong multi-signal match, use it (fast + verified renditions)
-  const localScore = topLocalVideoScore(query);
-  if (localScore >= 7) {
-    const local = searchLocalCatalog(query, { type: "video", limit: 12 }).find(
-      (a) => !excludeIds.includes(a.id),
-    );
-    if (local) return local;
-  }
-
-  // Otherwise query live Mixkit for topic-specific free HD video!
-  const mixkit = await searchMixkitLive(query, 8);
-  const pickedMixkit = mixkit.find((a) => !excludeIds.includes(a.id)) ?? mixkit[0];
-  if (pickedMixkit) return pickedMixkit;
-
-  return matchLocalAsset(query, "video", excludeIds);
+  const { asset } = await matchVideoForNarration({
+    narration: query,
+    topicContext,
+    excludeIds,
+    preferredProvider,
+  });
+  return asset;
 }
 
 export function providerStatus() {

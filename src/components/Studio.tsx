@@ -5,8 +5,10 @@ import {
   ArrowLeft,
   ArrowUp,
   Check,
+  Copy,
   Crosshair,
   Download,
+  FileText,
   Film,
   Link2,
   Loader2,
@@ -38,22 +40,30 @@ import {
   formatClock,
   formatSmpte,
 } from "@/components/BrandMark";
-import { saveLocalProject } from "@/lib/client-store";
-import { narrationFingerprint, sceneNarrationText } from "@/lib/fingerprint";
+import {
+  loadLocalVideoBlob,
+  saveLocalProject,
+  saveLocalVideoBlob,
+} from "@/lib/client-store";
 import { resolveMediaUrl } from "@/lib/media-url";
 import { getMusicTrack, MUSIC_TRACKS } from "@/lib/music";
 import {
   ASPECT_ORDER,
   ASPECTS,
   CAPTION_MODES,
+  CAPTION_POSITIONS,
   LANGUAGES,
   MAX_SCENES,
+  MEDIA_FILTERS,
+  MEDIA_SPEEDS,
   RESOLUTION_ORDER,
   RESOLUTIONS,
   STYLES,
   TONES,
   type AspectRatio,
   type CaptionMode,
+  type CaptionPosition,
+  type MediaFilter,
   type MusicTrackId,
   type Project,
   type Resolution,
@@ -159,18 +169,21 @@ export default function Studio({
     lines: string[];
   } | null>(null);
 
-  // Export Modal
+  // Export & Full Script Editor Modals
   const [exportOpen, setExportOpen] = useState(false);
   const [exportResolution, setExportResolution] = useState<Resolution>(
     initialProject.resolution,
   );
+  const [scriptModalOpen, setScriptModalOpen] = useState(false);
+  const [bulkScriptText, setBulkScriptText] = useState("");
+  const [customVideoUrl, setCustomVideoUrl] = useState("");
 
   // Voices & Music
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceAccentFilter, setVoiceAccentFilter] = useState<string>("all");
   const [playingAudioKey, setPlayingAudioKey] = useState<string | null>(null);
 
-  // Stock Media Bin
+  // Stock Media Bin & Narration Sync
   const [assets, setAssets] = useState<StockAsset[]>([]);
   const [mediaSource, setMediaSource] = useState<string>("");
   const [providerFilter, setProviderFilter] = useState<StockProvider>("all");
@@ -178,6 +191,8 @@ export default function Studio({
     initialProject.script.scenes[0]?.mediaQuery ?? "",
   );
   const [searching, setSearching] = useState(false);
+  const [matchingSceneId, setMatchingSceneId] = useState<string | null>(null);
+  const [syncingAllMedia, setSyncingAllMedia] = useState(false);
   const [hoveredAssetId, setHoveredAssetId] = useState<string | null>(null);
 
   // Persistence & Render state
@@ -196,14 +211,11 @@ export default function Studio({
   });
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [matchingSceneIds, setMatchingSceneIds] = useState<string[]>([]);
-  const [customUrlDraft, setCustomUrlDraft] = useState("");
-  const [footageError, setFootageError] = useState<string | null>(null);
-  const matchInFlight = useRef<Set<string>>(new Set());
-  const projectRef = useRef(project);
-  const autoRenderRequested = useRef(false);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const hydrated = useRef(false);
+  const autorunDone = useRef(false);
   const saveSeqRef = useRef(0);
+  const matchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scenes = useMemo(() => project.script.scenes ?? [], [project.script.scenes]);
   const activeIndex = useMemo(() => {
@@ -214,19 +226,23 @@ export default function Studio({
 
   const captionMode: CaptionMode =
     project.script.options?.captionMode ?? "word-highlight";
+  const captionPosition: CaptionPosition =
+    project.script.options?.captionPosition ?? "bottom";
+  const voiceRateOffset = project.script.options?.voiceRateOffset ?? 0;
+  const autoMatchMedia = project.script.options?.autoMatchMedia ?? true;
   const musicTrackId: MusicTrackId =
     project.script.options?.musicTrack ?? "cinematic";
   const musicVolume = project.script.options?.musicVolume ?? 0.16;
 
   const sceneTimings = useMemo(() => {
-    const timings: { id: string; start: number; duration: number; end: number }[] = [];
-    let cursor = 0;
-    for (const scene of scenes) {
+    return scenes.reduce<
+      { id: string; start: number; duration: number; end: number }[]
+    >((acc, scene) => {
       const duration = estimateSceneSeconds(scene.narration, scene.duration);
-      timings.push({ id: scene.id, start: cursor, duration, end: cursor + duration });
-      cursor += duration;
-    }
-    return timings;
+      const start = acc.length > 0 ? acc[acc.length - 1].end : 0;
+      acc.push({ id: scene.id, start, duration, end: start + duration });
+      return acc;
+    }, []);
   }, [scenes]);
 
   const totalEstimatedSeconds = useMemo(
@@ -261,39 +277,82 @@ export default function Studio({
   );
 
   useEffect(() => {
+    let active = true;
+    const firstQuery = initialProject.script.scenes[0]?.mediaQuery ?? "";
+
+    // Always mirror into client-store so navigating back / reloading never loses the project
+    saveLocalProject(initialProject);
+
     fetch("/api/voices")
       .then((res) => res.json())
       .then((data) => {
-        if (Array.isArray(data.voices)) setVoices(data.voices);
+        if (active && Array.isArray(data.voices)) setVoices(data.voices);
       })
       .catch(() => undefined);
 
-    // Defer the first B-roll search so no state is set synchronously in the effect.
-    const firstQuery = initialProject.script.scenes[0]?.mediaQuery ?? "";
-    void Promise.resolve().then(() => searchMedia(firstQuery, "all"));
+    fetch(
+      `/api/media/search?q=${encodeURIComponent(firstQuery)}&provider=all&limit=24`,
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || !data) return;
+        setAssets(Array.isArray(data.assets) ? data.assets : []);
+        setMediaSource(data.source ?? "");
+      })
+      .catch(() => undefined);
+
+    if (ephemeralMode) {
+      void loadLocalVideoBlob(initialProject.id).then((blob) => {
+        if (!active || !blob) return;
+        const url = URL.createObjectURL(blob);
+        setInlineBlobUrl(url);
+      });
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [initialProject, ephemeralMode]);
+
+  // Apply live trim start & playback speed to the Storyboard monitor video element
+  useEffect(() => {
+    const el = previewVideoRef.current;
+    if (!el || !activeScene) return;
+    const speed =
+      typeof activeScene.mediaSpeed === "number" && activeScene.mediaSpeed > 0
+        ? activeScene.mediaSpeed
+        : 1;
+    el.playbackRate = speed;
+    if (
+      typeof activeScene.mediaStart === "number" &&
+      activeScene.mediaStart > 0 &&
+      el.readyState >= 1
+    ) {
+      try {
+        el.currentTime = activeScene.mediaStart;
+      } catch {
+        // Ignore seek errors before metadata
+      }
+    }
+  }, [activeScene]);
+
+  // Auto-trigger render when arriving from Home with ?autorun=1
+  useEffect(() => {
+    if (autorunDone.current) return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("autorun") === "1") {
+      autorunDone.current = true;
+      params.delete("autorun");
+      const cleanUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}`;
+      window.history.replaceState({}, "", cleanUrl);
+      const timer = setTimeout(() => {
+        void startMasterRender(initialProject.resolution, initialProject);
+      }, 150);
+      return () => clearTimeout(timer);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    projectRef.current = project;
-  }, [project]);
-
-  // Footage follows the narration: shortly after narration changes, every
-  // unlocked scene whose clip was matched to older text is re-matched.
-  useEffect(() => {
-    const stale = scenes.filter((scene) => {
-      const text = sceneNarrationText(scene);
-      return !scene.mediaLocked && text && scene.mediaMatchedFor !== narrationFingerprint(text);
-    });
-    if (stale.length === 0) return;
-    const timer = setTimeout(() => {
-      void (async () => {
-        for (const scene of stale) await rematchScene(scene.id);
-      })();
-    }, 1400);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenes]);
 
   // Multi-scene Storyboard auto-step playback
   useEffect(() => {
@@ -325,10 +384,8 @@ export default function Studio({
       }
       try {
         if (ephemeralMode) {
-          // Read the latest project via ref: a captured `project` here would be
-          // stale and could overwrite newer edits in browser storage.
           saveLocalProject({
-            ...projectRef.current,
+            ...project,
             ...(patch as Partial<Project>),
             updatedAt: new Date().toISOString(),
           });
@@ -363,7 +420,7 @@ export default function Studio({
         }
       }
     },
-    [project.id, hasMasterFile, ephemeralMode],
+    [project, hasMasterFile, ephemeralMode],
   );
 
   useEffect(() => {
@@ -371,12 +428,17 @@ export default function Studio({
       hydrated.current = true;
       return;
     }
+    // Keep client mirror fresh immediately on every edit
+    saveLocalProject(project);
     const timer = setTimeout(() => {
-      void persistPatch({ script: project.script, title: project.title }, true);
+      void persistPatch(
+        { script: project.script, title: project.title, prompt: project.prompt },
+        true,
+      );
     }, 650);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.script, project.title]);
+  }, [project.script, project.title, project.prompt]);
 
   // Poll FFmpeg encode status while active
   useEffect(() => {
@@ -394,17 +456,26 @@ export default function Studio({
       });
 
       if (nextStatus === "done") {
-        const refreshed = await fetch(`/api/projects/${project.id}`)
-          .then((r) => r.json())
-          .catch(() => null);
-        if (refreshed?.project) {
+        if (data.outputPath) {
           setProject((curr) => ({
             ...curr,
             status: "done",
-            resolution: refreshed.project.resolution,
-            outputPath: refreshed.project.outputPath,
-            posterPath: refreshed.project.posterPath,
+            outputPath: data.outputPath,
+            posterPath: data.posterPath ?? curr.posterPath,
           }));
+        } else {
+          const refreshed = await fetch(`/api/projects/${project.id}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null);
+          if (refreshed?.project) {
+            setProject((curr) => ({
+              ...curr,
+              status: "done",
+              resolution: refreshed.project.resolution,
+              outputPath: refreshed.project.outputPath,
+              posterPath: refreshed.project.posterPath,
+            }));
+          }
         }
         setHasUnrenderedEdits(false);
         setStoryboardPlaying(false);
@@ -413,7 +484,7 @@ export default function Studio({
       }
     }, 1400);
     return () => clearInterval(timer);
-  }, [render.status, project.id, ephemeralMode]);
+  }, [ephemeralMode, render.status, project.id]);
 
   function updateProjectSetting<K extends keyof Project>(
     key: K,
@@ -454,21 +525,130 @@ export default function Studio({
     }));
   }
 
+  const matchSceneToNarration = useCallback(
+    async (
+      sceneId: string,
+      narrationText: string,
+      captionText?: string,
+      forceUnlock = false,
+    ) => {
+      const clean = narrationText.trim();
+      if (!clean && !captionText?.trim()) return;
+      setMatchingSceneId(sceneId);
+      try {
+        const excludeIds = project.script.scenes
+          .filter((s) => s.id !== sceneId && s.mediaId)
+          .map((s) => s.mediaId as string);
+        const res = await fetch("/api/media/match", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            narration: clean,
+            caption: captionText ?? "",
+            topicContext: project.prompt || project.title,
+            excludeIds,
+            provider: providerFilter,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.match) {
+          setProject((curr) => ({
+            ...curr,
+            script: {
+              ...curr.script,
+              scenes: curr.script.scenes.map((scene) => {
+                if (scene.id !== sceneId) return scene;
+                if (scene.mediaLocked && !forceUnlock) return scene;
+                return {
+                  ...scene,
+                  ...data.match,
+                  mediaLocked: forceUnlock ? false : scene.mediaLocked,
+                };
+              }),
+            },
+          }));
+          if (data.mediaQuery) setSearch(data.mediaQuery);
+          if (hasMasterFile) setHasUnrenderedEdits(true);
+        }
+      } finally {
+        setMatchingSceneId((curr) => (curr === sceneId ? null : curr));
+      }
+    },
+    [project.script.scenes, project.prompt, project.title, providerFilter, hasMasterFile],
+  );
+
+  function handleNarrationEdit(scene: Scene, nextNarration: string) {
+    updateScene(scene.id, { narration: nextNarration });
+    if (matchTimerRef.current) clearTimeout(matchTimerRef.current);
+    if (!autoMatchMedia || scene.mediaLocked) return;
+    if (nextNarration.trim().split(/\s+/).length < 2) return;
+    matchTimerRef.current = setTimeout(() => {
+      void matchSceneToNarration(scene.id, nextNarration, scene.caption, false);
+    }, 1150);
+  }
+
+  async function syncAllScenesToNarration(overrideScenes?: Scene[]) {
+    const list = overrideScenes ?? scenes;
+    if (list.length === 0 || syncingAllMedia) return;
+    setSyncingAllMedia(true);
+    setMonitorMode("storyboard");
+    try {
+      const res = await fetch("/api/media/match", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          topicContext: project.prompt || project.title,
+          provider: providerFilter,
+          scenes: list.map((s) => ({
+            id: s.id,
+            narration: s.narration,
+            caption: s.caption,
+            mediaLocked: Boolean(s.mediaLocked),
+            mediaId: s.mediaId,
+          })),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.matches) {
+        setProject((curr) => ({
+          ...curr,
+          script: {
+            ...curr.script,
+            scenes: curr.script.scenes.map((scene) => {
+              const matched = data.matches[scene.id];
+              return matched && !scene.mediaLocked
+                ? { ...scene, ...matched }
+                : scene;
+            }),
+          },
+        }));
+        if (hasMasterFile) setHasUnrenderedEdits(true);
+      }
+    } finally {
+      setSyncingAllMedia(false);
+    }
+  }
+
   function addScene() {
     if (scenes.length >= MAX_SCENES) return;
-    const fallbackAsset = assets[0];
+    const unusedAsset =
+      assets.find((a) => !scenes.some((s) => s.mediaId === a.id)) ?? assets[0];
     const newScene: Scene = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      narration: "Add spoken narration for this cue.",
-      caption: `Cue ${scenes.length + 1}`,
-      mediaQuery: fallbackAsset?.tags.slice(0, 2).join(" ") ?? "city aerial",
-      mediaId: fallbackAsset?.id ?? null,
+      narration: "",
+      caption: `Scene ${scenes.length + 1}`,
+      mediaQuery: unusedAsset?.tags.slice(0, 2).join(" ") ?? "",
+      mediaId: unusedAsset?.id ?? null,
       mediaType: "video",
-      mediaUrl: fallbackAsset ? pickPreviewUrl(fallbackAsset) : null,
-      mediaThumb: fallbackAsset?.thumb ?? null,
-      mediaTitle: fallbackAsset?.title ?? null,
-      mediaCreator: fallbackAsset?.creator ?? null,
-      mediaProvider: fallbackAsset?.provider ?? "pexels",
+      mediaUrl: unusedAsset ? pickPreviewUrl(unusedAsset) : null,
+      mediaThumb: unusedAsset?.thumb ?? null,
+      mediaTitle: unusedAsset?.title ?? null,
+      mediaCreator: unusedAsset?.creator ?? null,
+      mediaProvider: unusedAsset?.provider ?? "pexels",
+      mediaStart: 0,
+      mediaSpeed: 1,
+      mediaFilter: "none",
+      mediaLocked: false,
       duration: null,
       transition: "none",
     };
@@ -481,6 +661,104 @@ export default function Studio({
       },
     }));
     setActiveSceneId(newScene.id);
+  }
+
+  function duplicateScene(sceneId: string) {
+    if (scenes.length >= MAX_SCENES) return;
+    const idx = scenes.findIndex((s) => s.id === sceneId);
+    if (idx < 0) return;
+    const clone: Scene = {
+      ...scenes[idx],
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      mediaLocked: false,
+    };
+    setMonitorMode("storyboard");
+    setProject((curr) => {
+      const next = [...curr.script.scenes];
+      next.splice(idx + 1, 0, clone);
+      return { ...curr, script: { ...curr.script, scenes: next } };
+    });
+    setActiveSceneId(clone.id);
+  }
+
+  function openScriptModal() {
+    setBulkScriptText(scenes.map((s) => s.narration.trim()).join("\n\n"));
+    setScriptModalOpen(true);
+  }
+
+  async function applyBulkScript(syncClipsAfter: boolean) {
+    const paragraphs = bulkScriptText
+      .split(/\n\s*\n+/)
+      .map((block) => block.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .slice(0, MAX_SCENES);
+    if (paragraphs.length === 0) return;
+
+    const updatedScenes: Scene[] = paragraphs.map((narration, idx) => {
+      const existing = scenes[idx];
+      const headline = narration
+        .replace(/[.!?,;:]+/g, "")
+        .split(/\s+/)
+        .slice(0, 5)
+        .join(" ");
+      if (existing) {
+        return {
+          ...existing,
+          narration,
+          caption: existing.caption || headline || `Scene ${idx + 1}`,
+          mediaLocked: syncClipsAfter ? false : existing.mediaLocked,
+        };
+      }
+      return {
+        id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+        narration,
+        caption: headline || `Scene ${idx + 1}`,
+        mediaQuery: "",
+        mediaId: null,
+        mediaType: "video",
+        mediaUrl: null,
+        mediaThumb: null,
+        mediaTitle: null,
+        mediaCreator: null,
+        mediaProvider: "pexels",
+        mediaStart: 0,
+        mediaSpeed: 1,
+        mediaFilter: "none",
+        mediaLocked: false,
+        duration: null,
+        transition: idx === 0 ? "fade" : "none",
+      };
+    });
+
+    setProject((curr) => ({
+      ...curr,
+      script: { ...curr.script, scenes: updatedScenes },
+    }));
+    setActiveSceneId(updatedScenes[0]?.id ?? "");
+    setScriptModalOpen(false);
+    setMonitorMode("storyboard");
+    if (hasMasterFile) setHasUnrenderedEdits(true);
+
+    if (syncClipsAfter) {
+      await syncAllScenesToNarration(updatedScenes);
+    }
+  }
+
+  function applyCustomVideoUrl() {
+    const cleanUrl = customVideoUrl.trim();
+    if (!activeScene || !cleanUrl) return;
+    if (!/^https?:\/\//i.test(cleanUrl)) return;
+    updateScene(activeScene.id, {
+      mediaId: `custom-${Date.now()}`,
+      mediaType: "video",
+      mediaUrl: cleanUrl,
+      mediaThumb: null,
+      mediaTitle: cleanUrl.split("/").pop()?.split("?")[0] || "Custom Video URL",
+      mediaCreator: "Custom URL",
+      mediaProvider: "custom",
+      mediaLocked: true,
+    });
+    setCustomVideoUrl("");
   }
 
   function removeScene(sceneId: string) {
@@ -518,11 +796,17 @@ export default function Studio({
     try {
       const response = await fetch(
         `/api/projects/${project.id}/scenes/${sceneId}`,
-        { method: "POST" },
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ project }),
+        },
       );
       const data = await response.json().catch(() => ({}));
       if (response.ok && data.project) {
-        setProject(data.project as Project);
+        const nextProject = data.project as Project;
+        setProject(nextProject);
+        saveLocalProject(nextProject);
         if (hasMasterFile) setHasUnrenderedEdits(true);
       }
     } finally {
@@ -536,11 +820,15 @@ export default function Studio({
     try {
       const response = await fetch(`/api/projects/${project.id}/script`, {
         method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project }),
       });
       const data = await response.json().catch(() => ({}));
       if (response.ok && data.project) {
-        setProject(data.project as Project);
-        setActiveSceneId(data.project.script.scenes?.[0]?.id ?? "");
+        const nextProject = data.project as Project;
+        setProject(nextProject);
+        saveLocalProject(nextProject);
+        setActiveSceneId(nextProject.script.scenes?.[0]?.id ?? "");
         if (hasMasterFile) setHasUnrenderedEdits(true);
       }
     } finally {
@@ -559,81 +847,8 @@ export default function Studio({
       mediaCreator: asset.creator,
       mediaProvider: asset.provider,
       mediaQuery: asset.tags.slice(0, 3).join(" "),
-      mediaStart: 0,
-      // A clip chosen by hand is never auto-replaced when narration changes.
       mediaLocked: true,
-      mediaMatchedFor: narrationFingerprint(sceneNarrationText(activeScene)),
     });
-  }
-
-  /** Re-pick a scene's clip from its narration (skips locked scenes unless forced). */
-  async function rematchScene(sceneId: string, force = false) {
-    const current = projectRef.current.script.scenes.find((scene) => scene.id === sceneId);
-    if (!current || matchInFlight.current.has(sceneId)) return;
-    if (current.mediaLocked && !force) return;
-    const narration = sceneNarrationText(current);
-    if (!narration) return;
-    const requestedFor = narrationFingerprint(narration);
-
-    matchInFlight.current.add(sceneId);
-    setMatchingSceneIds((ids) => [...ids, sceneId]);
-    setFootageError(null);
-    try {
-      const excludeIds = projectRef.current.script.scenes
-        .filter((scene) => scene.id !== sceneId)
-        .map((scene) => scene.mediaId)
-        .filter((clipId): clipId is string => Boolean(clipId));
-      const response = await fetch("/api/media/match", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          narration: current.narration,
-          caption: current.caption,
-          topic: projectRef.current.prompt,
-          excludeIds,
-          currentQuery: current.mediaQuery,
-        }),
-      });
-      const data = (await response.json().catch(() => ({}))) as {
-        media?: Partial<Scene>;
-        error?: string;
-      };
-      if (!response.ok || !data.media) throw new Error(data.error ?? "Could not match footage");
-
-      // Ignore a late answer if the narration changed again or the user locked a clip.
-      const latest = projectRef.current.script.scenes.find((scene) => scene.id === sceneId);
-      if (!latest || (latest.mediaLocked && !force)) return;
-      if (narrationFingerprint(sceneNarrationText(latest)) !== requestedFor) return;
-      updateScene(sceneId, { ...data.media, mediaMatchedFor: requestedFor, mediaLocked: false });
-    } catch (error) {
-      setFootageError(error instanceof Error ? error.message : "Could not match footage");
-    } finally {
-      matchInFlight.current.delete(sceneId);
-      setMatchingSceneIds((ids) => ids.filter((id) => id !== sceneId));
-    }
-  }
-
-  function applyCustomVideoUrl(sceneId: string) {
-    const url = customUrlDraft.trim();
-    if (!/^https?:\/\/\S+$/i.test(url)) {
-      setFootageError("Paste a direct video link starting with https:// (MP4 or WebM).");
-      return;
-    }
-    const target = scenes.find((scene) => scene.id === sceneId);
-    updateScene(sceneId, {
-      mediaId: null,
-      mediaType: "video",
-      mediaUrl: url,
-      mediaThumb: null,
-      mediaTitle: "Your video",
-      mediaCreator: null,
-      mediaProvider: "custom",
-      mediaStart: 0,
-      mediaLocked: true,
-      mediaMatchedFor: target ? narrationFingerprint(sceneNarrationText(target)) : null,
-    });
-    setCustomUrlDraft("");
-    setFootageError(null);
   }
 
   function stopAudio() {
@@ -655,7 +870,12 @@ export default function Studio({
       const response = await fetch("/api/tts/preview", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ voiceId, text }),
+        body: JSON.stringify({
+          voiceId,
+          text,
+          language: project.language,
+          rateOffset: voiceRateOffset,
+        }),
       });
       if (!response.ok) throw new Error("TTS failed");
       const blob = await response.blob();
@@ -691,21 +911,6 @@ export default function Studio({
       setPlayingAudioKey(null);
     }
   }
-
-  // Opened with ?autorender=1 (browser-only projects): start the render here,
-  // where the full project snapshot is available to send to the server.
-  useEffect(() => {
-    if (autoRenderRequested.current) return;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("autorender") !== "1") return;
-    autoRenderRequested.current = true;
-    params.delete("autorender");
-    const query = params.toString();
-    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
-    const timer = setTimeout(() => void startMasterRender(), 300);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   async function startMasterRender(overrideResolution?: Resolution, overrideProject?: Project) {
     const targetProject = overrideProject ?? project;
@@ -760,11 +965,15 @@ export default function Studio({
       const ct = response.headers.get("content-type") ?? "";
       if (response.ok && ct.includes("video/mp4")) {
         const blob = await response.blob();
+        void saveLocalVideoBlob(targetProject.id, blob);
         const url = URL.createObjectURL(blob);
         setInlineBlobUrl((prev) => {
           if (prev) URL.revokeObjectURL(prev);
           return url;
         });
+        const doneProject: Project = { ...snapshot, status: "done" };
+        setProject(doneProject);
+        saveLocalProject(doneProject);
         setRender({ status: "done", progress: 100, stage: "Master ready", error: null });
         setHasUnrenderedEdits(false);
         setRenderVersion((v) => v + 1);
@@ -888,13 +1097,6 @@ export default function Studio({
   return (
     <div className="flex min-h-screen flex-col bg-canvas text-paper">
       {/* Top NLE Transport & Sequence Bar */}
-      {ephemeralMode ? (
-        <div className="border-b border-amber-cue/30 bg-amber-cue/10 px-4 py-2 text-center font-tech text-[11px] text-[#f0d9a8]">
-          No database connected: this sequence is saved only in this browser. To keep
-          sequences on every device, open Vercel → Storage → create Neon Postgres,
-          connect it to this project and redeploy.
-        </div>
-      ) : null}
       <header className="sticky top-0 z-30 border-b border-line bg-panel">
         <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5">
           <div className="flex min-w-0 items-center gap-3">
@@ -992,6 +1194,15 @@ export default function Studio({
 
             <button
               type="button"
+              onClick={openScriptModal}
+              className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-inset px-2.5 py-1.5 font-tech text-[11px] text-paper transition-colors hover:border-amber-cue hover:text-amber-cue"
+            >
+              <FileText className="h-3 w-3 text-amber-cue" />
+              <span>Edit Script</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => void rewriteWholeScript()}
               disabled={rewritingAll || render.status === "rendering"}
               className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-inset px-2.5 py-1.5 font-tech text-[11px] text-stone-ink transition-colors hover:border-line-strong hover:text-paper disabled:opacity-45"
@@ -1000,7 +1211,7 @@ export default function Studio({
                 className={`h-3 w-3 ${rewritingAll ? "animate-spin text-amber-cue" : ""}`}
               />
               <span className="hidden lg:inline">
-                {rewritingAll ? "Redrafting…" : "Redraft Script"}
+                {rewritingAll ? "Redrafting…" : "Redraft"}
               </span>
             </button>
 
@@ -1065,15 +1276,31 @@ export default function Studio({
                 {totalWords} words · est. {formatClock(totalEstimatedSeconds)}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={addScene}
-              disabled={scenes.length >= MAX_SCENES}
-              className="inline-flex items-center gap-1 rounded-[2px] border border-line bg-panel px-2 py-1 font-tech text-[10px] uppercase tracking-wider text-paper transition-colors hover:border-amber-cue hover:text-amber-cue disabled:opacity-40"
-            >
-              <Plus className="h-3 w-3" />
-              <span>Scene</span>
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => void syncAllScenesToNarration()}
+                disabled={syncingAllMedia || scenes.length === 0}
+                title="Match every unlocked scene's video clip to its narration"
+                className="inline-flex items-center gap-1 rounded-[2px] border border-line bg-panel px-2 py-1 font-tech text-[10px] uppercase tracking-wider text-amber-cue transition-colors hover:border-amber-cue disabled:opacity-40"
+              >
+                {syncingAllMedia ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Wand2 className="h-3 w-3" />
+                )}
+                <span>Sync Clips</span>
+              </button>
+              <button
+                type="button"
+                onClick={addScene}
+                disabled={scenes.length >= MAX_SCENES}
+                className="inline-flex items-center gap-1 rounded-[2px] border border-line bg-panel px-2 py-1 font-tech text-[10px] uppercase tracking-wider text-paper transition-colors hover:border-amber-cue hover:text-amber-cue disabled:opacity-40"
+              >
+                <Plus className="h-3 w-3" />
+                <span>Scene</span>
+              </button>
+            </div>
           </div>
 
           <div className="scroll-thin flex-1 divide-y divide-line overflow-y-auto">
@@ -1293,28 +1520,62 @@ export default function Studio({
                 />
               </div>
             ) : (
-              <div
-                className={`relative flex items-end justify-center overflow-hidden border border-line-strong bg-[#0a0a09] ${monitorFrameClass}`}
-              >
-                {activeScene?.mediaUrl ? (
-                  <video
-                    key={activeScene.mediaUrl}
-                    src={activeScene.mediaUrl}
-                    poster={activeScene.mediaThumb ?? undefined}
-                    autoPlay
-                    muted
-                    loop
-                    playsInline
-                    className="absolute inset-0 h-full w-full object-cover"
-                  />
-                ) : activeScene?.mediaThumb ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={activeScene.mediaThumb}
-                    alt={activeScene.caption}
-                    className="absolute inset-0 h-full w-full object-cover"
-                  />
-                ) : null}
+                <div
+                  className={`relative flex justify-center overflow-hidden border border-line-strong bg-[#0a0a09] ${
+                    captionPosition === "top"
+                      ? "items-start"
+                      : captionPosition === "center"
+                        ? "items-center"
+                        : "items-end"
+                  } ${monitorFrameClass}`}
+                >
+                  {activeScene?.mediaUrl ? (
+                    <video
+                      ref={previewVideoRef}
+                      key={activeScene.mediaUrl}
+                      src={activeScene.mediaUrl}
+                      poster={activeScene.mediaThumb ?? undefined}
+                      autoPlay
+                      muted
+                      loop
+                      playsInline
+                      onLoadedMetadata={(e) => {
+                        const el = e.currentTarget;
+                        el.playbackRate =
+                          typeof activeScene.mediaSpeed === "number" &&
+                          activeScene.mediaSpeed > 0
+                            ? activeScene.mediaSpeed
+                            : 1;
+                        if (
+                          typeof activeScene.mediaStart === "number" &&
+                          activeScene.mediaStart > 0 &&
+                          activeScene.mediaStart < (el.duration || 60)
+                        ) {
+                          el.currentTime = activeScene.mediaStart;
+                        }
+                      }}
+                      style={{
+                        filter:
+                          MEDIA_FILTERS.find(
+                            (f) => f.id === (activeScene.mediaFilter ?? "none"),
+                          )?.css ?? "none",
+                      }}
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
+                  ) : activeScene?.mediaThumb ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={activeScene.mediaThumb}
+                      alt={activeScene.caption}
+                      style={{
+                        filter:
+                          MEDIA_FILTERS.find(
+                            (f) => f.id === (activeScene.mediaFilter ?? "none"),
+                          )?.css ?? "none",
+                      }}
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
+                  ) : null}
 
                 {showSafeGuides ? (
                   <div className="pointer-events-none absolute inset-0">
@@ -1335,11 +1596,25 @@ export default function Studio({
                       {activeScene.mediaTitle}
                     </span>
                   ) : null}
+                  {matchingSceneId === activeScene?.id ? (
+                    <span className="inline-flex items-center gap-1 rounded-[2px] bg-amber-cue px-1.5 py-0.5 font-tech text-[10px] font-semibold text-[#14110A]">
+                      <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                      Matching clip…
+                    </span>
+                  ) : null}
                 </div>
 
                 {/* Live Caption / Word-Highlight Preview */}
                 {captionMode !== "off" && previewSubtitleWords.length > 0 ? (
-                  <div className="relative z-10 mb-[8%] flex w-[86%] flex-col items-center text-center">
+                  <div
+                    className={`relative z-10 flex w-[86%] flex-col items-center text-center ${
+                      captionPosition === "top"
+                        ? "mt-[9%]"
+                        : captionPosition === "center"
+                          ? "my-0"
+                          : "mb-[8%]"
+                    }`}
+                  >
                     <span
                       className={`text-sm font-semibold leading-snug sm:text-base ${captionPreviewClasses(
                         project.style,
@@ -1550,6 +1825,38 @@ export default function Studio({
 
                   <button
                     type="button"
+                    onClick={() => duplicateScene(activeScene.id)}
+                    disabled={scenes.length >= MAX_SCENES}
+                    title="Duplicate scene"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-[3px] border border-line bg-panel text-stone-ink transition-colors hover:text-paper disabled:opacity-30"
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void matchSceneToNarration(
+                        activeScene.id,
+                        activeScene.narration,
+                        activeScene.caption,
+                        true,
+                      )
+                    }
+                    disabled={matchingSceneId === activeScene.id}
+                    title="Find the best stock video matching this narration"
+                    className="inline-flex items-center gap-1 rounded-[3px] border border-amber-cue/45 bg-amber-cue/10 px-2.5 py-1 font-tech text-[11px] text-amber-cue transition-colors hover:bg-amber-cue/20 disabled:opacity-45"
+                  >
+                    {matchingSceneId === activeScene.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Wand2 className="h-3 w-3" />
+                    )}
+                    <span>Match Clip</span>
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => void regenerateCue(activeScene.id)}
                     disabled={rewritingSceneId === activeScene.id}
                     className="inline-flex items-center gap-1 rounded-[3px] border border-line bg-panel px-2.5 py-1 font-tech text-[11px] text-stone-ink transition-colors hover:border-line-strong hover:text-paper disabled:opacity-45"
@@ -1576,19 +1883,37 @@ export default function Studio({
                 </div>
               </div>
 
-              <label className="block">
-                <span className="font-tech text-[10px] uppercase tracking-[0.14em] text-ash">
-                  Spoken Voiceover Script (drives synced captions & timing)
-                </span>
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label
+                    htmlFor="active-scene-narration"
+                    className="font-tech text-[10px] uppercase tracking-[0.14em] text-ash"
+                  >
+                    Spoken Voiceover Script (drives synced captions, timing & footage)
+                  </label>
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 font-tech text-[10px] text-stone-ink">
+                    <input
+                      type="checkbox"
+                      checked={autoMatchMedia}
+                      onChange={(e) =>
+                        updateScriptOptions({ autoMatchMedia: e.target.checked })
+                      }
+                      className="accent-[#E5A93C]"
+                    />
+                    <span>Auto-match clip to narration</span>
+                  </label>
+                </div>
                 <textarea
+                  id="active-scene-narration"
                   value={activeScene.narration}
                   onChange={(event) =>
-                    updateScene(activeScene.id, { narration: event.target.value })
+                    handleNarrationEdit(activeScene, event.target.value)
                   }
                   rows={3}
+                  placeholder="Write what the narrator should say in this scene — the video clip will automatically match your words…"
                   className="mt-1.5 w-full resize-none rounded-[3px] border border-line bg-panel px-3.5 py-2.5 text-sm leading-relaxed text-paper outline-none transition-colors focus:border-amber-cue"
                 />
-              </label>
+              </div>
 
               <div className="mt-3 grid gap-3 sm:grid-cols-12">
                 <label className="block sm:col-span-4">
@@ -1677,172 +2002,106 @@ export default function Studio({
                 </label>
               </div>
 
-              {/* Scene footage: follows the narration unless the clip is locked */}
-              {(() => {
-                const isMatching = matchingSceneIds.includes(activeScene.id);
-                const inSync =
-                  activeScene.mediaMatchedFor ===
-                  narrationFingerprint(sceneNarrationText(activeScene));
-                const status = isMatching
-                  ? { label: "Matching footage to narration…", tone: "text-amber-cue border-amber-cue/40" }
-                  : activeScene.mediaLocked
-                    ? { label: "Locked · your pick", tone: "text-paper border-line-strong" }
-                    : inSync
-                      ? { label: "Matches narration", tone: "text-nominal border-nominal/40" }
-                      : { label: "Narration changed · re-matching", tone: "text-amber-cue border-amber-cue/40" };
-                return (
-                  <div className="mt-4 rounded-[3px] border border-line bg-inset p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-tech text-[10px] uppercase tracking-[0.14em] text-ash">
-                        Scene Footage
-                      </span>
-                      <span
-                        className={`inline-flex items-center gap-1.5 rounded-[2px] border px-2 py-0.5 font-tech text-[10px] uppercase tracking-wider ${status.tone}`}
-                      >
-                        {isMatching ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        {status.label}
-                      </span>
-                    </div>
+              {/* Per-Scene Media Trim, Speed, Color Grade & Clip Lock Controls */}
+              <div className="mt-3 grid gap-3 rounded-[3px] border border-line bg-inset/70 p-3 sm:grid-cols-12 sm:items-end">
+                <label className="block sm:col-span-3">
+                  <span className="font-tech block text-[10px] uppercase tracking-[0.12em] text-ash">
+                    Clip Trim Start (s)
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={60}
+                    step={0.5}
+                    value={activeScene.mediaStart ?? 0}
+                    onChange={(event) =>
+                      updateScene(activeScene.id, {
+                        mediaStart: Math.max(0, Number(event.target.value) || 0),
+                      })
+                    }
+                    className="mt-1 w-full rounded-[3px] border border-line bg-canvas px-2.5 py-1.5 font-tech text-xs text-paper outline-none focus:border-amber-cue"
+                  />
+                </label>
 
-                    <div className="mt-2.5 grid gap-3 sm:grid-cols-[168px_minmax(0,1fr)]">
-                      <div className="relative aspect-video overflow-hidden rounded-[2px] border border-line bg-black">
-                        {activeScene.mediaUrl ? (
-                          <video
-                            key={`${activeScene.mediaUrl}#${activeScene.mediaStart ?? 0}`}
-                            src={`${activeScene.mediaUrl}#t=${Math.max(0, activeScene.mediaStart ?? 0)}`}
-                            poster={activeScene.mediaThumb ?? undefined}
-                            muted
-                            loop
-                            autoPlay
-                            playsInline
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="grid h-full place-items-center text-ash">
-                            <Film className="h-4 w-4" />
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="min-w-0 space-y-2.5">
-                        <div>
-                          <p className="truncate text-xs font-medium text-paper">
-                            {activeScene.mediaTitle || "No clip yet"}
-                          </p>
-                          <p className="truncate font-tech text-[10px] uppercase text-ash">
-                            {activeScene.mediaProvider ?? "stock"}
-                            {activeScene.mediaCreator ? ` · ${activeScene.mediaCreator}` : ""}
-                            {activeScene.mediaQuery ? ` · “${activeScene.mediaQuery}”` : ""}
-                          </p>
-                        </div>
-
-                        <div className="flex flex-wrap gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => void rematchScene(activeScene.id, true)}
-                            disabled={isMatching || !sceneNarrationText(activeScene)}
-                            className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-panel px-2.5 py-1 font-tech text-[11px] text-paper transition-colors hover:border-amber-cue hover:text-amber-cue disabled:opacity-40"
-                          >
-                            <Wand2 className="h-3 w-3" />
-                            Re-match to narration
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              updateScene(activeScene.id, {
-                                mediaLocked: !activeScene.mediaLocked,
-                                // Unlocking makes the clip follow the narration again.
-                                mediaMatchedFor: activeScene.mediaLocked
-                                  ? null
-                                  : narrationFingerprint(sceneNarrationText(activeScene)),
-                              })
-                            }
-                            title={
-                              activeScene.mediaLocked
-                                ? "Unlock: footage will follow the narration again"
-                                : "Lock: keep this clip even if the narration changes"
-                            }
-                            className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-panel px-2.5 py-1 font-tech text-[11px] text-stone-ink transition-colors hover:border-line-strong hover:text-paper"
-                          >
-                            {activeScene.mediaLocked ? (
-                              <Unlock className="h-3 w-3" />
-                            ) : (
-                              <Lock className="h-3 w-3" />
-                            )}
-                            {activeScene.mediaLocked ? "Unlock clip" : "Lock clip"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setTab("media");
-                              const query = activeScene.mediaQuery || sceneNarrationText(activeScene);
-                              setSearch(query);
-                              void searchMedia(query);
-                            }}
-                            className="inline-flex items-center gap-1.5 rounded-[3px] border border-line bg-panel px-2.5 py-1 font-tech text-[11px] text-stone-ink transition-colors hover:border-line-strong hover:text-paper"
-                          >
-                            <Search className="h-3 w-3" />
-                            Browse clips
-                          </button>
-                        </div>
-
-                        <div className="grid gap-2 sm:grid-cols-[120px_minmax(0,1fr)]">
-                          <label className="block">
-                            <span className="font-tech block text-[10px] uppercase tracking-[0.14em] text-ash">
-                              Start at (s)
-                            </span>
-                            <input
-                              type="number"
-                              min={0}
-                              step={0.5}
-                              value={activeScene.mediaStart ?? 0}
-                              onChange={(event) =>
-                                updateScene(activeScene.id, {
-                                  mediaStart: Math.max(0, Number(event.target.value) || 0),
-                                })
-                              }
-                              className="mt-1 w-full rounded-[3px] border border-line bg-panel px-2 py-1.5 font-tech text-[11px] text-paper outline-none focus:border-amber-cue"
-                            />
-                          </label>
-                          <div>
-                            <span className="font-tech block text-[10px] uppercase tracking-[0.14em] text-ash">
-                              Use my own video (direct MP4/WebM link)
-                            </span>
-                            <div className="mt-1 flex gap-1.5">
-                              <input
-                                value={customUrlDraft}
-                                onChange={(event) => setCustomUrlDraft(event.target.value)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter") applyCustomVideoUrl(activeScene.id);
-                                }}
-                                placeholder="https://…/clip.mp4"
-                                className="min-w-0 flex-1 rounded-[3px] border border-line bg-panel px-2.5 py-1.5 text-[11px] text-paper outline-none placeholder:text-ash focus:border-amber-cue"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => applyCustomVideoUrl(activeScene.id)}
-                                className="inline-flex items-center gap-1 rounded-[3px] border border-line bg-panel px-2.5 py-1.5 font-tech text-[10px] uppercase tracking-wider text-amber-cue transition-colors hover:border-amber-cue"
-                              >
-                                <Link2 className="h-3 w-3" />
-                                Use
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {footageError ? (
-                      <p className="mt-2 font-tech text-[11px] text-[#f4b4a8]">{footageError}</p>
-                    ) : (
-                      <p className="mt-2 text-[11px] leading-relaxed text-ash">
-                        Edit the narration and this scene&apos;s footage is re-matched to what is said.
-                        Pick a clip yourself (or lock this one) to keep it fixed.
-                      </p>
-                    )}
+                <div className="sm:col-span-3">
+                  <span className="font-tech block text-[10px] uppercase tracking-[0.12em] text-ash">
+                    Clip Speed
+                  </span>
+                  <div className="mt-1 grid grid-cols-4 rounded-[3px] border border-line bg-canvas p-0.5">
+                    {MEDIA_SPEEDS.map((spd) => {
+                      const active = (activeScene.mediaSpeed ?? 1) === spd;
+                      return (
+                        <button
+                          key={spd}
+                          type="button"
+                          onClick={() => updateScene(activeScene.id, { mediaSpeed: spd })}
+                          className={`rounded-[2px] py-1 font-tech text-[10px] transition-colors ${
+                            active
+                              ? "bg-elevated font-semibold text-amber-cue"
+                              : "text-stone-ink hover:text-paper"
+                          }`}
+                        >
+                          {spd}x
+                        </button>
+                      );
+                    })}
                   </div>
-                );
-              })()}
+                </div>
+
+                <label className="block sm:col-span-4">
+                  <span className="font-tech block text-[10px] uppercase tracking-[0.12em] text-ash">
+                    Color Grade / Look
+                  </span>
+                  <select
+                    value={activeScene.mediaFilter ?? "none"}
+                    onChange={(event) =>
+                      updateScene(activeScene.id, {
+                        mediaFilter: event.target.value as MediaFilter,
+                      })
+                    }
+                    className="mt-1 w-full rounded-[3px] border border-line bg-canvas px-2.5 py-1.5 text-xs text-paper outline-none focus:border-amber-cue"
+                  >
+                    {MEDIA_FILTERS.map((f) => (
+                      <option key={f.id} value={f.id} className="bg-panel">
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="sm:col-span-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateScene(activeScene.id, {
+                        mediaLocked: !activeScene.mediaLocked,
+                      })
+                    }
+                    title={
+                      activeScene.mediaLocked
+                        ? "Clip locked — click to allow auto-matching to narration"
+                        : "Clip unlocked — auto-matches when narration changes"
+                    }
+                    className={`inline-flex w-full items-center justify-center gap-1 rounded-[3px] border px-2 py-1.5 font-tech text-[10px] uppercase transition-colors ${
+                      activeScene.mediaLocked
+                        ? "border-amber-cue/50 bg-amber-cue/10 text-amber-cue"
+                        : "border-line bg-canvas text-stone-ink hover:text-paper"
+                    }`}
+                  >
+                    {activeScene.mediaLocked ? (
+                      <>
+                        <Lock className="h-3 w-3" />
+                        <span>Locked</span>
+                      </>
+                    ) : (
+                      <>
+                        <Unlock className="h-3 w-3" />
+                        <span>Auto</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
             </div>
           ) : null}
         </section>
@@ -1945,6 +2204,33 @@ export default function Studio({
                       {topic}
                     </button>
                   ))}
+                </div>
+
+                {/* Custom Video URL Paste Bar */}
+                <div className="rounded-[3px] border border-line bg-inset/60 p-2">
+                  <span className="font-tech mb-1 flex items-center gap-1 text-[9px] uppercase tracking-[0.12em] text-ash">
+                    <Link2 className="h-2.5 w-2.5 text-amber-cue" />
+                    <span>Or paste direct MP4 / WebM URL for SC {String(activeIndex + 1).padStart(2, "0")}</span>
+                  </span>
+                  <div className="flex gap-1.5">
+                    <input
+                      value={customVideoUrl}
+                      onChange={(e) => setCustomVideoUrl(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") applyCustomVideoUrl();
+                      }}
+                      placeholder="https://…/clip.mp4"
+                      className="min-w-0 flex-1 rounded-[2px] border border-line bg-canvas px-2 py-1 font-tech text-[11px] text-paper outline-none focus:border-amber-cue"
+                    />
+                    <button
+                      type="button"
+                      onClick={applyCustomVideoUrl}
+                      disabled={!customVideoUrl.trim()}
+                      className="rounded-[2px] border border-line bg-elevated px-2.5 py-1 font-tech text-[10px] uppercase text-paper hover:border-amber-cue hover:text-amber-cue disabled:opacity-40"
+                    >
+                      Use
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between font-tech text-[10px] text-ash">
@@ -2130,6 +2416,29 @@ export default function Studio({
                   ) : null}
                 </div>
 
+                {/* Voice Speaking Pace Control */}
+                <div className="rounded-[3px] border border-line bg-inset p-3">
+                  <div className="flex items-center justify-between font-tech text-[10px]">
+                    <span className="uppercase tracking-[0.12em] text-stone-ink">
+                      Voiceover Speaking Pace
+                    </span>
+                    <span className="text-amber-cue">
+                      {voiceRateOffset > 0 ? `+${voiceRateOffset}%` : `${voiceRateOffset}%`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-20}
+                    max={25}
+                    step={5}
+                    value={voiceRateOffset}
+                    onChange={(e) =>
+                      updateScriptOptions({ voiceRateOffset: Number(e.target.value) })
+                    }
+                    className="mt-1.5 w-full accent-[#E5A93C]"
+                  />
+                </div>
+
                 {/* Neural Voices Section */}
                 <div>
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -2253,24 +2562,50 @@ export default function Studio({
                   </div>
                 </div>
 
-                <label className="block">
-                  <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
-                    Caption Theme (libass)
-                  </span>
-                  <select
-                    value={project.style}
-                    onChange={(event) =>
-                      updateProjectSetting("style", event.target.value as Style)
-                    }
-                    className="w-full rounded-[3px] border border-line bg-canvas px-3 py-2 text-xs font-medium capitalize text-paper outline-none focus:border-amber-cue"
-                  >
-                    {STYLES.map((opt) => (
-                      <option key={opt} value={opt} className="bg-panel capitalize">
-                        {opt}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <label className="block">
+                    <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
+                      Caption Theme
+                    </span>
+                    <select
+                      value={project.style}
+                      onChange={(event) =>
+                        updateProjectSetting("style", event.target.value as Style)
+                      }
+                      className="w-full rounded-[3px] border border-line bg-canvas px-2.5 py-2 text-xs font-medium capitalize text-paper outline-none focus:border-amber-cue"
+                    >
+                      {STYLES.map((opt) => (
+                        <option key={opt} value={opt} className="bg-panel capitalize">
+                          {opt}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div>
+                    <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
+                      Caption Position
+                    </span>
+                    <div className="grid grid-cols-3 rounded-[3px] border border-line bg-canvas p-0.5">
+                      {CAPTION_POSITIONS.map((pos) => (
+                        <button
+                          key={pos.id}
+                          type="button"
+                          onClick={() =>
+                            updateScriptOptions({ captionPosition: pos.id })
+                          }
+                          className={`rounded-[2px] py-1.5 font-tech text-[10px] transition-colors ${
+                            captionPosition === pos.id
+                              ? "bg-elevated font-semibold text-amber-cue"
+                              : "text-stone-ink hover:text-paper"
+                          }`}
+                        >
+                          {pos.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
 
                 <div>
                   <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
@@ -2373,11 +2708,109 @@ export default function Studio({
                     </select>
                   </label>
                 </div>
+
+                {/* Editable Project Brief / Prompt */}
+                <div className="border-t border-line pt-3">
+                  <label className="block">
+                    <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
+                      Original Brief / Prompt (editable)
+                    </span>
+                    <textarea
+                      value={project.prompt}
+                      onChange={(event) =>
+                        setProject((curr) => ({ ...curr, prompt: event.target.value }))
+                      }
+                      rows={3}
+                      className="w-full resize-none rounded-[3px] border border-line bg-canvas px-2.5 py-2 text-xs leading-relaxed text-paper outline-none focus:border-amber-cue"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={rewritingAll}
+                    onClick={() => void rewriteWholeScript()}
+                    className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-[3px] border border-line bg-inset px-3 py-2 font-tech text-[11px] text-paper transition-colors hover:border-amber-cue hover:text-amber-cue disabled:opacity-45"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${rewritingAll ? "animate-spin" : ""}`} />
+                    <span>Regenerate All Scenes from Brief</span>
+                  </button>
+                </div>
               </div>
             ) : null}
           </div>
         </section>
       </div>
+
+      {/* FULL SCRIPT BULK EDITOR MODAL */}
+      {scriptModalOpen ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-[2px]"
+          onClick={() => setScriptModalOpen(false)}
+        >
+          <div
+            className="console-surface flex max-h-[88vh] w-full max-w-2xl flex-col rounded-[4px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-line bg-inset px-4 py-3">
+              <div>
+                <h2 className="font-tech text-xs font-semibold uppercase tracking-[0.14em] text-paper">
+                  Edit Full Video Script
+                </h2>
+                <p className="font-tech text-[10px] text-ash">
+                  Separate scenes with a blank line · Every scene gets synced footage & captions
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setScriptModalOpen(false)}
+                aria-label="Close script editor"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-[2px] border border-line text-stone-ink hover:text-paper"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+              <label className="block">
+                <span className="font-tech mb-1.5 block text-[10px] uppercase tracking-[0.14em] text-ash">
+                  Full Spoken Script (one paragraph per scene, up to {MAX_SCENES} scenes)
+                </span>
+                <textarea
+                  value={bulkScriptText}
+                  onChange={(e) => setBulkScriptText(e.target.value)}
+                  rows={14}
+                  placeholder="Scene 1 narration paragraph…&#10;&#10;Scene 2 narration paragraph…&#10;&#10;Scene 3 narration paragraph…"
+                  className="w-full resize-y rounded-[3px] border border-line bg-canvas p-3.5 text-sm leading-relaxed text-paper outline-none focus:border-amber-cue"
+                />
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line bg-inset px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setScriptModalOpen(false)}
+                className="rounded-[3px] border border-line bg-panel px-3.5 py-2 font-tech text-[11px] uppercase text-stone-ink hover:text-paper"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void applyBulkScript(false)}
+                className="rounded-[3px] border border-line bg-elevated px-3.5 py-2 font-tech text-[11px] font-medium uppercase text-paper hover:border-line-strong"
+              >
+                Save Script Only
+              </button>
+              <button
+                type="button"
+                onClick={() => void applyBulkScript(true)}
+                className="inline-flex items-center gap-1.5 rounded-[3px] bg-amber-cue px-4 py-2 font-tech text-[11px] font-semibold uppercase tracking-[0.06em] text-[#14110A] hover:bg-amber-hover"
+              >
+                <Wand2 className="h-3.5 w-3.5" />
+                <span>Apply & Match Clips to Narration</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* DEDICATED EXPORT MODAL (240p / 360p / 1080p) */}
       {exportOpen ? (

@@ -205,7 +205,7 @@ export default function Composer() {
         }),
       });
       const raw = await response.text();
-      let data: { project?: { id: string }; error?: string; persistence?: string } = {};
+      let data: { project?: { id: string }; error?: string } = {};
       try {
         data = raw ? (JSON.parse(raw) as typeof data) : {};
       } catch {
@@ -219,19 +219,7 @@ export default function Composer() {
 
       saveLocalProject(data.project as import("@/lib/types").Project);
       const projectId: string = data.project.id;
-      if (autoRender && data.persistence === "browser") {
-        // No database: the server may not see this project on the next request,
-        // so the studio starts the render and sends the full project with it.
-        router.push(`/studio/${projectId}?autorender=1`);
-        return;
-      }
-      if (autoRender) {
-        // Kick off FFmpeg master render immediately (returns 202 via next/server after())
-        await fetch(`/api/projects/${projectId}/render`, { method: "POST" }).catch(
-          () => undefined,
-        );
-      }
-      router.push(`/studio/${projectId}`);
+      router.push(autoRender ? `/studio/${projectId}?autorun=1` : `/studio/${projectId}`);
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not initialize sequence.",

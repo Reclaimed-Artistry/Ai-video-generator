@@ -6,7 +6,7 @@ import { db, ensureSchema, hasDatabaseUrl } from "@/db";
 import { projects, type ProjectRow } from "@/db/schema";
 import { defaultMusicForTone } from "./music";
 import { hydrateSceneMedia } from "./stock";
-import { deleteProjectArtifacts, getStorageRoot, IS_VERCEL } from "./storage";
+import { deleteProjectArtifacts, getStorageRoot } from "./storage";
 import type { AspectRatio, Project, Resolution, Style, Tone, VideoScript } from "./types";
 
 const UUID_RE =
@@ -77,6 +77,10 @@ function hydrateProject(project: Project): Project {
         musicTrack: opts?.musicTrack ?? defaultMusicForTone(project.tone || "cinematic"),
         musicVolume: typeof opts?.musicVolume === "number" ? opts.musicVolume : 0.16,
         captionMode: opts?.captionMode ?? "word-highlight",
+        captionPosition: opts?.captionPosition ?? "bottom",
+        voiceRateOffset:
+          typeof opts?.voiceRateOffset === "number" ? opts.voiceRateOffset : 0,
+        autoMatchMedia: opts?.autoMatchMedia ?? true,
       },
     },
   };
@@ -117,6 +121,12 @@ export function toProject(row: ProjectRow): Project {
             ? script.options.musicVolume
             : 0.16,
         captionMode: script.options?.captionMode ?? "word-highlight",
+        captionPosition: script.options?.captionPosition ?? "bottom",
+        voiceRateOffset:
+          typeof script.options?.voiceRateOffset === "number"
+            ? script.options.voiceRateOffset
+            : 0,
+        autoMatchMedia: script.options?.autoMatchMedia ?? true,
       },
     },
     outputPath: row.outputPath,
@@ -207,10 +217,6 @@ export async function getProject(id: string): Promise<Project | null> {
 
 export async function listProjects(limit = 24): Promise<Project[]> {
   if (!hasDatabaseUrl()) {
-    // On Vercel each request may hit a different instance, so in-memory
-    // projects listed here often cannot be reopened ("Sequence not found").
-    // Without a database the browser's own saved projects are the source of truth.
-    if (IS_VERCEL) return [];
     return Array.from(readFallbackStore().values())
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
       .slice(0, limit)
@@ -232,6 +238,7 @@ export async function updateProject(
     Pick<
       ProjectRow,
       | "title"
+      | "prompt"
       | "status"
       | "progress"
       | "stage"
@@ -258,6 +265,7 @@ export async function updateProject(
     const updated: Project = {
       ...existing,
       ...(values.title !== undefined ? { title: values.title } : {}),
+      ...(values.prompt !== undefined ? { prompt: values.prompt } : {}),
       ...(values.status !== undefined
         ? { status: values.status as Project["status"] }
         : {}),

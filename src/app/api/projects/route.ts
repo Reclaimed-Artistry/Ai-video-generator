@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
-import { hasDatabaseUrl } from "@/db";
 import { createProject, listProjects } from "@/lib/projects";
 import { generateScript } from "@/lib/script";
-import { syncScenesToNarration } from "@/lib/narration-match";
 import type {
   AspectRatio,
   CaptionMode,
@@ -67,8 +65,6 @@ export async function POST(request: Request) {
       captionMode: body.captionMode,
       title: body.title,
     });
-    // Match every scene's footage to what its narration actually says.
-    script.scenes = (await syncScenesToNarration(script.scenes, { topic: prompt })).scenes;
 
     const project = await createProject({
       title: body.title?.trim() || script.title,
@@ -83,10 +79,7 @@ export async function POST(request: Request) {
       script,
     });
 
-    return NextResponse.json(
-      { project, persistence: hasDatabaseUrl() ? "database" : "browser" },
-      { status: 201 },
-    );
+    return NextResponse.json({ project }, { status: 201 });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not draft sequence" },

@@ -1,65 +1,97 @@
 import { NextResponse } from "next/server";
-import { matchSceneToNarration, narrationVisualQuery } from "@/lib/narration-match";
-import type { Scene } from "@/lib/types";
+import { matchVideoForNarration, previewUrlForAsset } from "@/lib/stock";
+import type { StockAsset } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 30;
+export const maxDuration = 60;
 
-/**
- * Pick the stock clip that best fits a scene's narration.
- * Body: { narration, caption?, topic?, excludeIds?, currentQuery? }
- */
-export async function POST(request: Request) {
-  const body = (await request.json().catch(() => ({}))) as {
-    narration?: string;
+type SingleMatchBody = {
+  narration?: string;
+  caption?: string;
+  topicContext?: string;
+  excludeIds?: string[];
+  provider?: string;
+  scenes?: {
+    id: string;
+    narration: string;
     caption?: string;
-    topic?: string;
-    excludeIds?: string[];
-    currentQuery?: string;
+    mediaLocked?: boolean;
+    mediaId?: string | null;
+  }[];
+};
+
+function assetPayload(asset: StockAsset | null, mediaQuery: string) {
+  if (!asset) return null;
+  return {
+    mediaId: asset.id,
+    mediaType: "video" as const,
+    mediaUrl: previewUrlForAsset(asset),
+    mediaThumb: asset.thumb,
+    mediaTitle: asset.title,
+    mediaCreator: asset.creator,
+    mediaProvider: asset.provider,
+    mediaQuery,
   };
+}
 
-  const narration = (body.narration ?? "").trim();
-  if (!narration && !(body.caption ?? "").trim()) {
-    return NextResponse.json({ error: "Narration is empty" }, { status: 400 });
-  }
-
-  const probe: Scene = {
-    id: "match",
-    narration,
-    caption: body.caption ?? "",
-    mediaQuery: body.currentQuery ?? "",
-    mediaId: null,
-    mediaType: null,
-    duration: null,
-    transition: "none",
-  };
-
+export async function POST(request: Request) {
   try {
-    const matched = await matchSceneToNarration(probe, {
-      excludeIds: Array.isArray(body.excludeIds) ? body.excludeIds.slice(0, 40) : [],
-      topic: body.topic,
-      force: true,
+    const body = (await request.json().catch(() => ({}))) as SingleMatchBody;
+
+    // Batch mode: sync all unlocked scenes to their narration without duplicates
+    if (Array.isArray(body.scenes) && body.scenes.length > 0) {
+      const usedIds: string[] = body.scenes
+        .filter((s) => s.mediaLocked && s.mediaId)
+        .map((s) => s.mediaId as string);
+
+      const matches: Record<string, ReturnType<typeof assetPayload>> = {};
+
+      for (const scene of body.scenes) {
+        if (scene.mediaLocked) continue;
+        const { asset, mediaQuery } = await matchVideoForNarration({
+          narration: scene.narration || scene.caption || body.topicContext || "",
+          caption: scene.caption,
+          topicContext: body.topicContext,
+          excludeIds: usedIds,
+          preferredProvider: body.provider,
+        });
+        if (asset) usedIds.push(asset.id);
+        matches[scene.id] = assetPayload(asset, mediaQuery);
+      }
+
+      return NextResponse.json({ matches });
+    }
+
+    // Single scene mode
+    const narration = (body.narration ?? "").trim();
+    const caption = (body.caption ?? "").trim();
+    const topicContext = (body.topicContext ?? "").trim();
+    if (!narration && !caption && !topicContext) {
+      return NextResponse.json(
+        { error: "Narration or query text is required" },
+        { status: 400 },
+      );
+    }
+
+    const { asset, mediaQuery } = await matchVideoForNarration({
+      narration: narration || caption,
+      caption,
+      topicContext,
+      excludeIds: body.excludeIds ?? [],
+      preferredProvider: body.provider,
     });
+
     return NextResponse.json({
-      query: narrationVisualQuery(narration, { caption: body.caption, topic: body.topic }),
-      media: {
-        mediaId: matched.mediaId,
-        mediaType: matched.mediaType,
-        mediaUrl: matched.mediaUrl ?? null,
-        mediaThumb: matched.mediaThumb ?? null,
-        mediaTitle: matched.mediaTitle ?? null,
-        mediaCreator: matched.mediaCreator ?? null,
-        mediaProvider: matched.mediaProvider ?? null,
-        mediaQuery: matched.mediaQuery,
-        mediaMatchedFor: matched.mediaMatchedFor ?? null,
-        mediaStart: matched.mediaStart ?? 0,
-        mediaLocked: false,
-      },
+      match: assetPayload(asset, mediaQuery),
+      mediaQuery,
     });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Could not match footage" },
+      {
+        error:
+          error instanceof Error ? error.message : "Could not match footage",
+      },
       { status: 500 },
     );
   }

@@ -33,6 +33,7 @@ export async function PATCH(request: Request, context: Context) {
 
     const body = (await request.json().catch(() => ({}))) as {
       title?: string;
+      prompt?: string;
       voice?: string;
       resolution?: Resolution;
       aspect?: AspectRatio;
@@ -55,6 +56,7 @@ export async function PATCH(request: Request, context: Context) {
 
     await updateProject(id, {
       ...(body.title !== undefined ? { title: body.title } : {}),
+      ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
       ...(body.voice !== undefined ? { voice: body.voice } : {}),
       ...(body.resolution !== undefined ? { resolution: body.resolution } : {}),
       ...(body.aspect !== undefined ? { aspect: body.aspect } : {}),
