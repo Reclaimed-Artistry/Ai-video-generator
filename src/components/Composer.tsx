@@ -4,6 +4,7 @@ import { ArrowRight, FileText, Loader2, Music, Play, Square, Volume2 } from "luc
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AspectGlyph, AudioMeter } from "@/components/BrandMark";
+import { saveLocalProject } from "@/lib/client-store";
 import { MUSIC_TRACKS } from "@/lib/music";
 import {
   ASPECT_ORDER,
@@ -216,6 +217,7 @@ export default function Composer() {
         );
       }
 
+      saveLocalProject(data.project as import("@/lib/types").Project);
       const projectId: string = data.project.id;
       if (autoRender) {
         // Kick off FFmpeg master render immediately (returns 202 via next/server after())

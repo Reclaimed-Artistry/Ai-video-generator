@@ -25,6 +25,7 @@ import {
   RESOLUTIONS,
   type AspectRatio,
   type CaptionMode,
+  type Project,
   type Resolution,
   type Scene,
   type Style,
@@ -542,11 +543,17 @@ async function renderSceneVideo(
   return output;
 }
 
-export async function renderProject(projectId: string): Promise<void> {
-  const project = await getProject(projectId);
+async function renderProjectInternal(
+  projectId: string,
+  overrideProject?: Project,
+): Promise<{ mp4?: Buffer }> {
+  const inline = Boolean(overrideProject);
+  const project = overrideProject ?? (await getProject(projectId));
   if (!project) throw new Error("Project not found");
 
-  const dir = projectDir(projectId);
+  const dir = inline
+    ? projectDir(`${projectId}-inline-${Date.now()}`)
+    : projectDir(projectId);
   fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
   fs.mkdirSync(/* turbopackIgnore: true */ dir, { recursive: true });
 
@@ -763,6 +770,12 @@ export async function renderProject(projectId: string): Promise<void> {
     // poster is optional
   }
 
+  if (inline) {
+    const mp4 = fs.readFileSync(/* turbopackIgnore: true */ output);
+    fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
+    return { mp4 };
+  }
+
   await updateProject(projectId, {
     progress: 94,
     stage: isBlobConfigured()
@@ -798,6 +811,17 @@ export async function renderProject(projectId: string): Promise<void> {
     outputPath: savedOutputPath,
     posterPath: savedPosterPath,
   });
+  return {};
+}
+
+export async function renderProject(projectId: string): Promise<void> {
+  await renderProjectInternal(projectId);
+}
+
+export async function renderProjectInline(project: Project): Promise<Buffer> {
+  const res = await renderProjectInternal(project.id, project);
+  if (!res.mp4) throw new Error("Inline render produced no MP4 output");
+  return res.mp4;
 }
 
 type JobState = {

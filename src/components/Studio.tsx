@@ -34,6 +34,7 @@ import {
   formatClock,
   formatSmpte,
 } from "@/components/BrandMark";
+import { saveLocalProject } from "@/lib/client-store";
 import { resolveMediaUrl } from "@/lib/media-url";
 import { getMusicTrack, MUSIC_TRACKS } from "@/lib/music";
 import {
@@ -126,10 +127,13 @@ function captionPreviewClasses(style: Style): string {
 
 export default function Studio({
   initialProject,
+  ephemeralMode = false,
 }: {
   initialProject: Project;
+  ephemeralMode?: boolean;
 }) {
   const [project, setProject] = useState<Project>(initialProject);
+  const [inlineBlobUrl, setInlineBlobUrl] = useState<string | null>(null);
   const [activeSceneId, setActiveSceneId] = useState<string>(
     initialProject.script.scenes[0]?.id ?? "",
   );
@@ -224,7 +228,7 @@ export default function Studio({
     [scenes],
   );
 
-  const hasMasterFile = Boolean(project.outputPath) || render.status === "done";
+  const hasMasterFile = Boolean(inlineBlobUrl) || Boolean(project.outputPath) || render.status === "done";
 
   const searchMedia = useCallback(
     async (query: string, provider: StockProvider = providerFilter) => {
@@ -288,6 +292,21 @@ export default function Studio({
         setHasUnrenderedEdits(true);
       }
       try {
+        if (ephemeralMode) {
+          saveLocalProject({
+            ...project,
+            ...(patch as Partial<Project>),
+            updatedAt: new Date().toISOString(),
+          });
+          setSavedAt(
+            new Date().toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            }),
+          );
+          return;
+        }
         const response = await fetch(`/api/projects/${project.id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
@@ -327,7 +346,7 @@ export default function Studio({
 
   // Poll FFmpeg encode status while active
   useEffect(() => {
-    if (render.status !== "rendering") return;
+    if (ephemeralMode || render.status !== "rendering") return;
     const timer = setInterval(async () => {
       const response = await fetch(`/api/projects/${project.id}/render`);
       const data = await response.json().catch(() => ({}));
@@ -582,32 +601,68 @@ export default function Studio({
       error: null,
     });
 
-    await fetch(`/api/projects/${targetProject.id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: targetProject.title,
-        script: targetProject.script,
-        voice: targetProject.voice,
-        resolution: targetResolution,
-        aspect: targetProject.aspect,
-        tone: targetProject.tone,
-        style: targetProject.style,
-        language: targetProject.language,
-        duration: targetProject.duration,
-      }),
-    }).catch(() => undefined);
+    const snapshot: Project = { ...targetProject, resolution: targetResolution };
+    if (ephemeralMode) {
+      saveLocalProject(snapshot);
+      setRender({
+        status: "rendering",
+        progress: 35,
+        stage: `Encoding ${targetResolution} H.264 master (15–45s)…`,
+        error: null,
+      });
+    } else {
+      await fetch(`/api/projects/${targetProject.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: targetProject.title,
+          script: targetProject.script,
+          voice: targetProject.voice,
+          resolution: targetResolution,
+          aspect: targetProject.aspect,
+          tone: targetProject.tone,
+          style: targetProject.style,
+          language: targetProject.language,
+          duration: targetProject.duration,
+        }),
+      }).catch(() => undefined);
+    }
 
-    const response = await fetch(`/api/projects/${targetProject.id}/render`, {
-      method: "POST",
-    });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
+    try {
+      const response = await fetch(`/api/projects/${targetProject.id}/render`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project: snapshot }),
+      });
+      const ct = response.headers.get("content-type") ?? "";
+      if (response.ok && ct.includes("video/mp4")) {
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        setInlineBlobUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return url;
+        });
+        setRender({ status: "done", progress: 100, stage: "Master ready", error: null });
+        setHasUnrenderedEdits(false);
+        setRenderVersion((v) => v + 1);
+        setMonitorMode("master");
+        return;
+      }
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setRender({
+          status: "error",
+          progress: 0,
+          stage: "Encode aborted",
+          error: data.error ?? `Render failed (HTTP ${response.status})`,
+        });
+      }
+    } catch (cause) {
       setRender({
         status: "error",
         progress: 0,
         stage: "Encode aborted",
-        error: data.error ?? "Render failed",
+        error: cause instanceof Error ? cause.message : "Render request failed",
       });
     }
   }
@@ -621,7 +676,7 @@ export default function Studio({
       const response = await fetch(`/api/projects/${project.id}/command`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ command }),
+        body: JSON.stringify({ command, project }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -670,20 +725,24 @@ export default function Studio({
   );
 
   const outputUrl =
+    inlineBlobUrl ??
     resolveMediaUrl(
       project.outputPath,
       `renders/${project.id}/output.mp4`,
       renderVersion,
-    ) ?? `/api/files/renders/${project.id}/output.mp4?v=${renderVersion}`;
+    ) ??
+    `/api/files/renders/${project.id}/output.mp4?v=${renderVersion}`;
   const downloadUrl =
+    inlineBlobUrl ??
     resolveMediaUrl(project.outputPath, `renders/${project.id}/output.mp4`) ??
     `/api/files/renders/${project.id}/output.mp4`;
-  const posterUrl =
-    resolveMediaUrl(
-      project.posterPath,
-      `renders/${project.id}/poster.jpg`,
-      renderVersion,
-    ) ?? undefined;
+  const posterUrl = inlineBlobUrl
+    ? undefined
+    : resolveMediaUrl(
+        project.posterPath,
+        `renders/${project.id}/poster.jpg`,
+        renderVersion,
+      ) ?? undefined;
   const activeTiming = sceneTimings[activeIndex] ?? { start: 0, duration: 5, end: 5 };
 
   const monitorFrameClass =

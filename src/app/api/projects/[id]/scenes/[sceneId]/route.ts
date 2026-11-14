@@ -37,10 +37,13 @@ export async function PATCH(request: Request, context: Context) {
   }
 }
 
-export async function POST(_request: Request, context: Context) {
+export async function POST(request: Request, context: Context) {
   try {
     const { id, sceneId } = await context.params;
-    const project = await getProject(id);
+    const body = (await request.json().catch(() => ({}))) as {
+      project?: import("@/lib/types").Project;
+    };
+    const project = (await getProject(id)) ?? body.project ?? null;
     if (!project) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
@@ -65,7 +68,13 @@ export async function POST(_request: Request, context: Context) {
       stage: "Scene rewritten",
     });
 
-    const updated = await getProject(id);
+    const updated = (await getProject(id)) ?? {
+      ...project,
+      script: { ...project.script, scenes },
+      status: "ready" as const,
+      stage: "Scene rewritten",
+      updatedAt: new Date().toISOString(),
+    };
     return NextResponse.json({ project: updated });
   } catch (error) {
     return NextResponse.json(

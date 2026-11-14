@@ -2,8 +2,9 @@
 
 import { ArrowUpRight, CheckCircle2, Download, Film, Plus, Search, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { estimateSceneSeconds, formatClock } from "@/components/BrandMark";
+import { deleteLocalProject, listLocalProjects } from "@/lib/client-store";
 import { resolveMediaUrl } from "@/lib/media-url";
 import type { Project } from "@/lib/types";
 
@@ -16,6 +17,15 @@ export default function ProjectsBin({
 }) {
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+
+  useEffect(() => {
+    if (initialProjects.length > 0) return;
+    const timer = setTimeout(() => {
+      const local = listLocalProjects();
+      if (local.length > 0) setProjects(local);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [initialProjects.length]);
   const [query, setQuery] = useState("");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -38,7 +48,8 @@ export default function ProjectsBin({
     setDeletingId(id);
     try {
       const response = await fetch(`/api/projects/${id}`, { method: "DELETE" });
-      if (response.ok) {
+      deleteLocalProject(id);
+      if (response.ok || response.status === 404) {
         setProjects((curr) => curr.filter((item) => item.id !== id));
       }
     } finally {
