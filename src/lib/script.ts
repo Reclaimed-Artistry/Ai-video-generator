@@ -654,6 +654,12 @@ const wfMeta = workflowMeta(workflow);
 /**
  * Resolves which OpenAI-compatible Chat Completions endpoint to use.
  *
+ * Gemini and Groq are listed ahead of nothing because both offer a standing
+ * free tier with no credit card, so script drafting does not require payment.
+ * Both speak the OpenAI wire format, so only the base URL, key and model
+ * differ. Model names churn on both providers, so each default is overridable
+ * via `<PROVIDER>_TEXT_MODEL` — check the provider console if a name stops
+ * resolving.
  */
 function llmConfig(): { baseUrl: string; key: string; model: string } | null {
   if (process.env.OPENAI_API_KEY) {
@@ -663,6 +669,29 @@ function llmConfig(): { baseUrl: string; key: string; model: string } | null {
       model: process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini",
     };
   }
+
+  // Free tier is roughly 15 RPM / 500 RPD. Note the `/openai` segment: the
+  // native Gemini endpoint has a different request shape.
+  const gemini = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (gemini) {
+    return {
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      key: gemini,
+      model: process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash",
+    };
+  }
+
+  // Free tier is 30 RPM / 1,000 RPD / 200K tokens a day per model. Do not use
+  // the old `llama-3.3-70b-versatile` quickstart default — Groq retired it
+  // from free and developer tiers in August 2026.
+  if (process.env.GROQ_API_KEY) {
+    return {
+      baseUrl: "https://api.groq.com/openai/v1",
+      key: process.env.GROQ_API_KEY,
+      model: process.env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
+    };
+  }
+
   return null;
 }
 
@@ -702,7 +731,12 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
       body: JSON.stringify({
         model: llm.model,
         temperature: 0.75,
-        response_format: { type: "json_object" },
+        // Most OpenAI-compatible providers honour `json_object`, but not all
+        // free-tier models do. Set LLM_JSON_MODE=off to omit it and rely on
+        // parseJsonLoose() instead of dropping to the offline beat engine.
+        ...(process.env.LLM_JSON_MODE === "off"
+          ? {}
+          : { response_format: { type: "json_object" } }),
         messages: [
           {
             role: "system",

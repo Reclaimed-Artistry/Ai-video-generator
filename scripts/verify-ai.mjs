@@ -53,6 +53,8 @@ function report(state, detail, label) {
 async function main() {
   const replicate = process.env.REPLICATE_API_TOKEN;
   const openai = process.env.OPENAI_API_KEY;
+  const gemini = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const groq = process.env.GROQ_API_KEY;
   const mode = (process.env.AI_VIDEO_MODE || "fallback").trim().toLowerCase();
 
   console.log(`\n${BOLD}AI provider setup${RESET}\n`);
@@ -65,6 +67,16 @@ async function main() {
   );
   console.log(
     openai ? ok(`OPENAI_API_KEY             ${mask(openai)}`) : warn(`OPENAI_API_KEY             not set`),
+  );
+  console.log(
+    gemini
+      ? ok(`GEMINI_API_KEY             ${mask(gemini)}`)
+      : warn(`GEMINI_API_KEY             not set ${DIM}(free LLM)${RESET}`),
+  );
+  console.log(
+    groq
+      ? ok(`GROQ_API_KEY               ${mask(groq)}`)
+      : warn(`GROQ_API_KEY               not set ${DIM}(free LLM)${RESET}`),
   );
   console.log(`  AI_VIDEO_MODE             ${mode}\n`);
 
@@ -105,8 +117,12 @@ async function main() {
       ? ok(`AI images -> ${openai ? "OpenAI Images" : "Replicate Flux"}`)
       : warn("AI images -> on-device procedural generator"),
   );
+  const llm =
+    openai ? "OpenAI" : gemini ? "Gemini" : groq ? "Groq" : null;
   console.log(
-    openai ? ok("Scripting -> OpenAI") : warn("Scripting -> built-in beat engine"),
+    llm
+      ? ok(`Scripting -> ${llm}`)
+      : warn("Scripting -> built-in beat engine (set GEMINI_API_KEY or GROQ_API_KEY — both free)"),
   );
 
   // Actionable next steps.
@@ -119,6 +135,11 @@ async function main() {
       console.log("  1. Get a Replicate token: https://replicate.com/account/api-tokens");
       console.log("     Then add it to .env.local:");
       console.log(`${DIM}       REPLICATE_API_TOKEN=r8_your_token_here${RESET}`);
+    }
+    if (!llm) {
+      console.log("  2. For AI scriptwriting, add a FREE key (no card) to .env.local:");
+      console.log("       GEMINI_API_KEY  — https://aistudio.google.com/apikey");
+      console.log("       GROQ_API_KEY    — https://console.groq.com/keys");
     }
     console.log("  3. Re-run: npm run verify:ai");
   } else if (outcomes.some((o) => o === "rejected")) {
