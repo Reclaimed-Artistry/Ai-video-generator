@@ -57,7 +57,6 @@ offline. Scripts use a deterministic built-in engine, narration uses
 | `DATABASE_URL` | Production Postgres (falls back to embedded PGlite) |
 | `OPENAI_API_KEY` | LLM script drafting + DALL·E imagery |
 | `STABILITY_API_KEY` / `REPLICATE_API_TOKEN` / `GEMINI_API_KEY` | Alternative image providers |
-| `POLLINATIONS_API_KEY` | [Pollinations](https://pollinations.ai) scene images + LLM script drafting (OpenAI-compatible). Used when no other image/LLM key is set. Optional `POLLINATIONS_IMAGE_MODEL` / `POLLINATIONS_TEXT_MODEL` overrides. Server-side only — never expose an `sk_` key in the browser. |
 | `REPLICATE_API_TOKEN` | AI scene **video** via HunyuanVideo (`tencent/hunyuan-video`). The model needs ~45GB VRAM, so it runs on Replicate's GPUs rather than locally. Optional `HUNYUAN_VIDEO_MODEL` / `HUNYUAN_INFER_STEPS` / `HUNYUAN_GUIDANCE_SCALE` / `HUNYUAN_FLOW_SHIFT` / `HUNYUAN_TIMEOUT_MS` overrides. |
 | `AI_VIDEO_MODE` | When to generate video: `fallback` (default — only scenes with no usable stock clip), `always`, or `off` |
 | `ELEVENLABS_API_KEY` | Neural voices + real voice cloning |

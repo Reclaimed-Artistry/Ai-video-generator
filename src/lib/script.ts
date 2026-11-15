@@ -654,8 +654,6 @@ const wfMeta = workflowMeta(workflow);
 /**
  * Resolves which OpenAI-compatible Chat Completions endpoint to use.
  *
- * Pollinations speaks the same wire format, so it drops in as a fallback —
- * only the base URL, the key and the default model differ.
  */
 function llmConfig(): { baseUrl: string; key: string; model: string } | null {
   if (process.env.OPENAI_API_KEY) {
@@ -663,13 +661,6 @@ function llmConfig(): { baseUrl: string; key: string; model: string } | null {
       baseUrl: "https://api.openai.com/v1",
       key: process.env.OPENAI_API_KEY,
       model: process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini",
-    };
-  }
-  if (process.env.POLLINATIONS_API_KEY) {
-    return {
-      baseUrl: "https://gen.pollinations.ai/v1",
-      key: process.env.POLLINATIONS_API_KEY,
-      model: process.env.POLLINATIONS_TEXT_MODEL || "openai/gpt-5.4-nano",
     };
   }
   return null;

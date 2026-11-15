@@ -11,7 +11,6 @@ export type ImageProvider =
   | "stability"
   | "replicate"
   | "gemini"
-  | "pollinations"
   | "procedural";
 
 export type GeneratedImage = {
@@ -33,7 +32,6 @@ export function activeImageProvider(): ImageProvider {
   if (process.env.STABILITY_API_KEY) return "stability";
   if (process.env.REPLICATE_API_TOKEN) return "replicate";
   if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return "gemini";
-  if (process.env.POLLINATIONS_API_KEY) return "pollinations";
   return "procedural";
 }
 
@@ -57,7 +55,6 @@ export function imageProviderStatus(): {
     stability: "Stability AI",
     replicate: "Replicate Flux",
     gemini: "Gemini Imagen",
-    pollinations: "Pollinations Flux",
     procedural: "On-device generator",
   };
   const notes: Record<ImageProvider, string> = {
@@ -65,7 +62,6 @@ export function imageProviderStatus(): {
     stability: "Stable Image Core scene plates.",
     replicate: "Flux Schnell scene plates.",
     gemini: "Imagen 3 scene plates.",
-    pollinations: "Flux Schnell scene plates via Pollinations.",
     procedural:
       "No image API key found — generating brand-tinted abstract plates locally with FFmpeg.",
   };
@@ -232,58 +228,6 @@ async function generateGemini(
   const b64 = json.predictions?.[0]?.bytesBase64Encoded;
   if (!b64) throw new Error("Gemini returned no image");
   return { data: Buffer.from(b64, "base64"), ext: "png" };
-}
-
-/**
- * Pollinations exposes an OpenAI-compatible image endpoint, so the request and
- * response shapes match `generateOpenAi` — only the base URL, the key and the
- * default model differ. It takes an explicit pixel size rather than a named
- * aspect ratio.
- */
-async function generatePollinations(
-  prompt: string,
-  width: number,
-  height: number,
-): Promise<{ data: Buffer; ext: string } | null> {
-  const key = process.env.POLLINATIONS_API_KEY;
-  if (!key) return null;
-  const response = await fetch("https://gen.pollinations.ai/v1/images/generations", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${key}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: process.env.POLLINATIONS_IMAGE_MODEL || "black-forest-labs/flux.1-schnell",
-      prompt: prompt.slice(0, 1000),
-      n: 1,
-      size: `${width}x${height}`,
-      // b64_json returns the bytes inline, avoiding a second round trip to a
-      // short-lived asset URL.
-      response_format: "b64_json",
-    }),
-  });
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(
-      `Pollinations image generation failed (${response.status})${
-        detail ? `: ${detail.slice(0, 200)}` : ""
-      }`,
-    );
-  }
-  const json = (await response.json()) as {
-    data?: { b64_json?: string; url?: string }[];
-  };
-  const first = json.data?.[0];
-  if (first?.b64_json) {
-    return { data: Buffer.from(first.b64_json, "base64"), ext: "png" };
-  }
-  if (first?.url) {
-    const asset = await fetch(first.url);
-    if (!asset.ok) throw new Error("Could not download generated image");
-    return { data: Buffer.from(await asset.arrayBuffer()), ext: "png" };
-  }
-  throw new Error("Pollinations returned no image");
 }
 
 /* -------------------------------------------------- on-device composition */
@@ -506,9 +450,8 @@ export async function generateSceneImage(
             ? await generateStability(prompt, aspect)
             : provider === "replicate"
               ? await generateReplicate(prompt, aspect)
-              : provider === "pollinations"
-                ? await generatePollinations(prompt, width, height)
-                : await generateGemini(prompt, aspect);
+              : await generateGemini(prompt, aspect);
+
       if (result) buffer = result.data;
     } catch (error) {
       console.warn(

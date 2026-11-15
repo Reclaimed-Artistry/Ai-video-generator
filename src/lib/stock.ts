@@ -657,7 +657,6 @@ export function providerStatus() {
     pixabay: Boolean(process.env.PIXABAY_API_KEY),
     elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY),
     openai: Boolean(process.env.OPENAI_API_KEY),
-    pollinations: Boolean(process.env.POLLINATIONS_API_KEY),
     bundledLibrary: VIDEO_CATALOG.length,
   };
 }

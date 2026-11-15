@@ -17,7 +17,7 @@ import type { AspectRatio } from "./types";
  * `tencent/hunyuan-video`), which is the only way a Next.js app can use it.
  */
 
-export type AiVideoProvider = "hunyuan" | "pollinations" | "none";
+export type AiVideoProvider = "hunyuan" | "none";
 
 /**
  * When to spend money and wall-clock time generating footage.
@@ -34,12 +34,10 @@ const HUNYUAN_MAX_FRAMES = 129;
 const HUNYUAN_FPS = 24;
 
 const DEFAULT_HUNYUAN_MODEL = "tencent/hunyuan-video";
-const DEFAULT_POLLINATIONS_VIDEO_MODEL = "google/veo-3.1-fast";
 
 /** Provider chosen from whichever key is present. */
 export function activeAiVideoProvider(): AiVideoProvider {
   if (process.env.REPLICATE_API_TOKEN) return "hunyuan";
-  if (process.env.POLLINATIONS_API_KEY) return "pollinations";
   return "none";
 }
 
@@ -67,12 +65,10 @@ export function aiVideoStatus(): AiVideoStatus {
   const mode = aiVideoMode();
   const labels: Record<AiVideoProvider, string> = {
     hunyuan: "HunyuanVideo",
-    pollinations: "Pollinations Video",
     none: "Not configured",
   };
   const notes: Record<AiVideoProvider, string> = {
     hunyuan: "HunyuanVideo scene footage via Replicate.",
-    pollinations: "AI scene footage via Pollinations.",
     none: "No video API key found — scenes use stock clips, or an AI still with camera motion.",
   };
   return {
@@ -81,10 +77,7 @@ export function aiVideoStatus(): AiVideoStatus {
     label: labels[provider],
     note: notes[provider],
     mode,
-    model:
-      provider === "hunyuan"
-        ? process.env.HUNYUAN_VIDEO_MODEL || DEFAULT_HUNYUAN_MODEL
-        : process.env.POLLINATIONS_VIDEO_MODEL || DEFAULT_POLLINATIONS_VIDEO_MODEL,
+    model: process.env.HUNYUAN_VIDEO_MODEL || DEFAULT_HUNYUAN_MODEL,
   };
 }
 
@@ -266,56 +259,6 @@ async function generateHunyuan(options: GenerateOptions): Promise<GeneratedScene
   return { file, provider: "hunyuan", model, prompt: options.prompt };
 }
 
-/* --------------------------------------------------------- Pollinations video */
-
-async function generatePollinationsVideo(
-  options: GenerateOptions,
-): Promise<GeneratedSceneVideo> {
-  const key = process.env.POLLINATIONS_API_KEY as string;
-  const model = process.env.POLLINATIONS_VIDEO_MODEL || DEFAULT_POLLINATIONS_VIDEO_MODEL;
-  const { width, height } = snapSize(options.width, options.height);
-
-  const query = new URLSearchParams({
-    model,
-    width: String(width),
-    height: String(height),
-    duration: String(Math.max(1, Math.min(120, Math.round(options.duration)))),
-    aspectRatio: options.aspect === "9:16" ? "9:16" : options.aspect === "1:1" ? "1:1" : "16:9",
-  });
-  if (options.seed !== undefined) query.set("seed", String(options.seed));
-
-  const url = `https://gen.pollinations.ai/video/${encodeURIComponent(
-    buildVideoPrompt(options.prompt),
-  )}?${query.toString()}`;
-
-  const response = await fetch(url, {
-    headers: { authorization: `Bearer ${key}` },
-  });
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(
-      `Pollinations video generation failed (${response.status})${
-        detail ? `: ${detail.slice(0, 220)}` : ""
-      }`,
-    );
-  }
-
-  const file = path.join(/* turbopackIgnore: true */ tmpDir(), `pollinations-${randomUUID()}.mp4`);
-  if (!response.body) throw new Error("Pollinations returned no video body");
-  const chunks: Buffer[] = [];
-  const reader = response.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(Buffer.from(value));
-  }
-  const buffer = Buffer.concat(chunks);
-  if (buffer.byteLength < 1024) throw new Error("Pollinations returned an empty video");
-  fs.writeFileSync(/* turbopackIgnore: true */ file, buffer);
-
-  return { file, provider: "pollinations", model, prompt: options.prompt };
-}
-
 /* ------------------------------------------------------------------- public */
 
 /**
@@ -330,9 +273,7 @@ export async function generateSceneVideo(
   if (provider === "none") return null;
 
   try {
-    return provider === "hunyuan"
-      ? await generateHunyuan(options)
-      : await generatePollinationsVideo(options);
+    return await generateHunyuan(options);
   } catch (error) {
     console.warn(
       `[video] ${provider} generation failed, falling back:`,

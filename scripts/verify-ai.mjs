@@ -52,7 +52,6 @@ function report(state, detail, label) {
 
 async function main() {
   const replicate = process.env.REPLICATE_API_TOKEN;
-  const pollinations = process.env.POLLINATIONS_API_KEY;
   const openai = process.env.OPENAI_API_KEY;
   const mode = (process.env.AI_VIDEO_MODE || "fallback").trim().toLowerCase();
 
@@ -63,11 +62,6 @@ async function main() {
     replicate
       ? ok(`REPLICATE_API_TOKEN        ${mask(replicate)}`)
       : warn(`REPLICATE_API_TOKEN        not set ${DIM}(needed for HunyuanVideo)${RESET}`),
-  );
-  console.log(
-    pollinations
-      ? ok(`POLLINATIONS_API_KEY       ${mask(pollinations)}`)
-      : warn(`POLLINATIONS_API_KEY       not set`),
   );
   console.log(
     openai ? ok(`OPENAI_API_KEY             ${mask(openai)}`) : warn(`OPENAI_API_KEY             not set`),
@@ -97,45 +91,27 @@ async function main() {
     console.log("  " + warn("Replicate checks skipped — no token"));
   }
 
-  if (pollinations) {
-    const result = await probe("pollinations", "https://gen.pollinations.ai/v1/models", {
-      authorization: `Bearer ${pollinations}`,
-    });
-    outcomes.push(result.state);
-    console.log("  " + report(result.state, result.detail, "Pollinations API        "));
-  } else {
-    console.log("  " + warn("Pollinations checks skipped — no key"));
-  }
 
   // What the app will actually pick, mirroring src/lib/video.ts.
-  const videoProvider = replicate
-    ? "HunyuanVideo (Replicate)"
-    : pollinations
-      ? "Pollinations Video"
-      : "none";
+  const videoProvider = replicate ? "HunyuanVideo (Replicate)" : "none";
   console.log(`\n${BOLD}Resolved providers${RESET}`);
   console.log(
     replicate
       ? ok(`AI video  -> ${videoProvider} ${DIM}(model ${process.env.HUNYUAN_VIDEO_MODEL || "tencent/hunyuan-video"})${RESET}`)
-      : pollinations
-        ? warn(`AI video  -> ${videoProvider} — HunyuanVideo needs REPLICATE_API_TOKEN`)
-        : warn("AI video  -> none (scenes use stock clips, or an AI still + camera motion)"),
+      : warn("AI video  -> none (scenes use stock clips, or an AI still + camera motion)"),
   );
   console.log(
-    pollinations || openai
-      ? ok(`AI images -> ${openai ? "OpenAI Images" : "Pollinations Flux"}`)
+    openai || replicate
+      ? ok(`AI images -> ${openai ? "OpenAI Images" : "Replicate Flux"}`)
       : warn("AI images -> on-device procedural generator"),
   );
   console.log(
-    openai || pollinations
-      ? ok(`Scripting -> ${openai ? "OpenAI" : "Pollinations"}`)
-      : warn("Scripting -> built-in beat engine"),
+    openai ? ok("Scripting -> OpenAI") : warn("Scripting -> built-in beat engine"),
   );
 
   // Actionable next steps.
   const missing = [];
   if (!replicate) missing.push("REPLICATE_API_TOKEN");
-  if (!pollinations && !openai) missing.push("POLLINATIONS_API_KEY");
 
   console.log(`\n${BOLD}Next steps${RESET}`);
   if (missing.length) {
@@ -143,9 +119,6 @@ async function main() {
       console.log("  1. Get a Replicate token: https://replicate.com/account/api-tokens");
       console.log("     Then add it to .env.local:");
       console.log(`${DIM}       REPLICATE_API_TOKEN=r8_your_token_here${RESET}`);
-    }
-    if (!pollinations && !openai) {
-      console.log("  2. Set POLLINATIONS_API_KEY in .env.local for AI images and scripting.");
     }
     console.log("  3. Re-run: npm run verify:ai");
   } else if (outcomes.some((o) => o === "rejected")) {
