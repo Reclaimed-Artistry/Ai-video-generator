@@ -661,12 +661,26 @@ const wfMeta = workflowMeta(workflow);
  * via `<PROVIDER>_TEXT_MODEL` — check the provider console if a name stops
  * resolving.
  */
-function llmConfig(): { baseUrl: string; key: string; model: string } | null {
+type LlmConfig = {
+  /** Short provider name used in diagnostics. */
+  label: string;
+  baseUrl: string;
+  key: string;
+  model: string;
+  /** Provider-specific request fields that the others do not accept. */
+  extras: Record<string, unknown>;
+};
+
+function llmConfig(): LlmConfig | null {
   if (process.env.OPENAI_API_KEY) {
     return {
-      baseUrl: "https://api.openai.com/v1",
+      label: "OpenAI",
+      // LLM_BASE_URL lets you point any provider at a proxy, gateway or
+      // self-hosted endpoint (OpenRouter, LiteLLM, a corporate egress proxy).
+      baseUrl: process.env.LLM_BASE_URL || "https://api.openai.com/v1",
       key: process.env.OPENAI_API_KEY,
       model: process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini",
+      extras: {},
     };
   }
 
@@ -675,9 +689,22 @@ function llmConfig(): { baseUrl: string; key: string; model: string } | null {
   const gemini = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (gemini) {
     return {
-      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      label: "Gemini",
+      baseUrl:
+        process.env.LLM_BASE_URL ||
+        "https://generativelanguage.googleapis.com/v1beta/openai",
       key: gemini,
       model: process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash",
+      // Deliberately empty by default. Gemini's Flash models think before
+      // answering and those tokens come out of the same output budget, but
+      // Google only documents `reasoning_effort` for the Gemini 3.x models —
+      // for 2.5 it is inconsistent (some clients reject it as an unsupported
+      // param), and a rejected param is a 400 that kills script generation.
+      // A generous token budget handles the overhead instead. Opt in with
+      // GEMINI_REASONING_EFFORT=low|medium|high|none if you run a 3.x model.
+      extras: process.env.GEMINI_REASONING_EFFORT
+        ? { reasoning_effort: process.env.GEMINI_REASONING_EFFORT }
+        : {},
     };
   }
 
@@ -685,14 +712,34 @@ function llmConfig(): { baseUrl: string; key: string; model: string } | null {
   // the old `llama-3.3-70b-versatile` quickstart default — Groq retired it
   // from free and developer tiers in August 2026.
   if (process.env.GROQ_API_KEY) {
+    const model = process.env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b";
     return {
-      baseUrl: "https://api.groq.com/openai/v1",
+      label: "Groq",
+      baseUrl: process.env.LLM_BASE_URL || "https://api.groq.com/openai/v1",
       key: process.env.GROQ_API_KEY,
-      model: process.env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b",
+      model,
+      // `reasoning_effort` is only understood by the gpt-oss reasoning models;
+      // sending it to a plain chat model on Groq is rejected.
+      extras: model.includes("gpt-oss") ? { reasoning_effort: "low" } : {},
     };
   }
 
   return null;
+}
+
+/**
+ * Output-token budget for a script request.
+ *
+ * This matters more than it looks. Reasoning models (Groq's gpt-oss, Gemini's
+ * thinking) spend part of the output budget on reasoning, and with the
+ * provider default the JSON comes back truncated mid-object — which then
+ * parses as nothing and silently drops the user to the offline beat engine.
+ * Budget per scene so long scripts still finish. Override with LLM_MAX_TOKENS.
+ */
+function llmTokenBudget(sceneCount: number): number {
+  const override = Number(process.env.LLM_MAX_TOKENS);
+  if (Number.isFinite(override) && override > 0) return Math.floor(override);
+  return Math.min(8192, 1500 + sceneCount * 600);
 }
 
 /**
@@ -714,6 +761,47 @@ function parseJsonLoose(text: string): unknown {
   }
 }
 
+/**
+ * Builds the Chat Completions request body. Shared with `llmProbe()` so the
+ * diagnostic exercises exactly the bytes production sends — a hand-copied
+ * probe drifts and stops testing what it claims to.
+ */
+function llmBody(
+  llm: LlmConfig,
+  count: number,
+  options: {
+    prompt: string;
+    language?: string;
+    tone?: string;
+    duration: number;
+  },
+  workflowLabel: string,
+): Record<string, unknown> {
+  return {
+    model: llm.model,
+    temperature: 0.75,
+    // Most OpenAI-compatible providers honour `json_object`, but not all
+    // free-tier models do. Set LLM_JSON_MODE=off to omit it and rely on
+    // parseJsonLoose() instead of dropping to the offline beat engine.
+    ...(process.env.LLM_JSON_MODE === "off"
+      ? {}
+      : { response_format: { type: "json_object" } }),
+    max_completion_tokens: llmTokenBudget(count),
+    ...llm.extras,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a veteran video director & scriptwriter like InVideo AI. Write natural, vivid, spoken narration (no clich\u00e9s, no robotic intros). Return strict JSON only.",
+      },
+      {
+        role: "user",
+        content: `Write a ${count}-scene ${workflowLabel} video script in language "${options.language ?? "English"}" about: "${options.prompt}". Tone: ${options.tone ?? "neutral"}. Target total duration: ${options.duration}s. Each scene narration should be 1-2 natural spoken sentences. Each scene needs a concise caption (max 5 words) and a concrete stock-video search query (2-3 visual keywords). Return JSON: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string}]}`,
+      },
+    ],
+  };
+}
+
 async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript | null> {
   const llm = llmConfig();
   const workflow = asWorkflow(options.workflow);
@@ -728,40 +816,47 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
         authorization: `Bearer ${llm.key}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        model: llm.model,
-        temperature: 0.75,
-        // Most OpenAI-compatible providers honour `json_object`, but not all
-        // free-tier models do. Set LLM_JSON_MODE=off to omit it and rely on
-        // parseJsonLoose() instead of dropping to the offline beat engine.
-        ...(process.env.LLM_JSON_MODE === "off"
-          ? {}
-          : { response_format: { type: "json_object" } }),
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a veteran video director & scriptwriter like InVideo AI. Write natural, vivid, spoken narration (no clichés, no robotic intros). Return strict JSON only.",
-          },
-          {
-            role: "user",
-            content: `Write a ${count}-scene ${wfMeta.label} video script in language "${options.language}" about: "${options.prompt}". Tone: ${options.tone}. Target total duration: ${options.duration}s. Each scene narration should be 1-2 natural spoken sentences. Each scene needs a concise caption (max 5 words) and a concrete stock-video search query (2-3 visual keywords). Return JSON: {"title": string, "summary": string, "scenes": [{"narration": string, "caption": string, "mediaQuery": string}]}`,
-          },
-        ],
-      }),
+      body: JSON.stringify(llmBody(llm, count, options, wfMeta.label)),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      console.warn(
+        `[script] ${llm.label} returned ${response.status} for model "${llm.model}": ${detail.slice(0, 300)}`,
+      );
+      return null;
+    }
     const data = (await response.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: { message?: { content?: string }; finish_reason?: string }[];
     };
     const content = data.choices?.[0]?.message?.content;
-    if (!content) return null;
-    const parsed = parseJsonLoose(content) as {
+    if (!content) {
+      console.warn(`[script] ${llm.label} (${llm.model}) returned an empty message body.`);
+      return null;
+    }
+    let parsed: {
       title?: string;
       summary?: string;
       scenes?: { narration?: string; caption?: string; mediaQuery?: string }[];
     };
-    if (!parsed.scenes?.length) return null;
+    try {
+      parsed = parseJsonLoose(content) as typeof parsed;
+    } catch {
+      // Almost always a truncated reply: the output budget ran out mid-JSON
+      // because reasoning consumed it. Raise LLM_MAX_TOKENS if this recurs.
+      console.warn(
+        `[script] ${llm.label} (${llm.model}) returned text that is not JSON ` +
+          `(finish_reason=${data.choices?.[0]?.finish_reason ?? "?"}, ` +
+          `${content.length} chars). Likely truncated — try a bigger LLM_MAX_TOKENS. ` +
+          `First 200 chars: ${content.slice(0, 200)}`,
+      );
+      return null;
+    }
+    if (!parsed.scenes?.length) {
+      console.warn(
+        `[script] ${llm.label} (${llm.model}) returned JSON with no scenes; using the beat engine.`,
+      );
+      return null;
+    }
 
     const usedAssets: string[] = [];
     const scenes: Scene[] = [];
@@ -796,7 +891,13 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
         captionMode: options.captionMode ?? wfMeta.defaultCaptionMode,
       },
     };
-  } catch {
+  } catch (error) {
+    // Never surface this to the caller — the beat engine is a fine fallback —
+    // but a silent catch made LLM failures impossible to diagnose.
+    console.warn(
+      `[script] ${llm.label} (${llm.model}) script generation failed: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
     return null;
   }
 }
@@ -847,4 +948,92 @@ export async function regenerateScene(
     },
     matched,
   );
+}
+
+/**
+ * Live end-to-end check of the configured LLM.
+ *
+ * Sends one real script request through the exact production body and reports
+ * what came back, so a broken key, a retired model name or truncated JSON is
+ * visible instead of silently degrading to the beat engine.
+ */
+export async function llmProbe(): Promise<Record<string, unknown>> {
+  const llm = llmConfig();
+  if (!llm) {
+    return { configured: false, reason: "No LLM key set (OPENAI / GEMINI / GROQ)." };
+  }
+
+  const options = {
+    prompt: "a calm ocean sunrise",
+    language: "English",
+    tone: "calm",
+    duration: 15,
+  };
+  const count = sceneCountFor(options.duration, asWorkflow("storyboard"));
+  const report: Record<string, unknown> = {
+    configured: true,
+    provider: llm.label,
+    model: llm.model,
+    baseUrl: llm.baseUrl,
+    jsonMode: process.env.LLM_JSON_MODE !== "off",
+    tokenBudget: llmTokenBudget(count),
+    url: `${llm.baseUrl}/chat/completions`,
+  };
+
+  const started = Date.now();
+  try {
+    const response = await fetch(`${llm.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${llm.key}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(llmBody(llm, count, options, workflowMeta("storyboard").label)),
+    });
+    report.httpStatus = response.status;
+    report.elapsedMs = Date.now() - started;
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      report.ok = false;
+      report.error = detail.slice(0, 600);
+      return report;
+    }
+
+    const data = (await response.json()) as {
+      choices?: {
+        message?: { content?: string };
+        finish_reason?: string;
+      }[];
+      usage?: Record<string, unknown>;
+    };
+    const content = data.choices?.[0]?.message?.content ?? "";
+    report.finishReason = data.choices?.[0]?.finish_reason ?? null;
+    report.usage = data.usage ?? null;
+    report.replyChars = content.length;
+
+    try {
+      const parsed = parseJsonLoose(content) as {
+        title?: string;
+        scenes?: { narration?: string; caption?: string; mediaQuery?: string }[];
+      };
+      report.ok = Boolean(parsed.scenes?.length);
+      report.sceneCount = parsed.scenes?.length ?? 0;
+      report.title = parsed.title ?? null;
+      report.firstNarration = parsed.scenes?.[0]?.narration ?? null;
+      if (report.finishReason === "length") {
+        report.warning =
+          "Reply hit the token limit (finish_reason=length) — raise LLM_MAX_TOKENS.";
+      }
+    } catch {
+      report.ok = false;
+      report.error = `Reply was not JSON (first 400 chars): ${content.slice(0, 400)}`;
+    }
+    return report;
+  } catch (error) {
+    report.ok = false;
+    report.elapsedMs = Date.now() - started;
+    report.error = error instanceof Error ? error.message : String(error);
+    return report;
+  }
 }
