@@ -1,0 +1,303 @@
+{
+ "method": "Manual visual review of every race-labelled clip thumbnail (numbered contact sheets per group). Pexels descriptions are race-neutral, so labels were checked by eye. Clips whose people cannot be identified keep no race label and are only used for the All Races option. People-free clips (the fallback pool) were reviewed separately: any clip showing a person, arm or hands was removed from that pool.",
+ "reviewedClips": 41,
+ "overrides": {
+  "v7017773": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Person not identifiable in frame (edge of shot, silhouette, legs or hands only)",
+   "previousLabel": "african-american",
+   "title": "Active African American senior woman walking city street with coffee"
+  },
+  "v6390151": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Person not identifiable in frame (edge of shot, silhouette, legs or hands only)",
+   "previousLabel": "african-american",
+   "title": "African American athlete strength training in gym"
+  },
+  "v6390396": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Person not identifiable in frame (edge of shot, silhouette, legs or hands only)",
+   "previousLabel": "african-american",
+   "title": "African American couple exercising with jump rope in gym"
+  },
+  "v4742663": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Person not identifiable in frame (edge of shot, silhouette, legs or hands only)",
+   "previousLabel": "african-american",
+   "title": "African American man doing push-ups at fitness gym"
+  },
+  "v7967331": {
+   "demographics": [
+    "all"
+   ],
+   "hasPeople": true,
+   "reason": "Mixed group including people of other backgrounds",
+   "previousLabel": "african-american",
+   "title": "African American creators collaborating on media campaign in office"
+  },
+  "v7593576": {
+   "demographics": [
+    "all"
+   ],
+   "hasPeople": true,
+   "reason": "Mixed group including people of other backgrounds",
+   "previousLabel": "african-american",
+   "title": "African American man and woman collaborating side by side at office"
+  },
+  "v3255329": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Appearance does not support the Hispanic/Latino label",
+   "previousLabel": "hispanic",
+   "title": "Hispanic software engineer focused on laptop at workplace"
+  },
+  "v5944692": {
+   "demographics": [
+    "all"
+   ],
+   "hasPeople": true,
+   "reason": "Mixed group (not a Hispanic/Latino-only cast)",
+   "previousLabel": "hispanic",
+   "title": "Hispanic team reviewing project plans together in modern office"
+  },
+  "v8296449": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Close-up of hands/cups; no faces visible",
+   "previousLabel": "middle-eastern",
+   "title": "Middle Eastern couple talking over warm coffee mugs"
+  },
+  "v9736882": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "Artisan painting a handmade ceramic cup in studio"
+  },
+  "v5216377": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "Craftsperson shaping reclaimed wood craft in workshop"
+  },
+  "v7815856": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "Man drinking from a stainless steel tumbler bottle"
+  },
+  "v7815861": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "Man drinking water from bottle on rocky mountain"
+  },
+  "v6274261": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "Music band performing live in studio"
+  },
+  "v4142313": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "Musician playing acoustic guitar and singing"
+  },
+  "v4945125": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "Person running at the treadmill"
+  },
+  "v4945121": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "Person running on a treadmill"
+  },
+  "v6130128": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "Scientist examining sample through microscope in laboratory"
+  },
+  "v6332867": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "White man setting up laptop and work materials at home desk"
+  },
+  "v8435367": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "White man walking down sunlit city sidewalk drinking coffee"
+  },
+  "v7877140": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "White woman jogging outdoors down urban stone stairs"
+  },
+  "v6201696": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands, feet or back of person only; race not identifiable",
+   "previousLabel": "caucasian",
+   "title": "Woman grinding black pepper"
+  },
+  "v6130233": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Appearance does not clearly support the White/Caucasian label",
+   "previousLabel": "caucasian",
+   "title": "Laboratory researcher testing samples in medical lab"
+  },
+  "v8865809": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Appearance does not clearly support the White/Caucasian label",
+   "previousLabel": "caucasian",
+   "title": "Man drinking bottled water"
+  },
+  "v7624645": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Appearance does not clearly support the White/Caucasian label",
+   "previousLabel": "caucasian",
+   "title": "Man drinking water outdoors"
+  },
+  "v8477157": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Appearance does not clearly support the White/Caucasian label",
+   "previousLabel": "caucasian",
+   "title": "Restaurant chef wearing apron in kitchen"
+  },
+  "v6274273": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Appearance does not clearly support the White/Caucasian label",
+   "previousLabel": "caucasian",
+   "title": "Singer performing at microphone in music studio"
+  },
+  "v6804109": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Appearance does not clearly support the White/Caucasian label",
+   "previousLabel": "caucasian",
+   "title": "Software engineers coding on computer monitors"
+  },
+  "v5944871": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Appearance does not clearly support the White/Caucasian label",
+   "previousLabel": "caucasian",
+   "title": "White remote worker typing on laptop while sipping coffee"
+  },
+  "v4944392": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Thumbnail unavailable; label could not be verified",
+   "previousLabel": "caucasian",
+   "title": "Woman working out at the gym"
+  },
+  "v5406119": {
+   "demographics": [],
+   "hasPeople": false,
+   "reason": "No people in shot (objects only)",
+   "previousLabel": "caucasian",
+   "title": "Doctor working at medical clinic desk"
+  },
+  "v4859219": {
+   "demographics": [
+    "east-asian"
+   ],
+   "hasPeople": true,
+   "reason": "Visibly East Asian couple, mislabelled as Caucasian",
+   "previousLabel": "caucasian",
+   "title": "White couple working out together in bright studio"
+  },
+  "v39999149": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands/tiny figures only; not a visibly diverse group",
+   "previousLabel": "all",
+   "title": "Barista preparing at cafe counter"
+  },
+  "v12513724": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands/tiny figures only; not a visibly diverse group",
+   "previousLabel": "all",
+   "title": "Barista preparing coffee in cafe"
+  },
+  "v34800549": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands/tiny figures only; not a visibly diverse group",
+   "previousLabel": "all",
+   "title": "Modern gym with people exercising on treadmills"
+  },
+  "v8328034": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Two people, not a visibly diverse group",
+   "previousLabel": "all",
+   "title": "Engineer using controller to operate a robot"
+  },
+  "v8626681": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Chef arm visible; not a people-free clip",
+   "previousLabel": "all",
+   "title": "Chef tossing smoky hot pan while cooking"
+  },
+  "v34164175": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Hands visible pouring smoothie; not a people-free clip",
+   "previousLabel": "all",
+   "title": "Smoothie preparation in cozy cafe setting"
+  },
+  "v3205624": {
+   "demographics": [
+    "caucasian"
+   ],
+   "hasPeople": true,
+   "reason": "Almost entirely White team, not a diverse group",
+   "previousLabel": "all",
+   "title": "Startup team collaborating in conference room meeting"
+  },
+  "v8328051": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Woman clearly visible next to robot arm; not a people-free clip",
+   "previousLabel": "no-people",
+   "title": "Robot precision arm picking a flower"
+  },
+  "v25311041": {
+   "demographics": [],
+   "hasPeople": true,
+   "reason": "Person/hands visible at coffee machine; not a people-free clip",
+   "previousLabel": "no-people",
+   "title": "Vegan cereal with coffee and oat milk"
+  }
+ }
+}

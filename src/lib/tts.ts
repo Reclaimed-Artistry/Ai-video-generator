@@ -226,32 +226,14 @@ export async function synthesizeSpeech(
   text: string,
   voiceId: string,
   language = "en",
+  rateOffset = 0,
 ): Promise<Speech> {
   const clean = text.trim();
   if (!clean) throw new Error("Nothing to narrate");
-
-  const resolved = await resolveVoiceSelection(voiceId, language);
-  const locale = parseLocaleVoice(voiceId ?? "");
-  const persona = getVoice(voiceId);
-
-  let neuralVoice = resolved.neuralVoice;
-  let rate = resolved.rate;
-  let pitch = resolved.pitch;
-
-  if (locale) {
-    // Dubs deliberately override the persona: a Spanish dub must speak Spanish.
-    neuralVoice = locale.neuralVoice;
-    rate = 0;
-    pitch = 0;
-  } else if (!resolved.cloned && language && language !== "en") {
-    // Non-English projects fall back to a native locale narrator.
-    const meta = getLanguage(language);
-    neuralVoice = persona.gender === "female" ? meta.neuralFemale : meta.neuralMale;
-    rate = 0;
-    pitch = 0;
-  } else if (!resolved.cloned) {
-    neuralVoice = resolveNeuralVoice(persona, language);
-  }
+  const voice = getVoice(voiceId);
+  const neuralVoice = resolveNeuralVoice(voice, language);
+  const clampedOffset = Math.max(-25, Math.min(30, Math.round(rateOffset || 0)));
+  const effectiveRate = Math.max(-35, Math.min(45, voice.rate + clampedOffset));
 
   if (process.env.ELEVENLABS_API_KEY) {
     const data = await synthesizeElevenLabs(clean, neuralVoice);
@@ -270,8 +252,8 @@ export async function synthesizeSpeech(
     const { audio, wordTimings, durationSec } = await synthesizeEdge(
       clean,
       neuralVoice,
-      rate,
-      pitch,
+      effectiveRate,
+      voice.pitch,
     );
     return {
       data: audio,
@@ -287,6 +269,11 @@ export async function synthesizeSpeech(
     );
   }
 
-  const data = synthesizeBuiltin(clean, resolved.engineVoice, rate + 165, pitch);
+  const data = synthesizeBuiltin(
+    clean,
+    voice.engineVoice,
+    Math.max(110, Math.min(240, effectiveRate + 165)),
+    voice.pitch,
+  );
   return { data, ext: "wav", provider: "builtin", wordTimings: [] };
 }

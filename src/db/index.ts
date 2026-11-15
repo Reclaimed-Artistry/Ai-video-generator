@@ -4,21 +4,22 @@ import path from "node:path";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
-export type DatabaseKind = "postgres" | "pglite";
+export function resolveDatabaseUrl(): string | undefined {
+  const candidates = [
+    process.env.DATABASE_URL,
+    process.env.POSTGRES_URL,
+    process.env.POSTGRES_PRISMA_URL,
+    process.env.POSTGRES_URL_NON_POOLING,
+  ];
+  for (const candidate of candidates) {
+    const trimmed = candidate?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
 
-type PgliteLike = {
-  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
-  exec: (sql: string) => Promise<unknown>;
-  waitReady?: Promise<void>;
-};
-
-function resolveDatabaseUrl(): string | undefined {
-  return (
-    process.env.DATABASE_URL ||
-    process.env.POSTGRES_URL ||
-    process.env.POSTGRES_PRISMA_URL ||
-    process.env.POSTGRES_URL_NON_POOLING
-  );
+export function hasDatabaseUrl(): boolean {
+  return Boolean(resolveDatabaseUrl());
 }
 
 export function databaseKind(): DatabaseKind {
@@ -241,6 +242,7 @@ const SCHEMA_STATEMENTS: string[] = [
  * requiring a shell step.
  */
 export async function ensureSchema(): Promise<void> {
+  if (!hasDatabaseUrl()) return;
   if (!globalForDb.__appSchemaReady) {
     globalForDb.__appSchemaReady = (async () => {
       if (databaseKind() === "pglite") {

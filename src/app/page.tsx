@@ -1,21 +1,9 @@
-import {
-  ArrowRight,
-  AudioLines,
-  Captions,
-  Clapperboard,
-  Download,
-  Globe2,
-  ImagePlus,
-  Layers,
-  Palette,
-  ShieldCheck,
-  Sparkles,
-  Wand2,
-} from "lucide-react";
 import Link from "next/link";
 import { BrandMark } from "@/components/BrandMark";
 import Composer from "@/components/Composer";
-import { Badge, CheckItem, SectionTitle } from "@/components/ui";
+import FootageContactSheet from "@/components/FootageContactSheet";
+import LocalProjectsLedger from "@/components/LocalProjectsLedger";
+import ReferenceMonitor from "@/components/ReferenceMonitor";
 import { listProjects } from "@/lib/projects";
 import { providerStatus } from "@/lib/stock";
 import { formatClock, estimateSceneSeconds } from "@/lib/timecode";
@@ -135,24 +123,22 @@ export default async function HomePage() {
         </div>
       </header>
 
-      <main>
-        {/* Hero */}
-        <section className="relative overflow-hidden border-b border-line">
-          <div className="grid-veil pointer-events-none absolute inset-0 opacity-60" />
-          <div
-            className="pointer-events-none absolute -top-40 left-1/2 h-80 w-[720px] -translate-x-1/2 rounded-full opacity-25 blur-3xl"
-            style={{ background: "radial-gradient(circle, #2563EB 0%, transparent 70%)" }}
-          />
-          <div className="relative mx-auto max-w-[900px] px-4 py-14 sm:px-6 sm:py-20">
-            <div className="text-center">
-              <Badge tone="brand" className="mb-4">
-                <Sparkles className="h-3 w-3" />
-                Prompt-to-video studio
-              </Badge>
-              <h1 className="text-[2.1rem] font-semibold leading-[1.07] tracking-[-0.03em] text-paper sm:text-[3.4rem]">
-                Type an idea.
-                <br />
-                <span className="brand-text">Get a finished video.</span>
+      <main className="mx-auto max-w-[1380px] px-4 sm:px-6">
+        {/* Asymmetric Hero Workbench */}
+        <section className="border-b border-line py-10 lg:py-14">
+          <div className="grid gap-8 lg:grid-cols-12 lg:items-start">
+            {/* Left 7 columns: Editorial lead + Sequence Slate */}
+            <div className="lg:col-span-7">
+              <div className="font-tech inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-amber-cue">
+                <span>Prompt-to-Picture Assembly</span>
+                <span className="text-line-strong">{"//"}</span>
+                <span className="text-stone-ink">240p · 360p · 1080p</span>
+              </div>
+
+              <h1 className="font-editorial mt-3 max-w-2xl text-[2.5rem] leading-[1.02] tracking-[-0.01em] text-paper sm:text-[3.55rem]">
+                Write a brief. Cut a narrated{" "}
+                <span className="italic text-[#e8dcc4]">H.264 master</span>{" "}
+                before the kettle boils.
               </h1>
               <p className="mx-auto mt-4 max-w-xl text-[15px] leading-relaxed text-stone-ink">
                 Write one sentence and we&apos;ll draft the script, match every scene to
@@ -182,68 +168,8 @@ export default async function HomePage() {
           </div>
         </section>
 
-        {/* Continue where you left off */}
-        {projects.length > 0 ? (
-          <section className="border-b border-line">
-            <div className="mx-auto max-w-[1240px] px-4 py-12 sm:px-6">
-              <SectionTitle
-                eyebrow="Workspace"
-                title="Continue where you left off"
-                action={
-                  <Link
-                    href="/projects"
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-amber-cue hover:text-amber-hover"
-                  >
-                    View all ({projects.length})
-                    <ArrowRight className="h-3.5 w-3.5" />
-                  </Link>
-                }
-              />
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {projects.slice(0, 3).map((project) => {
-                  const seconds = project.script.scenes.reduce(
-                    (acc, scene) =>
-                      acc + estimateSceneSeconds(scene.narration, scene.duration),
-                    0,
-                  );
-                  return (
-                    <Link
-                      key={project.id}
-                      href={`/studio/${project.id}`}
-                      className="card card-hover flex gap-3 p-3"
-                    >
-                      <div className="grid h-16 w-24 shrink-0 place-items-center overflow-hidden rounded-lg bg-night">
-                        {project.posterPath ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={`/api/files/renders/${project.id}/poster.jpg`}
-                            alt=""
-                            className="h-full w-full object-cover"
-                            loading="lazy"
-                          />
-                        ) : (
-                          <Clapperboard className="h-5 w-5 text-white/40" />
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-paper">
-                          {project.title}
-                        </p>
-                        <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-stone-ink">
-                          {project.prompt}
-                        </p>
-                        <p className="mt-1.5 font-tech text-[11px] text-ash">
-                          {formatClock(seconds)} · {project.script.scenes.length} scenes ·{" "}
-                          {project.aspect}
-                        </p>
-                      </div>
-                    </Link>
-                  );
-                })}
-              </div>
-            </div>
-          </section>
-        ) : null}
+        {/* Recent Sequences Ledger (hydrates from Postgres or local browser bin) */}
+        <LocalProjectsLedger serverProjects={projects} />
 
         {/* Capabilities */}
         <section id="capabilities" className="border-b border-line scroll-mt-16">

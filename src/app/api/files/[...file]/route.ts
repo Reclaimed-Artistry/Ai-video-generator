@@ -125,7 +125,7 @@ export async function GET(request: Request, context: Context) {
             start,
             end: safeEnd,
           });
-          return new Response(toWebStream(chunk, request.signal), {
+          return new Response(Readable.toWeb(chunk) as ReadableStream, {
             status: 206,
             headers: {
               "content-type": type,
@@ -140,7 +140,7 @@ export async function GET(request: Request, context: Context) {
     }
 
     const stream = fs.createReadStream(/* turbopackIgnore: true */ target);
-    return new Response(toWebStream(stream, request.signal), {
+    return new Response(Readable.toWeb(stream) as ReadableStream, {
       headers: {
         "content-type": type,
         "content-length": String(stat.size),

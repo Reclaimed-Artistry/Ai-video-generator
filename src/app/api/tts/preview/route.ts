@@ -11,21 +11,16 @@ export async function POST(request: Request) {
     voiceId?: string;
     text?: string;
     language?: string;
+    rateOffset?: number;
   };
-
-  // Cloned voices carry their own sample text; builtin personas ship a default.
-  const resolved = isClonedVoiceId(body.voiceId)
-    ? await resolveVoiceSelection(body.voiceId, body.language ?? "en")
-    : null;
-  const persona = getVoice(body.voiceId ?? "ava");
-
-  const text = (body.text ?? persona.previewText).slice(0, 240);
-
+  const voice = getVoice(body.voiceId ?? "ava");
+  const text = (body.text ?? voice.previewText).slice(0, 280);
   try {
     const speech = await synthesizeSpeech(
       text,
-      body.voiceId ?? persona.id,
+      voice.id,
       body.language ?? "en",
+      typeof body.rateOffset === "number" ? body.rateOffset : 0,
     );
     return new Response(new Uint8Array(speech.data), {
       headers: {

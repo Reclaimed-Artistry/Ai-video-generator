@@ -1,3 +1,4 @@
+import type { StickAction, StickTheme } from "./stickman";
 export type MediaType = "video" | "photo";
 export type Resolution = "240p" | "360p" | "1080p";
 export type AspectRatio = "16:9" | "9:16" | "1:1";
@@ -20,6 +21,118 @@ export type StockProvider =
   | "nasa"
   | "pixabay";
 
+export type MediaFilter = "none" | "warm" | "cool" | "vivid" | "noir";
+export type CaptionPosition = "bottom" | "center" | "top";
+
+export type PeopleRepresentation =
+  | "all"
+  | "african-american"
+  | "african"
+  | "hispanic"
+  | "east-asian"
+  | "south-asian"
+  | "middle-eastern"
+  | "caucasian";
+
+export const PEOPLE_REPRESENTATIONS: {
+  id: PeopleRepresentation;
+  label: string;
+  shortLabel: string;
+  description: string;
+  searchPrefix: string;
+  slugPrefixes: string[];
+}[] = [
+  {
+    id: "all",
+    label: "All Races (Diverse)",
+    shortLabel: "All Races",
+    description: "Diverse multiracial people & global real-world footage",
+    searchPrefix: "",
+    slugPrefixes: [],
+  },
+  {
+    id: "african-american",
+    label: "African American",
+    shortLabel: "African American",
+    description: "African American / Black American cast across scenes",
+    searchPrefix: "african american",
+    slugPrefixes: ["african-american", "black"],
+  },
+  {
+    id: "african",
+    label: "African Only",
+    shortLabel: "African Only",
+    description: "African people, entrepreneurs & settings across Africa",
+    searchPrefix: "african",
+    slugPrefixes: ["african", "africa"],
+  },
+  {
+    id: "hispanic",
+    label: "Hispanic / Latino",
+    shortLabel: "Hispanic",
+    description: "Hispanic & Latino cast across scenes",
+    searchPrefix: "hispanic latino",
+    slugPrefixes: ["hispanic", "latino"],
+  },
+  {
+    id: "east-asian",
+    label: "East Asian",
+    shortLabel: "East Asian",
+    description: "East Asian cast across scenes",
+    searchPrefix: "east asian",
+    slugPrefixes: ["asian", "east-asian"],
+  },
+  {
+    id: "south-asian",
+    label: "South Asian",
+    shortLabel: "South Asian",
+    description: "South Asian / Indian cast across scenes",
+    searchPrefix: "indian south asian",
+    slugPrefixes: ["indian", "south-asian"],
+  },
+  {
+    id: "middle-eastern",
+    label: "Middle Eastern",
+    shortLabel: "Middle Eastern",
+    description: "Middle Eastern / Arab cast across scenes",
+    searchPrefix: "middle eastern arab",
+    slugPrefixes: ["arab", "middle-eastern"],
+  },
+  {
+    id: "caucasian",
+    label: "White / Caucasian",
+    shortLabel: "Caucasian",
+    description: "White / European / Caucasian cast across scenes",
+    searchPrefix: "caucasian",
+    slugPrefixes: ["caucasian", "european"],
+  },
+];
+
+export function getPeopleRepresentation(
+  id?: string | null,
+): (typeof PEOPLE_REPRESENTATIONS)[number] {
+  return (
+    PEOPLE_REPRESENTATIONS.find((item) => item.id === id) ??
+    PEOPLE_REPRESENTATIONS[0]
+  );
+}
+
+export const MEDIA_FILTERS: { id: MediaFilter; label: string; css: string }[] = [
+  { id: "none", label: "Natural", css: "none" },
+  { id: "warm", label: "Cinema Warm", css: "sepia(0.18) saturate(1.18) contrast(1.06)" },
+  { id: "cool", label: "Cool Tech", css: "hue-rotate(-10deg) saturate(1.12) contrast(1.08)" },
+  { id: "vivid", label: "High Contrast", css: "contrast(1.22) saturate(1.25)" },
+  { id: "noir", label: "Noir B&W", css: "grayscale(1) contrast(1.25)" },
+];
+
+export const MEDIA_SPEEDS = [0.75, 1, 1.25, 1.5] as const;
+
+export const CAPTION_POSITIONS: { id: CaptionPosition; label: string }[] = [
+  { id: "bottom", label: "Bottom" },
+  { id: "center", label: "Center" },
+  { id: "top", label: "Top" },
+];
+
 export type Scene = {
   id: string;
   narration: string;
@@ -32,10 +145,21 @@ export type Scene = {
   mediaTitle?: string | null;
   mediaCreator?: string | null;
   mediaProvider?: string | null;
-  /** `stock` = licensed clip, `generated` = AI image/video, `upload` = user file. */
-  mediaOrigin?: MediaOrigin;
-  /** Set when `mediaOrigin === "generated"`. */
-  generated?: GeneratedMediaMeta;
+  mediaStart?: number | null; // Clip trim in-point (seconds)
+  mediaSpeed?: number | null; // 0.75x .. 1.5x
+  mediaFilter?: MediaFilter | null;
+  mediaLocked?: boolean;
+  /** "ai" = generated image/video; "stickman" = built-in stick-figure animation. */
+  mediaSource?: "stock" | "ai" | "stickman" | null;
+  /** Stickman performance for this scene (auto-picked from the narration when unset). */
+  stickAction?: StickAction | null;
+  /** True for audio-driven talking-character clips (never time-stretched). */
+  aiLipsync?: boolean | null;
+  /** Text-to-image prompt for this scene (written by the AI script writer). */
+  aiPrompt?: string | null;
+  aiStyle?: AiStyleId | null;
+  aiMotion?: AiMotion | null;
+  aiSeed?: number | null;
   duration: number | null;
   transition: "fade" | "none";
 };
@@ -45,6 +169,27 @@ export type ProductionOptions = {
   musicTrack?: MusicTrackId;
   musicVolume?: number; // 0 to 0.5
   captionMode?: CaptionMode;
+  captionPosition?: CaptionPosition;
+  voiceRateOffset?: number; // -20 to +25 (%)
+  autoMatchMedia?: boolean;
+  peopleRepresentation?: PeopleRepresentation;
+  /** Where scene visuals come from: licensed stock video or generated images. */
+  visualMode?: VisualMode;
+  aiStyle?: AiStyleId;
+  /** Which engine wrote the script (shown in the studio for transparency). */
+  scriptEngine?: string;
+  stickTheme?: StickTheme;
+  /** Story-style segmented progress bar across the top (retention). */
+  progressBar?: boolean;
+  /** Slow punch-in zoom on stock / AI video shots. */
+  punchZoom?: boolean;
+  /** Whoosh sound effect on every scene change. */
+  sceneSfx?: boolean;
+  /** One-sentence visual bible from the AI director (palette, light, recurring character). */
+  visualStyle?: string;
+  /** 0-100 repetition/quality score of the script, with short notes. */
+  qualityScore?: number;
+  qualityNotes?: string[];
 };
 
 export type VideoScript = {
@@ -73,6 +218,8 @@ export type StockAsset = {
   thumb: string;
   duration?: number;
   portrait?: boolean;
+  hasPeople?: boolean;
+  demographics?: PeopleRepresentation[];
   sources: StockSource[];
 };
 
@@ -280,114 +427,83 @@ export const STYLES: Style[] = [
 export const MAX_SCENES = 12;
 export const MIN_SCENES = 3;
 
-/* ------------------------------------------------------------------ media */
+// ─── Generative AI ─────────────────────────────────────────────────────────
 
-/** Where a scene's visual came from. */
-export type MediaOrigin = "stock" | "generated" | "upload";
+/** "ai" is the legacy value from before AI video existed (= AI images). */
+export type VisualMode = "stock" | "ai-video" | "ai-image" | "stickman" | "ai";
+export type AiKind = "video" | "image";
 
-export type GeneratedMediaMeta = {
-  /** Prompt actually sent to the image model. */
-  prompt: string;
-  /** Which backend produced it: `openai` | `stability` | `replicate` | `gemini` | `procedural`. */
-  provider: string;
-  /** True when no image API was configured and we composed the frame locally. */
-  fallback?: boolean;
-};
-
-/* ---------------------------------------------------------------- branding */
-
-export type BrandFontId =
-  | "dejavu"
-  | "inter"
-  | "georgia"
-  | "impact"
-  | "courier";
-
-export const BRAND_FONTS: { id: BrandFontId; label: string; assName: string }[] = [
-  { id: "dejavu", label: "DejaVu Sans", assName: "DejaVu Sans" },
-  { id: "inter", label: "Grotesk (sans)", assName: "DejaVu Sans" },
-  { id: "georgia", label: "Editorial (serif)", assName: "DejaVu Serif" },
-  { id: "impact", label: "Poster (heavy)", assName: "DejaVu Sans" },
-  { id: "courier", label: "Terminal (mono)", assName: "DejaVu Sans Mono" },
-];
-
-export type BrandKit = {
-  id: string;
-  name: string;
-  logoPath: string | null;
-  /** Resolved, browser-reachable logo URL (populated by the API layer). */
-  logoUrl?: string | null;
-  primaryColor: string;
-  accentColor: string;
-  font: BrandFontId;
-  introTitle: string | null;
-  introSubtitle: string | null;
-  outroText: string | null;
-  website: string | null;
-  showLogo: boolean;
-  isDefault: boolean;
-  createdAt?: string;
-  updatedAt?: string;
-};
-
-export const BRAND_FONT_ASS_NAME: Record<BrandFontId, string> = {
-  dejavu: "DejaVu Sans",
-  inter: "DejaVu Sans",
-  georgia: "DejaVu Serif",
-  impact: "DejaVu Sans",
-  courier: "DejaVu Sans Mono",
-};
-
-/* ------------------------------------------------------------------ voices */
-
-export type ClonedVoice = {
-  id: string;
-  /**
-   * The value a project stores in `project.voice` to use this voice
-   * (`clone:<id>`). Derived centrally so every API response and every client
-   * agrees on how to reference a cloned voice.
-   */
-  voiceId: string;
-  name: string;
-  provider: "elevenlabs" | "custom";
-  providerVoiceId: string;
-  gender: "male" | "female" | "neutral";
-  accent: string;
-  description: string | null;
-  sampleCount: number;
-  createdAt?: string;
-};
-
-/* --------------------------------------------------------------- languages */
-
-export type LanguageMeta = {
-  id: string;
-  label: string;
-  native: string;
-  /** Neural (Edge) voice used when dubbing into this language. */
-  neuralFemale: string;
-  neuralMale: string;
-};
-
-export const LANGUAGES: LanguageMeta[] = [
-  { id: "en", label: "English", native: "English", neuralFemale: "en-US-AriaNeural", neuralMale: "en-US-GuyNeural" },
-  { id: "es", label: "Spanish", native: "Español", neuralFemale: "es-ES-ElviraNeural", neuralMale: "es-ES-AlvaroNeural" },
-  { id: "fr", label: "French", native: "Français", neuralFemale: "fr-FR-DeniseNeural", neuralMale: "fr-FR-HenriNeural" },
-  { id: "de", label: "German", native: "Deutsch", neuralFemale: "de-DE-KatjaNeural", neuralMale: "de-DE-ConradNeural" },
-  { id: "pt", label: "Portuguese", native: "Português", neuralFemale: "pt-BR-FranciscaNeural", neuralMale: "pt-BR-AntonioNeural" },
-  { id: "it", label: "Italian", native: "Italiano", neuralFemale: "it-IT-ElsaNeural", neuralMale: "it-IT-DiegoNeural" },
-  { id: "nl", label: "Dutch", native: "Nederlands", neuralFemale: "nl-NL-ColetteNeural", neuralMale: "nl-NL-DirkNeural" },
-  { id: "pl", label: "Polish", native: "Polski", neuralFemale: "pl-PL-ZofiaNeural", neuralMale: "pl-PL-MarekNeural" },
-  { id: "tr", label: "Turkish", native: "Türkçe", neuralFemale: "tr-TR-EmelNeural", neuralMale: "tr-TR-AhmetNeural" },
-  { id: "ru", label: "Russian", native: "Русский", neuralFemale: "ru-RU-SvetlanaNeural", neuralMale: "ru-RU-DmitryNeural" },
-  { id: "hi", label: "Hindi", native: "हिन्दी", neuralFemale: "hi-IN-SwaraNeural", neuralMale: "hi-IN-MadhurNeural" },
-  { id: "ja", label: "Japanese", native: "日本語", neuralFemale: "ja-JP-NanamiNeural", neuralMale: "ja-JP-KeitaNeural" },
-  { id: "ko", label: "Korean", native: "한국어", neuralFemale: "ko-KR-SunHiNeural", neuralMale: "ko-KR-InJoonNeural" },
-  { id: "zh", label: "Chinese", native: "中文", neuralFemale: "zh-CN-XiaoxiaoNeural", neuralMale: "zh-CN-YunxiNeural" },
-  { id: "ar", label: "Arabic", native: "العربية", neuralFemale: "ar-EG-SalmaNeural", neuralMale: "ar-EG-ShakirNeural" },
-];
-
-export function getLanguage(id: string): LanguageMeta {
-  return LANGUAGES.find((lang) => lang.id === id) ?? LANGUAGES[0];
+export function aiKindForMode(mode: VisualMode | undefined): AiKind | null {
+  if (mode === "ai-video") return "video";
+  if (mode === "ai-image" || mode === "ai") return "image";
+  return null;
 }
+export type AiMotion = "push-in" | "pull-out" | "pan-left" | "pan-right";
+export type AiStyleId =
+  | "cinematic"
+  | "documentary"
+  | "illustration"
+  | "3d"
+  | "anime"
+  | "watercolor"
+  | "product"
+  | "3d-animation"
+  | "stick-figure";
 
+export const AI_STYLES: Record<AiStyleId, { label: string; suffix: string }> = {
+  cinematic: {
+    label: "Cinematic photo",
+    suffix: "cinematic film still, anamorphic lens, natural light, shallow depth of field, rich color grade, highly detailed",
+  },
+  documentary: {
+    label: "Documentary",
+    suffix: "documentary photograph, candid, realistic, available light, 35mm, authentic texture",
+  },
+  illustration: {
+    label: "Editorial illustration",
+    suffix: "editorial illustration, clean shapes, limited warm palette, subtle grain, modern magazine style",
+  },
+  "3d": {
+    label: "3D render",
+    suffix: "stylized 3D render, soft global illumination, clay materials, studio lighting, octane",
+  },
+  anime: {
+    label: "Anime",
+    suffix: "anime key visual, detailed background art, soft cel shading, cinematic composition",
+  },
+  watercolor: {
+    label: "Watercolor",
+    suffix: "watercolor painting, loose brush strokes, paper texture, soft washes of color",
+  },
+  "3d-animation": {
+    label: "3D animation",
+    suffix: "3D animated feature film still, Pixar-style stylized characters with expressive faces, soft global illumination, vibrant colors, cinematic lighting",
+  },
+  "stick-figure": {
+    label: "Stick figure",
+    suffix: "simple black stick figure doodle on a clean white background, thick hand-drawn lines, minimal flat explainer style",
+  },
+  product: {
+    label: "Product studio",
+    suffix: "premium product photography, seamless studio backdrop, softbox lighting, crisp reflections",
+  },
+};
+
+export const AI_STYLE_ORDER: AiStyleId[] = [
+  "cinematic",
+  "3d-animation",
+  "stick-figure",
+  "documentary",
+  "illustration",
+  "3d",
+  "anime",
+  "watercolor",
+  "product",
+];
+
+export const AI_MOTIONS: Record<AiMotion, string> = {
+  "push-in": "Slow push-in",
+  "pull-out": "Slow pull-out",
+  "pan-left": "Pan left",
+  "pan-right": "Pan right",
+};

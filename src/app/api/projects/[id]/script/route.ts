@@ -8,32 +8,51 @@ export const maxDuration = 60;
 
 type Context = { params: Promise<{ id: string }> };
 
-export async function POST(_request: Request, context: Context) {
-  const { id } = await context.params;
-  const project = await getProject(id);
-  if (!project) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+export async function POST(request: Request, context: Context) {
+  try {
+    const { id } = await context.params;
+    const body = (await request.json().catch(() => ({}))) as {
+      project?: import("@/lib/types").Project;
+    };
+    const project = (await getProject(id)) ?? body.project ?? null;
+    if (!project) {
+      return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    }
+
+    const script = await generateScript({
+      prompt: project.prompt,
+      duration: project.duration,
+      tone: project.tone,
+      language: project.language,
+      workflow: project.script.options?.workflow,
+      musicTrack: project.script.options?.musicTrack,
+      musicVolume: project.script.options?.musicVolume,
+      captionMode: project.script.options?.captionMode,
+      peopleRepresentation: project.script.options?.peopleRepresentation ?? "all",
+    });
+
+    await updateProject(id, {
+      script,
+      title: script.title,
+      status: "ready",
+      stage: "Script rewritten",
+      progress: 0,
+    });
+
+    const updated = (await getProject(id)) ?? {
+      ...project,
+      script,
+      title: script.title,
+      status: "ready" as const,
+      stage: "Script rewritten",
+      progress: 0,
+      updatedAt: new Date().toISOString(),
+    };
+    return NextResponse.json({ project: updated });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Failed to rewrite script" },
+      { status: 500 },
+    );
   }
-
-  const script = await generateScript({
-    prompt: project.prompt,
-    duration: project.duration,
-    tone: project.tone,
-    language: project.language,
-    workflow: project.script.options?.workflow,
-    musicTrack: project.script.options?.musicTrack,
-    musicVolume: project.script.options?.musicVolume,
-    captionMode: project.script.options?.captionMode,
-  });
-
-  await updateProject(id, {
-    script,
-    title: script.title,
-    status: "ready",
-    stage: "Script rewritten",
-    progress: 0,
-  });
-
-  const updated = await getProject(id);
-  return NextResponse.json({ project: updated });
 }

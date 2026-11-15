@@ -1,21 +1,30 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import {
-  getBrandKit,
-  getDefaultBrandKit,
-  hexToAssColor,
-  hexToFfmpegColor,
-} from "./brandkit";
-import { getFontsDir, probeDuration, runFfmpeg } from "./ffmpeg";
-import { renderProceduralPlate as renderProceduralPlateImage } from "./imagen";
+  audioLoudnessPerFrame,
+  getFontsDir,
+  probeDuration,
+  runFfmpeg,
+  runFfmpegFrames,
+} from "./ffmpeg";
+import {
+  chooseStickPerformance,
+  estimatedMouth,
+  mouthFromLoudness,
+  rasterizeStickFrame,
+  stickBackground,
+  stickFrameShapes,
+  type StickTheme,
+} from "./stickman";
 import { defaultMusicForTone, getMusicTrack } from "./music";
 import { getProject, updateProject } from "./projects";
 import {
   getLocalAsset,
+  isAbstractAsset,
   matchLocalAsset,
+  matchVideoForNarration,
   pickSource,
   VIDEO_CATALOG,
 } from "./stock";
@@ -24,7 +33,9 @@ import {
   getStorageRoot,
   IS_VERCEL,
   isBlobConfigured,
+  loadStoredMedia,
   saveRenderArtifact,
+  storesArtifactsExternally,
 } from "./storage";
 import { estimateWordTimings, synthesizeSpeech, type WordTiming } from "./tts";
 import { aiVideoEnabled, generateSceneVideo } from "./video";
@@ -35,9 +46,14 @@ import {
   type AspectRatio,
   type BrandKit,
   type CaptionMode,
+  type CaptionPosition,
+  type MediaFilter,
+  type PeopleRepresentation,
+  type Project,
   type Resolution,
   type Scene,
   type Style,
+  type AiMotion,
 } from "./types";
 
 export const FPS = 30;
@@ -166,17 +182,15 @@ function captionStyle(
   width: number,
   height: number,
   captionMode: CaptionMode,
-  brandKit?: BrandKit | null,
+  captionPosition: CaptionPosition = "bottom",
 ): CaptionStyleConfig {
   const isVertical = height > width;
   const baseFont = Math.max(
     14,
     Math.round(height / (isVertical ? 24 : captionMode === "word-highlight" ? 16 : 18)),
   );
-  const brandHighlight = brandKit?.primaryColor
-    ? hexToAssColor(brandKit.primaryColor)
-    : null;
-
+  const posAlignment =
+    captionPosition === "top" ? 8 : captionPosition === "center" ? 5 : 2;
   const base: CaptionStyleConfig = {
     fontname: BRAND_FONT_ASS_NAME[brandKit?.font ?? "dejavu"] ?? "DejaVu Sans",
     fontsize: baseFont,
@@ -187,10 +201,13 @@ function captionStyle(
     borderStyle: 1,
     outline: Math.max(1.8, Number((height / 170).toFixed(1))),
     shadow: Math.max(1.0, Number((height / 320).toFixed(1))),
-    alignment: 2,
+    alignment: posAlignment,
     marginL: Math.max(20, Math.round(width * 0.06)),
     marginR: Math.max(20, Math.round(width * 0.06)),
-    marginV: Math.max(16, Math.round(height * (isVertical ? 0.14 : 0.09))),
+    marginV:
+      captionPosition === "center"
+        ? 0
+        : Math.max(16, Math.round(height * (isVertical ? 0.14 : 0.09))),
     bold: true,
   };
   switch (style) {
@@ -201,7 +218,10 @@ function captionStyle(
         highlight: brandHighlight ?? "&H00FFFFFF",
         outline: Math.max(1.2, base.outline * 0.6),
         shadow: 0.8,
-        alignment: captionMode === "headline" ? 1 : 2,
+        alignment:
+          captionMode === "headline" && captionPosition === "bottom"
+            ? 1
+            : posAlignment,
       };
     case "cinematic":
       return {
@@ -209,7 +229,10 @@ function captionStyle(
         fontsize: Math.max(12, Math.round(baseFont * 0.9)),
         highlight: brandHighlight ?? "&H00C4DCE8",
         outlineColour: "&H00000000",
-        marginV: Math.max(16, Math.round(height * 0.11)),
+        marginV:
+          captionPosition === "center"
+            ? 0
+            : Math.max(16, Math.round(height * 0.11)),
       };
     case "energetic":
       return {
@@ -228,6 +251,21 @@ function captionStyle(
       };
     default:
       return base;
+  }
+}
+
+function ffmpegColorFilter(grade?: MediaFilter | null): string | null {
+  switch (grade) {
+    case "warm":
+      return "eq=contrast=1.06:saturation=1.18,colorbalance=rs=0.06:gs=0.02:bs=-0.05";
+    case "cool":
+      return "eq=contrast=1.08:saturation=1.12,colorbalance=rs=-0.04:gs=0.01:bs=0.07";
+    case "vivid":
+      return "eq=contrast=1.2:saturation=1.28:brightness=0.02";
+    case "noir":
+      return "hue=s=0,eq=contrast=1.24";
+    default:
+      return null;
   }
 }
 
@@ -293,9 +331,9 @@ function buildAssFile(
   height: number,
   style: Style,
   captionMode: CaptionMode,
-  brandKit?: BrandKit | null,
+  captionPosition: CaptionPosition = "bottom",
 ): string {
-  const cfg = captionStyle(style, width, height, captionMode, brandKit);
+  const cfg = captionStyle(style, width, height, captionMode, captionPosition);
   const header = [
     "[Script Info]",
     "ScriptType: v4.00+",
@@ -419,6 +457,7 @@ function buildAssFile(
 async function download(url: string, destination: string): Promise<void> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 35000);
+  const out = fs.createWriteStream(/* turbopackIgnore: true */ destination);
   try {
     const response = await fetch(url, {
       redirect: "follow",
@@ -431,34 +470,223 @@ async function download(url: string, destination: string): Promise<void> {
     if (!response.ok || !response.body) {
       throw new Error(`Could not download media (${response.status})`);
     }
-    const stream = Readable.fromWeb(
-      response.body as unknown as WebReadableStream<Uint8Array>,
-    );
-    await pipeline(stream, fs.createWriteStream(destination));
+    // Explicit read loop (instead of Readable.fromWeb + pipeline): an abort or
+    // dropped connection rejects here as a normal, catchable error and can
+    // never surface as an uncaught "ReadableStream is already closed".
+    const reader = response.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!out.write(value)) await once(out, "drain");
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      throw error;
+    }
   } finally {
     clearTimeout(timer);
+    out.end();
+    await finished(out).catch(() => undefined);
   }
 }
 
-type StockResolution = { url: string; fallbackUrl?: string };
+export type SceneRenderExtras = {
+  audioFile: string | null;
+  stickTheme: StickTheme;
+  progressBar: boolean;
+  punchZoom: boolean;
+};
 
-function resolveStockMedia(scene: Scene, targetHeight: number): StockResolution {
+/**
+ * Story-style segmented progress bar: finished scenes full, the current one
+ * filling in small timed steps (drawbox widths are not animatable per frame).
+ */
+function progressBarFilters(
+  index: number,
+  total: number,
+  width: number,
+  height: number,
+  duration: number,
+): string[] {
+  if (total < 2) return [];
+  const margin = Math.round(width * 0.04);
+  const gap = Math.max(3, Math.round(width * 0.006));
+  const barH = Math.max(3, Math.round(height * 0.007));
+  const y = Math.round(height * 0.025);
+  const segW = (width - margin * 2 - gap * (total - 1)) / total;
+  const filters: string[] = [];
+  for (let i = 0; i < total; i += 1) {
+    const x = Math.round(margin + i * (segW + gap));
+    const w = Math.max(2, Math.round(segW));
+    // Dark track + brand-amber fill: readable on whiteboard, dark themes and footage.
+    const color = i < index ? "0xE5A93C@0.98" : "black@0.28";
+    filters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${barH}:color=${color}:t=fill`);
+  }
+  const x0 = Math.round(margin + index * (segW + gap));
+  const steps = 30;
+  for (let step = 1; step <= steps; step += 1) {
+    const start = ((step - 1) / steps) * duration;
+    const end = step === steps ? duration + 1 : (step / steps) * duration;
+    const w = Math.max(2, Math.round((segW * step) / steps));
+    filters.push(
+      `drawbox=x=${x0}:y=${y}:w=${w}:h=${barH}:color=0xE5A93C@0.98:t=fill:enable='between(t,${start.toFixed(3)},${end.toFixed(3)})'`,
+    );
+  }
+  return filters;
+}
+
+/** Render a stickman scene: frames are drawn in-process and streamed to FFmpeg. */
+async function renderStickmanScene(
+  scene: Scene,
+  index: number,
+  output: string,
+  width: number,
+  height: number,
+  duration: number,
+  extras: SceneRenderExtras,
+  finishing: string[],
+): Promise<void> {
+  const perf = chooseStickPerformance(scene.narration || scene.caption, index);
+  let mouth = estimatedMouth(scene.narration, duration);
+  if (extras.audioFile && fs.existsSync(/* turbopackIgnore: true */ extras.audioFile)) {
+    const loudness = await audioLoudnessPerFrame(extras.audioFile, 30).catch(() => []);
+    if (loudness.length > 0) mouth = mouthFromLoudness(loudness, 30);
+  }
+  const spec = {
+    width,
+    height,
+    duration,
+    action: scene.stickAction ?? perf.action,
+    expression: perf.expression,
+    theme: extras.stickTheme,
+    seed: index + 1,
+    mouth,
+  };
+  const background = stickBackground(width, height, extras.stickTheme);
+  const frame = new Uint8Array(background.length);
+  const frameCount = Math.max(1, Math.ceil(duration * 30));
+  await runFfmpegFrames(
+    [
+      "-y",
+      "-f", "rawvideo",
+      "-pix_fmt", "rgba",
+      "-s", `${width}x${height}`,
+      "-r", "30",
+      "-i", "pipe:0",
+      "-t", duration.toFixed(3),
+      ...(finishing.length ? ["-vf", finishing.join(",")] : []),
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-crf", "21",
+      "-pix_fmt", "yuv420p",
+      "-r", "30",
+      ...(IS_VERCEL ? ["-threads", "2"] : []),
+      "-an",
+      output,
+    ],
+    frameCount,
+    (i) => {
+      frame.set(background);
+      rasterizeStickFrame(frame, width, height, stickFrameShapes(spec, i / 30));
+      return frame;
+    },
+  );
+}
+
+const MOTION_CYCLE: AiMotion[] = ["push-in", "pan-right", "pull-out", "pan-left"];
+
+function defaultMotion(index: number): AiMotion {
+  return MOTION_CYCLE[index % MOTION_CYCLE.length];
+}
+
+/**
+ * Turn a still (AI-generated) image into a moving shot: upscale 1.5x for
+ * smooth sub-pixel motion, then push in / pull out / pan across the scene.
+ */
+function cameraMotionFilters(
+  motion: AiMotion,
+  width: number,
+  height: number,
+  duration: number,
+): string[] {
+  const frames = Math.max(1, Math.round(duration * 30));
+  const sw = Math.round((width * 1.5) / 2) * 2;
+  const sh = Math.round((height * 1.5) / 2) * 2;
+  const amount = 0.18;
+  let zoom: string;
+  let x = "iw/2-(iw/zoom/2)";
+  const y = "ih/2-(ih/zoom/2)";
+  switch (motion) {
+    case "pull-out":
+      zoom = `${1 + amount}-${amount}*on/${frames}`;
+      break;
+    case "pan-left":
+      zoom = "1.15";
+      x = `(iw-iw/zoom)*(1-on/${frames})`;
+      break;
+    case "pan-right":
+      zoom = "1.15";
+      x = `(iw-iw/zoom)*on/${frames}`;
+      break;
+    default:
+      zoom = `1+${amount}*on/${frames}`;
+  }
+  return [
+    `scale=${sw}:${sh}:force_original_aspect_ratio=increase`,
+    `crop=${sw}:${sh}`,
+    `zoompan=z='${zoom}':x='${x}':y='${y}':d=1:s=${width}x${height}:fps=30`,
+    "setsar=1",
+  ];
+}
+
+type ResolvedMedia = { url: string; fallbackUrl?: string; kind: "video" | "image" | "generated" };
+
+async function resolveMedia(
+  scene: Scene,
+  targetHeight: number,
+  topicContext = "",
+  peopleRepresentation: PeopleRepresentation = "all",
+  usedIds: string[] = [],
+): Promise<ResolvedMedia> {
   const localFallbackAsset =
-    matchLocalAsset(scene.mediaQuery || scene.caption || "city", "video") ??
-    VIDEO_CATALOG[0];
+    matchLocalAsset(
+      scene.mediaQuery || scene.narration || scene.caption || topicContext || "office",
+      "video",
+      usedIds,
+      peopleRepresentation,
+    ) ?? VIDEO_CATALOG[0];
   const fallbackUrl = localFallbackAsset
     ? pickSource(localFallbackAsset, targetHeight)?.url
     : undefined;
 
-  if (scene.mediaId) {
+  // Generated (AI) visual: AI video clips play as footage; AI images get camera motion.
+  if (scene.mediaSource === "ai" && scene.mediaUrl) {
+    return {
+      url: scene.mediaUrl,
+      fallbackUrl,
+      kind: scene.mediaType === "video" ? "video" : "image",
+    };
+  }
+
+  // Reject any stale abstract clip attached to an old project and replace with real footage
+  const existingIsAbstract = Boolean(
+    scene.mediaTitle &&
+      isAbstractAsset({
+        title: scene.mediaTitle,
+        tags: [],
+        pageUrl: scene.mediaUrl ?? "",
+      }),
+  );
+
+  if (!existingIsAbstract && scene.mediaId) {
     const asset = getLocalAsset(scene.mediaId);
-    if (asset && asset.type === "video") {
+    if (asset && asset.type === "video" && !isAbstractAsset(asset)) {
       const source = pickSource(asset, targetHeight);
       if (source) return { url: source.url, fallbackUrl };
     }
   }
-  if (scene.mediaUrl && scene.mediaType !== "photo" && !isImageFile(scene.mediaUrl)) {
-    // Mixkit previews ship a 720p rendition we can upgrade to for HD masters.
+  if (!existingIsAbstract && scene.mediaUrl && scene.mediaType !== "photo") {
     let renderUrl = scene.mediaUrl;
     if (
       targetHeight >= 720 &&
@@ -469,8 +697,24 @@ function resolveStockMedia(scene: Scene, targetHeight: number): StockResolution 
     }
     return { url: renderUrl, fallbackUrl };
   }
-  if (fallbackUrl) return { url: fallbackUrl };
-  return { url: "" };
+
+  // Match real-world footage directly to narration + chosen people/race option
+  const live = await matchVideoForNarration({
+    narration: scene.narration || scene.mediaQuery || scene.caption,
+    caption: scene.caption,
+    topicContext,
+    excludeIds: usedIds,
+    peopleRepresentation,
+  }).catch(() => ({ asset: null, mediaQuery: "" }));
+  if (live.asset && !isAbstractAsset(live.asset)) {
+    const src = pickSource(live.asset, targetHeight);
+    if (src) return { url: src.url, fallbackUrl, kind: "video" };
+  }
+
+  if (fallbackUrl) {
+    return { url: fallbackUrl, kind: "video" };
+  }
+  return { url: "", kind: "generated" };
 }
 
 /* ------------------------------------------------- on-device background gen */
@@ -695,10 +939,14 @@ async function renderSceneVideo(
   height: number,
   style: Style,
   captionMode: CaptionMode,
+  captionPosition: CaptionPosition,
   duration: number,
   spokenDuration: number,
   wordTimings: WordTiming[],
-  brandKit: BrandKit | null,
+  topicContext: string,
+  peopleRepresentation: PeopleRepresentation,
+  usedIds: string[],
+  extras: SceneRenderExtras,
 ): Promise<string> {
   const output = path.join(dir, `scene-${String(index).padStart(2, "0")}.mp4`);
   const captionFile = path.join(dir, `caption-${String(index).padStart(2, "0")}.ass`);
@@ -716,7 +964,7 @@ async function renderSceneVideo(
         height,
         style,
         captionMode,
-        brandKit,
+        captionPosition,
       ),
       "utf8",
     );
@@ -730,48 +978,137 @@ async function renderSceneVideo(
       : `ass=${escapedAss}`;
   }
 
-  const prepared = await prepareMedia(
+  const sceneProgress = extras.progressBar
+    ? progressBarFilters(index, totalScenes, width, height, duration)
+    : [];
+
+  if (scene.mediaSource === "stickman") {
+    const finishing: string[] = [];
+    if (scene.transition === "fade" || index === 0) finishing.push("fade=t=in:st=0:d=0.32");
+    if (index === totalScenes - 1 && duration > 1.0) {
+      finishing.push(`fade=t=out:st=${Math.max(0, duration - 0.4).toFixed(2)}:d=0.38`);
+    }
+    finishing.push(...sceneProgress);
+    if (captionFilter) finishing.push(captionFilter);
+    try {
+      await renderStickmanScene(scene, index, output, width, height, duration, extras, finishing);
+    } finally {
+      fs.rmSync(/* turbopackIgnore: true */ captionFile, { force: true });
+    }
+    return output;
+  }
+
+  const media = await resolveMedia(
     scene,
-    index,
-    dir,
     height,
-    duration,
-    width,
-    brandKit?.primaryColor ?? "#2563EB",
+    topicContext,
+    peopleRepresentation,
+    usedIds,
+  );
+
+  if (media.kind === "generated" || !media.url) {
+    const gradient = `gradients=s=${width}x${height}:c0=0x121210:c1=0x262521:x0=0:y0=0:x1=${width}:y1=${height}:d=${Math.ceil(duration)}:r=30`;
+    const vfParts = captionFilter ? [captionFilter] : ["null"];
+    await runFfmpeg([
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      gradient,
+      "-t",
+      duration.toFixed(3),
+      "-vf",
+      vfParts.join(","),
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-pix_fmt",
+      "yuv420p",
+      "-r",
+      "30",
+      output,
+    ]);
+    return output;
+  }
+
+  let chosenUrl = media.url;
+  let isImage = media.kind === "image";
+  const guessExt = (u: string) =>
+    u.toLowerCase().includes(".webm") ? "webm" : "mp4";
+  let mediaFile = path.join(
+    dir,
+    `media-${String(index).padStart(2, "0")}.${isImage ? "img" : guessExt(chosenUrl)}`,
   );
   const isImage = prepared.isImage;
 
-  const logoFile = resolveLogoFile(brandKit);
-  const logoWidth = Math.max(48, Math.round(width * 0.13));
-  const margin = Math.max(12, Math.round(width * 0.035));
-
-  const complex: string[] = [];
-  if (isImage) {
-    // Ken Burns: a slow push plus a gentle drift, so AI-generated stills and
-    // on-device plates always read as moving footage rather than a slideshow.
-    // The per-frame zoom step is derived from the scene length so every scene
-    // gets the same ~30% push regardless of how long it runs.
-    const frames = Math.max(2, Math.round(duration * FPS));
-    const zoomStep = (0.3 / frames).toFixed(6);
-    const overW = Math.round((width * 1.45) / 2) * 2;
-    const overH = Math.round((height * 1.45) / 2) * 2;
-    complex.push(
-      `[0:v]scale=${overW}:${overH}:force_original_aspect_ratio=increase,crop=${overW}:${overH},` +
-        `zoompan=z='min(zoom+${zoomStep},1.34)':d=${frames}` +
-        `:x='iw/2-(iw/zoom/2)+(iw/zoom)*0.05*sin(on/60)'` +
-        `:y='ih/2-(ih/zoom/2)+(ih/zoom)*0.035*cos(on/80)'` +
-        `:s=${width}x${height}:fps=${FPS},` +
-        `trim=duration=${duration.toFixed(3)},setpts=PTS-STARTPTS,setsar=1[base]`,
-    );
-  } else {
-    complex.push(
-      `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,fps=${FPS}[base]`,
-    );
+  try {
+    // Stored references (/api/files/..., data:) load locally; remote URLs download.
+    const loaded = await loadStoredMedia(chosenUrl, mediaFile);
+    if (!loaded) await download(chosenUrl, mediaFile);
+  } catch (err) {
+    isImage = false;
+    if (media.fallbackUrl && media.fallbackUrl !== chosenUrl) {
+      console.warn(
+        `Scene ${index + 1} clip download failed (${err instanceof Error ? err.message : err}); using verified fallback clip`,
+      );
+      chosenUrl = media.fallbackUrl;
+      mediaFile = path.join(
+        dir,
+        `media-${String(index).padStart(2, "0")}.${guessExt(chosenUrl)}`,
+      );
+      await download(chosenUrl, mediaFile);
+    } else {
+      throw err;
+    }
   }
 
-  let cursor = "base";
-  let step = 0;
-  const next = () => `s${step++}`;
+  let clipSpeed =
+    typeof scene.mediaSpeed === "number" &&
+    scene.mediaSpeed >= 0.5 &&
+    scene.mediaSpeed <= 2.0
+      ? scene.mediaSpeed
+      : 1;
+
+  // AI video clips are short (~5s): ease them into slow motion to fill the
+  // scene instead of visibly looping (loops only beyond a 0.6x slowdown).
+  const isAiVideo = scene.mediaSource === "ai" && !isImage && chosenUrl === media.url;
+  if (isAiVideo && !scene.aiLipsync && typeof scene.mediaSpeed !== "number") {
+    const clipLength = await probeDuration(mediaFile).catch(() => 0);
+    if (clipLength > 0 && clipLength < duration) {
+      clipSpeed = Math.max(0.6, clipLength / duration);
+    }
+  }
+  const clipStart =
+    typeof scene.mediaStart === "number" && scene.mediaStart > 0
+      ? Math.min(60, scene.mediaStart)
+      : 0;
+
+  const filters: string[] = [];
+  if (isImage) {
+    filters.push(...cameraMotionFilters(scene.aiMotion ?? defaultMotion(index), width, height, duration));
+  } else {
+    if (Math.abs(clipSpeed - 1) > 0.01) {
+      filters.push(`setpts=PTS/${clipSpeed.toFixed(2)}`);
+    }
+    filters.push(
+      `scale=${width}:${height}:force_original_aspect_ratio=increase`,
+      `crop=${width}:${height}`,
+    );
+    if (extras.punchZoom && !scene.aiLipsync) {
+      // Slow punch-in (MoneyPrinterTurbo-style zoom) that keeps shots alive.
+      filters.push(
+        `scale=w='trunc(${width}*(1+0.09*t/${Math.max(duration, 0.5).toFixed(2)})/2)*2':h=-2:eval=frame`,
+        `crop=${width}:${height}`,
+      );
+    }
+    filters.push("setsar=1", "fps=30");
+  }
+
+  const colorGrade = ffmpegColorFilter(scene.mediaFilter);
+  if (colorGrade) {
+    filters.push(colorGrade);
+  }
 
   // Subtle scene transitions.
   if (scene.transition === "fade" || index === 0) {
@@ -787,41 +1124,25 @@ async function renderSceneVideo(
     cursor = out;
   }
 
+  filters.push(...sceneProgress);
   if (captionFilter) {
     const out = next();
     complex.push(`[${cursor}]${captionFilter}[${out}]`);
     cursor = out;
   }
 
-  // Brand logo bug, faded in shortly after the cut.
-  if (logoFile) {
-    const logoLabel = next();
-    complex.push(
-      `[1:v]format=rgba,fade=t=in:st=0.35:d=0.5:alpha=1,scale=${logoWidth}:-1[${logoLabel}]`,
-    );
-    const out = next();
-    complex.push(
-      `[${cursor}][${logoLabel}]overlay=${width - logoWidth - margin}:${margin}[${out}]`,
-    );
-    cursor = out;
-  }
-
-  complex.push(`[${cursor}]null[out]`);
-
-  const args: string[] = ["-y"];
-  if (isImage) {
-    args.push("-i", prepared.file);
-  } else {
-    args.push("-stream_loop", "-1", "-i", prepared.file);
-  }
-  if (logoFile) {
-    args.push("-i", logoFile);
-  }
-  args.push(
-    "-filter_complex",
-    complex.join(";"),
-    "-map",
-    "[out]",
+  const inputArgs = isImage
+    ? ["-framerate", "30", "-loop", "1", "-i", mediaFile]
+    : [
+        "-stream_loop",
+        "-1",
+        ...(clipStart > 0 ? ["-ss", clipStart.toFixed(2)] : []),
+        "-i",
+        mediaFile,
+      ];
+  const args: string[] = [
+    "-y",
+    ...inputArgs,
     "-t",
     duration.toFixed(3),
     "-c:v",
@@ -897,24 +1218,17 @@ async function renderSceneVideo(
   return output;
 }
 
-/* ------------------------------------------------------------- the render */
-
-type Segment = {
-  video: string;
-  /** Local narration file, or `null` for a silent brand card. */
-  audio: string | null;
-  duration: number;
-};
-
-export async function renderProject(projectId: string): Promise<void> {
-  const project = await getProject(projectId);
+async function renderProjectInternal(
+  projectId: string,
+  overrideProject?: Project,
+): Promise<{ mp4?: Buffer }> {
+  const inline = Boolean(overrideProject);
+  const project = overrideProject ?? (await getProject(projectId));
   if (!project) throw new Error("Project not found");
 
-  const brandKit = project.brandKitId
-    ? await getBrandKit(project.brandKitId)
-    : await getDefaultBrandKit();
-
-  const dir = projectDir(projectId);
+  const dir = inline
+    ? projectDir(`${projectId}-inline-${Date.now()}`)
+    : projectDir(projectId);
   fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
   fs.mkdirSync(/* turbopackIgnore: true */ dir, { recursive: true });
 
@@ -924,6 +1238,12 @@ export async function renderProject(projectId: string): Promise<void> {
 
   const captionMode: CaptionMode =
     project.script.options?.captionMode ?? "word-highlight";
+  const captionPosition: CaptionPosition =
+    project.script.options?.captionPosition ?? "bottom";
+  const voiceRateOffset =
+    typeof project.script.options?.voiceRateOffset === "number"
+      ? project.script.options.voiceRateOffset
+      : 0;
   const musicTrackId =
     project.script.options?.musicTrack ?? defaultMusicForTone(project.tone);
   const musicVolume = Math.min(
@@ -931,12 +1251,14 @@ export async function renderProject(projectId: string): Promise<void> {
     Math.max(0, project.script.options?.musicVolume ?? 0.16),
   );
 
-  await updateProject(projectId, {
-    status: "rendering",
-    progress: 3,
-    stage: "Preparing neural voiceover & script cues",
-    error: null,
-  });
+  if (!inline) {
+    await updateProject(projectId, {
+      status: "rendering",
+      progress: 3,
+      stage: "Preparing neural voiceover & script cues",
+      error: null,
+    });
+  }
 
   const segments: Segment[] = [];
   const brandColor = brandKit?.primaryColor ?? "#2563EB";
@@ -967,38 +1289,66 @@ export async function renderProject(projectId: string): Promise<void> {
   // ── Narrated scenes ────────────────────────────────────────────────────
   for (let index = 0; index < scenes.length; index += 1) {
     const scene = scenes[index];
-    await updateProject(projectId, {
-      progress: Math.round(6 + (index / scenes.length) * 70),
-      stage: `Scene ${index + 1} of ${scenes.length}: recording neural voiceover`,
-    });
+    if (!inline) {
+      await updateProject(projectId, {
+        progress: Math.round(5 + (index / scenes.length) * 72),
+        stage: `Scene ${index + 1} of ${scenes.length}: recording neural voiceover`,
+      });
+    }
 
-    const speechText = scene.narration?.trim().length
-      ? scene.narration
-      : scene.caption || " ";
-    const speech = await synthesizeSpeech(
-      speechText,
-      project.voice,
-      project.language,
-    );
-    const audioFile = path.join(
-      dir,
-      `audio-${String(index).padStart(2, "0")}.${speech.ext}`,
-    );
-    fs.writeFileSync(audioFile, speech.data);
+    const speechText = (scene.narration?.trim() || scene.caption?.trim() || "").trim();
+    let audioFile: string;
+    let spoken = 0;
+    let wordTimings: WordTiming[] = [];
 
-    const probed = await probeDuration(audioFile);
-    const spoken = probed > 0 ? probed : speech.durationSec || 3.2;
+    if (speechText.length > 0) {
+      const speech = await synthesizeSpeech(
+        speechText,
+        project.voice,
+        project.language,
+        voiceRateOffset,
+      );
+      audioFile = path.join(
+        dir,
+        `audio-${String(index).padStart(2, "0")}.${speech.ext}`,
+      );
+      fs.writeFileSync(audioFile, speech.data);
+      const probed = await probeDuration(audioFile);
+      spoken = probed > 0 ? probed : speech.durationSec || 3.2;
+      wordTimings = speech.wordTimings;
+    } else {
+      const silentDur = Math.max(3, scene.duration ?? 3);
+      audioFile = path.join(dir, `audio-${String(index).padStart(2, "0")}.wav`);
+      await runFfmpeg([
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-t",
+        silentDur.toFixed(2),
+        audioFile,
+      ]);
+      spoken = silentDur;
+    }
+
     const manual = scene.duration ?? 0;
     const duration = Math.min(
       45,
       Math.max(2.6, spoken + 0.42, manual > 0 ? manual : 0),
     );
 
-    await updateProject(projectId, {
-      progress: Math.round(6 + ((index + 0.5) / scenes.length) * 70),
-      stage: `Scene ${index + 1} of ${scenes.length}: cutting footage & burning captions`,
-    });
+    if (!inline) {
+      await updateProject(projectId, {
+        progress: Math.round(5 + ((index + 0.5) / scenes.length) * 72),
+        stage: `Scene ${index + 1} of ${scenes.length}: cutting footage & burning captions`,
+      });
+    }
 
+    const usedIds = scenes
+      .slice(0, index)
+      .map((item) => item.mediaId)
+      .filter((id): id is string => Boolean(id));
     const file = await renderSceneVideo(
       scene,
       index,
@@ -1008,10 +1358,19 @@ export async function renderProject(projectId: string): Promise<void> {
       height,
       project.style,
       captionMode,
+      captionPosition,
       duration,
       spoken,
-      speech.wordTimings,
-      brandKit,
+      wordTimings,
+      project.prompt || project.title,
+      project.script.options?.peopleRepresentation ?? "all",
+      usedIds,
+      {
+        audioFile,
+        stickTheme: project.script.options?.stickTheme ?? "whiteboard",
+        progressBar: Boolean(project.script.options?.progressBar),
+        punchZoom: Boolean(project.script.options?.punchZoom),
+      },
     );
     segments.push({ video: file, audio: audioFile, duration });
   }
@@ -1132,8 +1491,43 @@ export async function renderProject(projectId: string): Promise<void> {
     voiceTrack,
   ]);
 
-  // 3. Mix an optional, ducked background score underneath the voiceover.
-  let finalAudioTrack = voiceTrack;
+  // 2b. Optional whoosh on every scene change (synthesised: no audio assets,
+  //     no licensing). Lands just before each cut so it leads into the scene.
+  let voiceWithSfx = voiceTrack;
+  if (project.script.options?.sceneSfx && sceneAudioSpecs.length > 1) {
+    const whoosh = path.join(dir, "whoosh.wav");
+    const sfxTrack = path.join(dir, "voice-sfx.m4a");
+    try {
+      await runFfmpeg([
+        "-y", "-f", "lavfi", "-i", "anoisesrc=d=0.55:c=pink:r=44100:a=0.7",
+        "-af", "highpass=f=350,lowpass=f=6000,afade=t=in:st=0:d=0.24,afade=t=out:st=0.24:d=0.31,volume=2.4",
+        "-ac", "2", whoosh,
+      ]);
+      const cuts: number[] = [];
+      let cursor = 0;
+      for (let i = 0; i < sceneAudioSpecs.length - 1; i += 1) {
+        cursor += sceneAudioSpecs[i].duration;
+        cuts.push(Math.max(0, cursor - 0.28));
+      }
+      const inputs = cuts.flatMap(() => ["-i", whoosh]);
+      const delays = cuts
+        .map((at, i) => `[${i + 1}:a]adelay=${Math.round(at * 1000)}|${Math.round(at * 1000)},volume=0.55[w${i}]`)
+        .join(";");
+      const mixIns = `[0:a]${cuts.map((_, i) => `[w${i}]`).join("")}`;
+      await runFfmpeg([
+        "-y", "-i", voiceTrack, ...inputs,
+        "-filter_complex",
+        `${delays};${mixIns}amix=inputs=${cuts.length + 1}:duration=first:normalize=0,alimiter=limit=0.95[out]`,
+        "-map", "[out]", "-c:a", "aac", "-b:a", "160k", sfxTrack,
+      ]);
+      voiceWithSfx = sfxTrack;
+    } catch (error) {
+      console.warn("Scene SFX skipped:", error instanceof Error ? error.message : error);
+    }
+  }
+
+  // 3. Mix optional background music gently ducked underneath the voiceover
+  let finalAudioTrack = voiceWithSfx;
   const musicMeta = getMusicTrack(musicTrackId);
   if (musicMeta.url && musicVolume > 0.01) {
     const musicFile = path.join(dir, "music.mp3");
@@ -1144,7 +1538,7 @@ export async function renderProject(projectId: string): Promise<void> {
       await runFfmpeg([
         "-y",
         "-i",
-        voiceTrack,
+        voiceWithSfx,
         "-stream_loop",
         "-1",
         "-i",
@@ -1217,6 +1611,12 @@ export async function renderProject(projectId: string): Promise<void> {
     // poster is optional
   }
 
+  if (inline) {
+    const mp4 = fs.readFileSync(/* turbopackIgnore: true */ output);
+    fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
+    return { mp4 };
+  }
+
   await updateProject(projectId, {
     progress: 96,
     stage: isBlobConfigured()
@@ -1235,7 +1635,7 @@ export async function renderProject(projectId: string): Promise<void> {
     ? await saveRenderArtifact(projectId, "poster.jpg", poster, "image/jpeg")
     : null;
 
-  if (IS_VERCEL || isBlobConfigured()) {
+  if (storesArtifactsExternally()) {
     fs.rmSync(/* turbopackIgnore: true */ dir, { recursive: true, force: true });
   } else {
     for (const file of fs.readdirSync(/* turbopackIgnore: true */ dir)) {
@@ -1252,6 +1652,17 @@ export async function renderProject(projectId: string): Promise<void> {
     outputPath: savedOutputPath,
     posterPath: savedPosterPath,
   });
+  return {};
+}
+
+export async function renderProject(projectId: string): Promise<void> {
+  await renderProjectInternal(projectId);
+}
+
+export async function renderProjectInline(project: Project): Promise<Buffer> {
+  const res = await renderProjectInternal(project.id, project);
+  if (!res.mp4) throw new Error("Inline render produced no MP4 output");
+  return res.mp4;
 }
 
 type JobState = {
