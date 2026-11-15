@@ -53,7 +53,6 @@ function report(state, detail, label) {
 async function main() {
   const replicate = process.env.REPLICATE_API_TOKEN;
   const openai = process.env.OPENAI_API_KEY;
-  const flaq = process.env.FLAQ_API_KEY || process.env.FLAQ_API_TOKEN;
   const gemini = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   const groq = process.env.GROQ_API_KEY;
   const mode = (process.env.AI_VIDEO_MODE || "fallback").trim().toLowerCase();
@@ -65,11 +64,6 @@ async function main() {
     replicate
       ? ok(`REPLICATE_API_TOKEN        ${mask(replicate)}`)
       : warn(`REPLICATE_API_TOKEN        not set ${DIM}(needed for HunyuanVideo)${RESET}`),
-  );
-  console.log(
-    flaq
-      ? ok(`FLAQ_API_KEY               ${mask(flaq)}`)
-      : warn(`FLAQ_API_KEY               not set ${DIM}(paid: scripts+image+video)${RESET}`),
   );
   console.log(
     openai ? ok(`OPENAI_API_KEY             ${mask(openai)}`) : warn(`OPENAI_API_KEY             not set`),
@@ -111,24 +105,20 @@ async function main() {
 
 
   // What the app will actually pick, mirroring src/lib/video.ts.
-  // Mirrors src/lib/video.ts: Flaq wins when its key is present.
-  const videoModel = flaq
-    ? process.env.FLAQ_VIDEO_MODEL || "seedance-v2.5-text-to-video"
-    : process.env.HUNYUAN_VIDEO_MODEL || "tencent/hunyuan-video";
-  const videoProvider = flaq ? "Flaq AI Video" : replicate ? "HunyuanVideo (Replicate)" : "none";
+  const videoProvider = replicate ? "HunyuanVideo (Replicate)" : "none";
   console.log(`\n${BOLD}Resolved providers${RESET}`);
   console.log(
-    flaq || replicate
-      ? ok(`AI video  -> ${videoProvider} ${DIM}(model ${videoModel})${RESET}`)
+    replicate
+      ? ok(`AI video  -> ${videoProvider} ${DIM}(model ${process.env.HUNYUAN_VIDEO_MODEL || "tencent/hunyuan-video"})${RESET}`)
       : warn("AI video  -> none (scenes use stock clips, or an AI still + camera motion)"),
   );
   console.log(
-    flaq || openai || replicate
-      ? ok(`AI images -> ${flaq ? "Flaq AI Images" : openai ? "OpenAI Images" : "Replicate Flux"}`)
+    openai || replicate
+      ? ok(`AI images -> ${openai ? "OpenAI Images" : "Replicate Flux"}`)
       : warn("AI images -> on-device procedural generator"),
   );
   const llm =
-    flaq ? "Flaq" : openai ? "OpenAI" : gemini ? "Gemini" : groq ? "Groq" : null;
+    openai ? "OpenAI" : gemini ? "Gemini" : groq ? "Groq" : null;
   console.log(
     llm
       ? ok(`Scripting -> ${llm}`)
@@ -145,10 +135,6 @@ async function main() {
       console.log("  1. Get a Replicate token: https://replicate.com/account/api-tokens");
       console.log("     Then add it to .env.local:");
       console.log(`${DIM}       REPLICATE_API_TOKEN=r8_your_token_here${RESET}`);
-    }
-    if (!flaq) {
-      console.log("  0. One paid key for scripts + images + video: https://flaq.ai");
-      console.log(`${DIM}       FLAQ_API_KEY=your_flaq_key${RESET}`);
     }
     if (!llm) {
       console.log("  2. For AI scriptwriting, add a FREE key (no card) to .env.local:");
