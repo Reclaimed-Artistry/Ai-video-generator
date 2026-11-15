@@ -1,6 +1,5 @@
 import { synthesizeSpeech } from "@/lib/tts";
 import { getVoice } from "@/lib/voices";
-import { isClonedVoiceId, resolveVoiceSelection } from "@/lib/voiceclone";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,7 +25,6 @@ export async function POST(request: Request) {
       headers: {
         "content-type": speech.ext === "wav" ? "audio/wav" : "audio/mpeg",
         "cache-control": "no-store",
-        "x-voice-label": encodeURIComponent(resolved?.label ?? persona.name),
       },
     });
   } catch (error) {

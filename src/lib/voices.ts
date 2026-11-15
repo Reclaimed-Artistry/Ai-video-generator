@@ -1,5 +1,3 @@
-import { LANGUAGES } from "./types";
-
 export type VoiceGender = "male" | "female";
 
 export type Voice = {
@@ -208,6 +206,23 @@ export const VOICES: Voice[] = [
   },
 ];
 
+/** Locale-aware voice used when a project is rendered in another language. */
+const LOCALE_VOICES: Record<
+  string,
+  { female: string; male: string }
+> = {
+  en: { female: "en-US-AriaNeural", male: "en-US-GuyNeural" },
+  es: { female: "es-ES-ElviraNeural", male: "es-ES-AlvaroNeural" },
+  fr: { female: "fr-FR-DeniseNeural", male: "fr-FR-HenriNeural" },
+  de: { female: "de-DE-KatjaNeural", male: "de-DE-ConradNeural" },
+  pt: { female: "pt-BR-FranciscaNeural", male: "pt-BR-AntonioNeural" },
+  it: { female: "it-IT-ElsaNeural", male: "it-IT-DiegoNeural" },
+  nl: { female: "nl-NL-ColetteNeural", male: "nl-NL-DirkNeural" },
+  pl: { female: "pl-PL-ZofiaNeural", male: "pl-PL-MarekNeural" },
+  tr: { female: "tr-TR-EmelNeural", male: "tr-TR-AhmetNeural" },
+  ru: { female: "ru-RU-SvetlanaNeural", male: "ru-RU-DmitryNeural" },
+};
+
 export const DEFAULT_VOICE_ID = "ava";
 
 export function getVoice(id: string): Voice {
@@ -220,19 +235,9 @@ export function getVoice(id: string): Voice {
  */
 export function resolveNeuralVoice(voice: Voice, language: string): string {
   if (!language || language === "en") return voice.neuralVoice;
-  const meta = LANGUAGES.find((item) => item.id === language);
-  if (!meta) return voice.neuralVoice;
-  return voice.gender === "female" ? meta.neuralFemale : meta.neuralMale;
-}
-
-/** The native narrator used when dubbing into `language`. */
-export function nativeNarratorFor(
-  language: string,
-  gender: VoiceGender = "female",
-): string | null {
-  const meta = LANGUAGES.find((item) => item.id === language);
-  if (!meta) return null;
-  return gender === "female" ? meta.neuralFemale : meta.neuralMale;
+  const locale = LOCALE_VOICES[language];
+  if (!locale) return voice.neuralVoice;
+  return voice.gender === "female" ? locale.female : locale.male;
 }
 
 export type TtsProvider =

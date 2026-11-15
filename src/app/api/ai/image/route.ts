@@ -14,8 +14,7 @@ export const maxDuration = 120;
 
 /**
  * Generate a scene visual on the server and store it once.
- * Keyed providers (POLLINATIONS_API_KEY / OPENAI_API_KEY) are used when set,
- * otherwise the free Pollinations tier. Rate limits return 429 + retryAfter,
+ * OPENAI_API_KEY is used when set. Rate limits return 429 + retryAfter,
  * which the studio turns into a countdown and automatic retry.
  */
 export async function POST(request: Request) {

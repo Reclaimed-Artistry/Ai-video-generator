@@ -3,65 +3,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import ffmpegStatic from "ffmpeg-static";
 
 const execFileAsync = promisify(execFile);
 
-/**
- * Resolves an FFmpeg binary across every deployment target.
- *
- * Order of preference:
- *  1. `FFMPEG_PATH` — explicit operator override.
- *  2. `@ffmpeg-installer/ffmpeg` — ships the binary inside the npm tarball, so
- *     it needs no postinstall download and cannot fail behind a proxy.
- *  3. `ffmpeg-static` — pinned binary downloaded by its postinstall script.
- *  4. Whatever `ffmpeg` is on `PATH`.
- */
 function resolveFfmpegBin(): string {
-  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
-
-  const candidates: string[] = [];
-  candidates.push(
+  const candidates = [
+    typeof ffmpegStatic === "string" ? ffmpegStatic : "",
     path.join(/* turbopackIgnore: true */ process.cwd(), "node_modules", "ffmpeg-static", "ffmpeg"),
-    path.join(
-      /* turbopackIgnore: true */ process.cwd(),
-      "node_modules",
-      "@ffmpeg-installer",
-      "linux-x64",
-      "ffmpeg",
-    ),
-    path.join(
-      /* turbopackIgnore: true */ process.cwd(),
-      "node_modules",
-      "@ffmpeg-installer",
-      "darwin-arm64",
-      "ffmpeg",
-    ),
-    path.join(
-      /* turbopackIgnore: true */ process.cwd(),
-      "node_modules",
-      "@ffmpeg-installer",
-      "win32-x64",
-      "ffmpeg.exe",
-    ),
-  );
-
-  // `ffmpeg-static` resolves its path at import time; require it lazily so a
-  // package that failed to download its binary can never break this module.
-  try {
-    const ffmpegStatic = require("ffmpeg-static") as unknown;
-    if (typeof ffmpegStatic === "string") candidates.push(ffmpegStatic);
-  } catch {
-    // Package not installed — the @ffmpeg-installer paths above cover us.
-  }
-
-  candidates.push(
-    path.join(/* turbopackIgnore: true */ process.cwd(), "node_modules", "ffmpeg-static", "ffmpeg"),
-    "/var/task/node_modules/@ffmpeg-installer/linux-x64/ffmpeg",
     "/var/task/node_modules/ffmpeg-static/ffmpeg",
-  );
+  ].filter(Boolean);
 
   for (const candidate of candidates) {
-    if (!candidate) continue;
     try {
       if (fs.existsSync(/* turbopackIgnore: true */ candidate)) {
         return candidate;
@@ -70,15 +23,6 @@ function resolveFfmpegBin(): string {
       // keep probing
     }
   }
-
-  // Fall back to a PATH lookup so system-installed FFmpeg is still usable.
-  try {
-    const found = execFileSync("which", ["ffmpeg"], { encoding: "utf8" }).trim().split("\n")[0];
-    if (found) return found;
-  } catch {
-    // No system ffmpeg.
-  }
-
   return "ffmpeg";
 }
 

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { llmProbe } from "@/lib/script";
+import { llmProbe } from "@/lib/ai";
 
 /**
  * Diagnostic: runs one real script request through the configured LLM and

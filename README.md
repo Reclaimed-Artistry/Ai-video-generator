@@ -1,78 +1,43 @@
-# Reclaimed Artistry — Prompt-to-Video Studio
+# Reclaimed Artistry — Prompt-to-Picture Assembly & H.264 Master Desk
 
-Type one sentence and get a finished, narrated, captioned MP4. An InVideo-style
-prompt-first studio: pick a template, describe your video, and the pipeline
-drafts the script, casts a voice, sources or generates imagery, applies your
-brand kit, and encodes the master with FFmpeg.
+Write a plain-English production brief, inspect and edit every spoken cue and
+lower-third super in the three-pane NLE Cut Desk, audition 24kHz neural
+voiceover, swap licensed moving B-roll from Pexels and Pixabay, and render a
+finished H.264/AAC MP4 master at **240p, 360p, or 1080p**.
 
 ## Highlights
 
-- **Prompt-first composer** — one textarea drives everything. Add optional
-  settings (format, length, voice, subtitles, music, tone, language, quality),
-  preview the voice, then either draft the script or go straight to a finished
-  render. `⌘/Ctrl + Enter` submits.
-- **22-template gallery** — Marketing, YouTube, Social, Education, Business and
-  Story templates, each with a ready-made brief, aspect ratio, tone, voice and
-  music track. Picking one pre-fills the composer.
-- **Brand kits** — logo upload, primary + text colours, caption typeface,
-  intro title/subtitle, outro text and website. Applied to intro cards, outro
-  cards, burned-in captions and every AI-generated plate.
-- **AI imagery** — OpenAI / Stability / Replicate / Gemini when a key is
-  configured. With no key, falls back to an on-device FFmpeg procedural
-  generator that composes brand-tinted fractal plates (hue-preserving, so a
-  dark teal brand stays a teal instead of washing out to grey).
-- **Voice cloning** — ElevenLabs neural cloning from a sample, or an offline
-  voice-preset path (base voice + rate + pitch) that needs no API key. Cloned
-  voices appear in the narrator picker alongside 14 built-in AI presenters.
-- **Dubbing** — 15 languages. Translates narration and captions when a
-  translation provider is configured, otherwise switches voice locale and
-  caption language so the cut is still localized.
+- **Beat-structured script desk** — turns rough prompts into timed narration
+  cues, burned-in lower-third supers, and shot queries. Uses OpenAI when
+  `OPENAI_API_KEY` is configured, with a built-in deterministic script engine
+  out of the box.
+- **Three-pane NLE Cut Desk** — scene rundown with live word/runtime math,
+  aspect-aware Program Monitor (`16:9`, `9:16`, `1:1`) with `Storyboard Gate` vs
+  `Master MP4` switching and broadcast safe-title guides, proportional timeline
+  filmstrip, and non-clobbering PostgreSQL autosave.
+- **24kHz neural voice booth** — 14 Microsoft Edge neural personas across
+  American, British, and Australian accents in 10 languages, normalized to
+  `-16 LUFS` (EBU R128). Optional `ELEVENLABS_API_KEY` or `OPENAI_API_KEY`
+  upgrades, plus offline `mespeak` fallback.
+- **Moving footage only** — every scene resolves to verified multi-rendition
+  video clips (never static slideshows). Ships with 40 verified Pexels video
+  clips out of the box and queries live Pexels (`PEXELS_API_KEY`) and Pixabay
+  Video (`PIXABAY_API_KEY`) pools when keys are set.
 - **Server-side FFmpeg master** — `libx264` High profile, `libass` vector
-  caption burn-in, `loudnorm` stereo AAC-LC audio, scene-proportional Ken Burns
-  on stills, HTTP Range streaming for scrubbing and download.
-- **Zero-setup database** — Postgres via `DATABASE_URL` in production; embeds
-  PGlite locally so `npm run dev` works with no database install at all.
+  caption burn-in across 5 caption styles, `loudnorm` stereo AAC-LC audio, and
+  HTTP Range streaming for scrubbing and download.
 
 ## Stack
 
 Next.js 16 (App Router) · React 19 · Tailwind CSS v4 · Drizzle ORM ·
-PostgreSQL / PGlite · FFmpeg (`@ffmpeg-installer/ffmpeg`) ·
-`@andresaya/edge-tts` · `mespeak` · `lucide-react`.
-
-## Getting started
-
-```bash
-npm install
-npm run dev      # http://localhost:3000
-```
-
-No environment variables are required — everything degrades gracefully
-offline. Scripts use a deterministic built-in engine, narration uses
-`mespeak`, and imagery uses the on-device procedural generator.
-
-### Optional environment variables
-
-| Variable | Enables |
-| --- | --- |
-| `DATABASE_URL` | Production Postgres (falls back to embedded PGlite) |
-| `OPENAI_API_KEY` | LLM script drafting + DALL·E imagery |
-| `STABILITY_API_KEY` / `REPLICATE_API_TOKEN` / `GEMINI_API_KEY` | Alternative image providers |
-| `GEMINI_API_KEY` | **Free** LLM script drafting via Gemini's OpenAI-compatible endpoint (~15 RPM / 500 RPD, no card) — also enables imagery, so one key covers both. Override: `GEMINI_TEXT_MODEL`. Accepts both the classic `AIza...` key and Google's newer `AQ.` Authentication Key — the app detects the prefix, since `AQ.` keys are rejected as bearer tokens and must be sent in `x-goog-api-key`. |
-| `GROQ_API_KEY` | **Free** LLM script drafting via Groq (~30 RPM / 1,000 RPD, no card). Override: `GROQ_TEXT_MODEL`. |
-| `LLM_MAX_TOKENS` / `LLM_JSON_MODE` / `LLM_BASE_URL` | Tuning for whichever LLM is active: output budget (raise it if scripts come back truncated), `LLM_JSON_MODE=off` if the model rejects `response_format`, `LLM_BASE_URL` to route through a proxy or gateway |
-| `REPLICATE_API_TOKEN` | AI scene **video** via HunyuanVideo (`tencent/hunyuan-video`). The model needs ~45GB VRAM, so it runs on Replicate's GPUs rather than locally. Optional `HUNYUAN_VIDEO_MODEL` / `HUNYUAN_INFER_STEPS` / `HUNYUAN_GUIDANCE_SCALE` / `HUNYUAN_FLOW_SHIFT` / `HUNYUAN_TIMEOUT_MS` overrides. |
-| `AI_VIDEO_MODE` | When to generate video: `fallback` (default — only scenes with no usable stock clip), `always`, or `off` |
-| `ELEVENLABS_API_KEY` | Neural voices + real voice cloning |
-| `PEXELS_API_KEY` / `PIXABAY_API_KEY` | Live stock video search |
-| `BLOB_READ_WRITE_TOKEN` | Vercel Blob CDN storage for masters |
-| `FFMPEG_PATH` | Explicit FFmpeg binary override |
+PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react`.
 
 ## Generative AI
 
 | Feature | Where | What it does |
 | --- | --- | --- |
 | **AI script writer** | Home page brief | An LLM writes the narration, captions, stock-footage queries and an image prompt for every scene |
-| **AI video** | Home page → *Visuals: AI video*, Studio → **AI** tab, or the AI edit box | A real text-to-video clip generated for each scene (Pollinations: Wan, Seedance, Veo, Kling…). Clips are stored once and slowed slightly to fill longer scenes |
+| **AI video** | Home page → *Visuals: AI video*, Studio → **AI** tab, or the AI edit box | A real text-to-video clip generated for each scene (Replicate: HunyuanVideo and friends). Clips are stored once and slowed slightly to fill longer scenes |
 | **AI images** | Home page → *Visuals: AI images*, Studio → **AI** tab, or the AI edit box | Text-to-image in 7 looks, animated with a camera move (push-in, pull-out, pan) so every shot moves |
 | **Stickman animation** | Home page → *Visuals: Stickman*, Studio → **AI** tab, or “use stickman animation for every scene” | Free, built-in stick-figure animator: 7 performances (talk, wave, point, think, celebrate, walk, shrug) auto-picked from each line, smooth eased motion, blinking, 3 themes, and **lip-sync driven by the real voiceover loudness**. No API key, renders ~4× faster than real time at 1080p |
 | **Image-to-video** | Studio → **AI** tab → *Character* | Upload a character (or use an AI image) and animate it with smooth, natural movement |
@@ -85,13 +50,16 @@ offline. Scripts use a deterministic built-in engine, narration uses
 
 **Engines** (picked automatically, best first):
 
-- **Text:** `OPENAI_API_KEY` (or any OpenAI-compatible API via `OPENAI_BASE_URL`) → `POLLINATIONS_API_KEY` → free Pollinations tier → built-in script engine.
-- **Images:** `POLLINATIONS_API_KEY` (Flux, HD) → `OPENAI_API_KEY` (gpt-image-1) → free Pollinations tier (1024×576).
-- **Characters:** image-to-video (`AI_I2V_MODEL`, default `alibaba/wan-2.2-fast`) and lip-sync (`AI_LIPSYNC_MODEL`, default `alibaba/wan-3.0`) use `POLLINATIONS_API_KEY`. The AI service downloads the character image and voice clip from your site, so it must be publicly reachable (deployed with `PUBLIC_APP_URL`, or Vercel Blob connected).
+- **Text:** `OPENAI_API_KEY` → `GEMINI_API_KEY` → `GROQ_API_KEY` → built-in script engine. Gemini and Groq both have free tiers and speak the OpenAI wire format, so script drafting needs no credit card. Point `OPENAI_BASE_URL` or `LLM_BASE_URL` at any OpenAI-compatible provider (OpenRouter, LiteLLM, Together, …).
+- **Gemini keys:** newer keys start with `AQ.` and must be sent in the `x-goog-api-key` header; legacy `AIza` keys are sent as a bearer token. The studio detects the prefix and uses the right one automatically. Model names churn, so override with `GEMINI_TEXT_MODEL` / `GROQ_TEXT_MODEL`.
+- **Images:** `OPENAI_API_KEY` (gpt-image-1). Without it, scenes use stock footage and the built-in procedural plates.
 - **Stickman:** built in, free and offline (no key needed).
-- **Video:** `POLLINATIONS_API_KEY` (default model `alibaba/wan-2.2-fast`, 5-second clips; change with `AI_VIDEO_MODEL` / `AI_VIDEO_DURATION`). There is **no free text-to-video service**: without a key, “AI video” falls back to a motion shot made from an AI image, and the studio says so. (OpenAI's Sora video API was shut down in September 2026, so it is not used.)
+- **Video:** `REPLICATE_API_TOKEN` (default model `tencent/hunyuan-video`, 5-second clips; change with `AI_VIDEO_MODEL` / `AI_VIDEO_DURATION`). There is **no free text-to-video service**: without a token, “AI video” falls back to a motion shot made from an AI image, and the studio says so. (OpenAI's Sora video API was shut down in September 2026, so it is not used.)
+- **Characters:** animating a still image or lip-syncing it needs a provider with an image-to-video model; Replicate's HunyuanVideo is text-to-video only, so this is disabled until such a provider is wired in.
 
-**Free tier:** works with no keys, but is shared and rate-limited (about one request every 45 seconds per server IP, best effort). The studio shows a countdown and retries automatically; if the AI writer is busy, the built-in engine writes the script. For production traffic, add a key.
+To check the configured LLM end to end, set `ENABLE_LLM_PROBE=1` and open `/api/verify-llm`. It sends one real script request and reports the HTTP status, model, finish reason and whether the reply parsed — a 401 there means the key or its auth header is wrong, a 404 that the model name is retired.
+
+**Free tier:** Gemini and Groq are free but rate-limited (roughly 15 and 30 requests a minute). The studio retries automatically, and if the AI writer is busy the built-in engine writes the script. For production traffic, add a key.
 
 Generated videos and images are stored once (Vercel Blob → Postgres → local disk → embedded in the project) and stay locked to their scene, so stock auto-matching never replaces them.
 
@@ -103,7 +71,7 @@ Generated videos and images are stored once (Vercel Blob → Postgres → local 
 - **Reliable parsing:** small models’ broken JSON (stray brackets, missing commas) is repaired instead of discarded, and free-tier rate limits are waited out instead of falling back to templates.
 - **Built-in engine (no AI available):** several cliché-free wordings per beat chosen per topic, timeline arcs for history briefs, captions from each scene’s own words, and varied filmable shots.
 
-The free tier uses a small model (GPT-OSS 20B) that can still invent facts. For factual or brand content, add `OPENAI_API_KEY` (or any OpenAI-compatible key) or `POLLINATIONS_API_KEY`.
+Free-tier models can still invent facts. For factual or brand content, add `OPENAI_API_KEY` (or any OpenAI-compatible key).
 
 ## API Surface
 
@@ -119,69 +87,45 @@ The free tier uses a small model (GPT-OSS 20B) that can still invent facts. For 
 | `/api/projects/[id]/script` | `POST` | Redraft all cues from project brief |
 | `/api/projects/[id]/scenes/[sceneId]` | `PATCH` / `POST` | Update or rewrite an individual cue |
 | `/api/projects/[id]/render` | `GET` / `POST` | Poll encode progress / start FFmpeg render |
-| `/api/projects/[id]/command` | `POST` | Natural-language edit ("switch to 9:16") |
-| `/api/projects/[id]/dub` | `GET` / `POST` | Dub targets / dub into a language |
-| `/api/media/search` | `GET` | Search stock footage (`?q=&limit=`) |
-| `/api/imagen` | `GET` / `POST` | Image provider status / generate a still |
-| `/api/brand-kits` | `GET` / `POST` | List / create brand kits |
-| `/api/brand-kits/[id]` | `GET` / `PATCH` / `DELETE` | Manage one kit |
-| `/api/brand-kits/[id]/logo` | `POST` / `DELETE` | Upload / remove a logo |
-| `/api/voices` | `GET` | Presenters, cloned voices & provider status |
-| `/api/voices/clone` | `POST` | Create a cloned voice or voice preset |
-| `/api/voices/clone/[id]` | `DELETE` | Remove a cloned voice |
-| `/api/tts/preview` | `POST` | Synthesize a voice audition clip |
-| `/api/files/[...file]` | `GET` | Byte-range media streaming |
+| `/api/media/search` | `GET` | Search moving video footage (`?q=&provider=all\|pexels\|pixabay`) |
+| `/api/voices` | `GET` | Neural voice talent list & active provider status |
+| `/api/tts/preview` | `POST` | Synthesize live voice audition audio |
+| `/api/files/[...file]` | `GET` | Byte-range MP4 & poster streaming |
 
-## Deploy on Vercel
+## Deploy on Vercel (One-Click or GitHub Import)
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FReclaimed-Artistry%2FAi-video-generator&env=DATABASE_URL&project-name=reclaimed-artistry)
 
-- **`vercel.json`** enables Fluid Compute with `maxDuration: 300` on the render
-  route.
-- **`after()` (`next/server`)** runs FFmpeg encoding after returning HTTP 202.
-- **Zero-migration Postgres bootstrap** creates `projects`, `project_assets`
-  and `brand_kits` tables on first connection (accepts `DATABASE_URL`,
-  `POSTGRES_URL`, or `POSTGRES_PRISMA_URL` with automatic cloud TLS).
-- **Bundled DejaVu TrueType fonts** (`src/assets/fonts`) plus a generated
-  `/tmp` fontconfig so `libass` burned-in captions work on a bare Linux runtime.
-- **Three-tier deliverable storage**: Vercel Blob for global CDN playback when
-  attached, falling back to Postgres `project_assets` with byte-range
-  streaming, falling back to the local `storage/` directory.
-- **Trimmed serverless bundles** — `next.config.ts` excludes `ffprobe-static`,
-  skips the `storage/` and `.pglite/` data directories, and scopes FFmpeg
-  tracing strictly to the render route.
+Reclaimed Artistry is configured out of the box for **Vercel Fluid Compute**:
+- **`vercel.json`** enables Fluid Compute (`maxDuration: 300` on `/api/projects/[id]/render`, compatible with both Hobby & Pro).
+- **`after()` (`next/server`)** runs FFmpeg video encoding cleanly after returning HTTP 202.
+- **Zero-migration Postgres bootstrap** automatically creates `projects` and `project_assets` tables on first connection (supports `DATABASE_URL`, `POSTGRES_URL`, or `POSTGRES_PRISMA_URL` with automatic cloud TLS).
+- **Bundled DejaVu TrueType fonts** (`src/assets/fonts`) + `/tmp` fontconfig so `libass` burned-in captions work on Vercel's bare Linux runtime.
+- **Three-tier deliverable storage**: uses **Vercel Blob** (`BLOB_READ_WRITE_TOKEN`) for global CDN playback when attached, and automatically falls back to PostgreSQL `project_assets` with byte-range streaming if you only attach a Postgres database.
+- **Trimmed serverless bundles** (`next.config.ts` excludes `ffprobe-static` and scopes `ffmpeg-static` strictly to the render route so every function stays well under Vercel's 250 MB unzipped limit).
 
-1. Import the repository in [Vercel](https://vercel.com/new).
-2. Attach a Postgres database (Neon, Supabase, or Vercel Postgres) to inject
-   `DATABASE_URL`.
-3. *(Recommended)* Attach Vercel Blob so masters stream from the CDN.
-4. *(Optional)* Add `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `PEXELS_API_KEY`.
-### Verify the LLM actually works
-```bash
-curl -s localhost:3000/api/verify-llm | jq
-```
-Sends one real script request through the exact production code path and reports the
-provider, model, HTTP status, `finish_reason`, scene count and first line of narration.
-`ok: true` means script drafting is genuinely live; `ok: false` prints the provider's own
-error. Returns 404 in production unless `ENABLE_LLM_PROBE=1`.
-
-5. Deploy.
+### Vercel Setup Steps
+1. Import **`Reclaimed-Artistry/Ai-video-generator`** in [Vercel](https://vercel.com/new).
+2. Attach a PostgreSQL database via the **Storage** tab (e.g. **Neon Serverless Postgres** or **Supabase** — automatically injects `DATABASE_URL` / `POSTGRES_URL`).
+3. *(Recommended for 1080p MP4 streaming)* Attach **Vercel Blob** in the **Storage** tab (automatically injects `BLOB_READ_WRITE_TOKEN`).
+4. *(Optional)* Add `PEXELS_API_KEY`, `PIXABAY_API_KEY`, `OPENAI_API_KEY`, or `ELEVENLABS_API_KEY` in **Settings → Environment Variables**.
+5. Click **Deploy**.
 
 ## Deploy on Railway (Docker + PostgreSQL)
 
-This repository ships a `Dockerfile`, `railway.json`, and
-`scripts/docker-entrypoint.sh` (installs `fontconfig` + DejaVu fonts for
-`libass` captions).
+This repository includes `Dockerfile`, `railway.json`, and `scripts/docker-entrypoint.sh`
+(which installs `fontconfig` + DejaVu fonts for `libass` captions and runs `drizzle-kit push` on startup):
 
-1. In [Railway](https://railway.app), choose **New Project → Deploy from GitHub
-   repo**.
-2. Add a PostgreSQL service.
-3. Set `DATABASE_URL=${{Postgres.DATABASE_URL}}` and `STORAGE_DIR=/app/storage`.
-4. Mount a persistent volume at `/app/storage` so rendered masters survive
-   redeploys.
-5. Click **Generate Domain**.
+1. In [Railway](https://railway.app), click **New Project → Deploy from GitHub repo** and select this repository.
+2. Add a PostgreSQL service (**+ New → Database → Add PostgreSQL**).
+3. In the web service **Variables** tab, add:
+   - `DATABASE_URL=${{Postgres.DATABASE_URL}}`
+   - `STORAGE_DIR=/app/storage`
+   - Optional: `PEXELS_API_KEY`, `PIXABAY_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`
+4. In **Settings → Volumes**, mount a persistent volume at `/app/storage` so rendered MP4 masters persist across redeploys.
+5. In **Settings → Networking**, click **Generate Domain**.
 
-## Local development with Docker
+## Local Development with Docker
 
 ```bash
 cp .env.example .env

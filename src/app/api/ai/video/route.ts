@@ -37,7 +37,7 @@ async function extractPoster(video: Buffer): Promise<Buffer | null> {
 
 /**
  * Generate a real AI video clip for a scene and store it (plus a poster).
- * Without POLLINATIONS_API_KEY this answers 409 so the studio can fall back
+ * Without REPLICATE_API_TOKEN this answers 409 so the studio can fall back
  * to a motion shot made from an AI image.
  */
 export async function POST(request: Request) {

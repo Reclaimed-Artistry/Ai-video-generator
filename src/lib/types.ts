@@ -249,9 +249,6 @@ export type Project = {
   script: VideoScript;
   outputPath: string | null;
   posterPath: string | null;
-  brandKitId?: string | null;
-  /** Hydrated by the Studio/API layer when branding matters for rendering. */
-  brandKit?: BrandKit | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -422,7 +419,18 @@ export const STYLES: Style[] = [
   "corporate",
 ];
 
-
+export const LANGUAGES = [
+  { id: "en", label: "English" },
+  { id: "es", label: "Spanish" },
+  { id: "fr", label: "French" },
+  { id: "de", label: "German" },
+  { id: "pt", label: "Portuguese" },
+  { id: "it", label: "Italian" },
+  { id: "nl", label: "Dutch" },
+  { id: "pl", label: "Polish" },
+  { id: "tr", label: "Turkish" },
+  { id: "ru", label: "Russian" },
+];
 
 export const MAX_SCENES = 12;
 export const MIN_SCENES = 3;

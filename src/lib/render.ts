@@ -30,7 +30,6 @@ import {
 } from "./stock";
 import {
   getProjectScratchDir,
-  getStorageRoot,
   IS_VERCEL,
   isBlobConfigured,
   loadStoredMedia,
@@ -38,13 +37,10 @@ import {
   storesArtifactsExternally,
 } from "./storage";
 import { estimateWordTimings, synthesizeSpeech, type WordTiming } from "./tts";
-import { aiVideoEnabled, generateSceneVideo } from "./video";
 import {
   ASPECTS,
-  BRAND_FONT_ASS_NAME,
   RESOLUTIONS,
   type AspectRatio,
-  type BrandKit,
   type CaptionMode,
   type CaptionPosition,
   type MediaFilter,
@@ -55,8 +51,6 @@ import {
   type Style,
   type AiMotion,
 } from "./types";
-
-export const FPS = 30;
 
 export function projectDir(id: string): string {
   return getProjectScratchDir(id);
@@ -92,74 +86,6 @@ function targetSize(resolution: Resolution, aspect: AspectRatio) {
   return { width, height };
 }
 
-/* ------------------------------------------------------------ brand helpers */
-
-const IMAGE_EXT = new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp"]);
-
-function isImageFile(file: string): boolean {
-  return IMAGE_EXT.has(path.extname(file).toLowerCase());
-}
-
-/** Extracts the storage key from an `/api/files/<key>` URL. */
-function mediaKeyFromUrl(url: string | null | undefined): string | null {
-  if (!url) return null;
-  if (url.startsWith("http://") || url.startsWith("https://")) return null;
-  const match = /\/api\/files\/(.+)$/.exec(url);
-  if (!match) return null;
-  return decodeURIComponent(match[1]);
-}
-
-function resolveLocalAsset(file: string | null | undefined): string | null {
-  if (!file) return null;
-  const key = mediaKeyFromUrl(file) ?? (file.startsWith("/") ? null : file);
-  if (!key) return null;
-  const candidate = path.join(/* turbopackIgnore: true */ getStorageRoot(), key);
-  try {
-    if (fs.existsSync(/* turbopackIgnore: true */ candidate)) return candidate;
-  } catch {
-    // ignore
-  }
-  return null;
-}
-
-function resolveLogoFile(brandKit: BrandKit | null | undefined): string | null {
-  if (!brandKit?.showLogo || !brandKit.logoPath) return null;
-  return resolveLocalAsset(brandKit.logoPath);
-}
-
-/** Resolves a TrueType file for `drawtext` inside `src/assets/fonts`. */
-function fontFileFor(kit: BrandKit | null | undefined, bold: boolean): string | null {
-  const fontsDir = getFontsDir();
-  if (!fontsDir) return null;
-  const assName = BRAND_FONT_ASS_NAME[kit?.font ?? "dejavu"] ?? "DejaVu Sans";
-  const file =
-    assName === "DejaVu Serif"
-      ? "DejaVuSerif.ttf"
-      : assName === "DejaVu Sans Mono"
-        ? "DejaVuSansMono.ttf"
-        : bold
-          ? "DejaVuSans-Bold.ttf"
-          : "DejaVuSans.ttf";
-  const candidate = path.join(/* turbopackIgnore: true */ fontsDir, file);
-  try {
-    return fs.existsSync(/* turbopackIgnore: true */ candidate) ? candidate : null;
-  } catch {
-    return null;
-  }
-}
-
-function escapeDrawtext(value: string): string {
-  return value
-    .replace(/\\/g, "")
-    .replace(/'/g, "’")
-    .replace(/:/g, "\\:")
-    .replace(/%/g, "\\%")
-    .replace(/\r?\n/g, " ")
-    .trim();
-}
-
-/* ------------------------------------------------------------- captions */
-
 type CaptionStyleConfig = {
   fontname: string;
   fontsize: number;
@@ -192,10 +118,10 @@ function captionStyle(
   const posAlignment =
     captionPosition === "top" ? 8 : captionPosition === "center" ? 5 : 2;
   const base: CaptionStyleConfig = {
-    fontname: BRAND_FONT_ASS_NAME[brandKit?.font ?? "dejavu"] ?? "DejaVu Sans",
+    fontname: "DejaVu Sans",
     fontsize: baseFont,
-    primary: brandKit?.accentColor ? hexToAssColor(brandKit.accentColor) : "&H00F2EFE9",
-    highlight: brandHighlight ?? "&H003CA9E5",
+    primary: "&H00F2EFE9",
+    highlight: "&H00EB6325", // Accent blue (#2563EB in ASS BGR)
     outlineColour: "&H00121210",
     backColour: "&H990B0B0A",
     borderStyle: 1,
@@ -215,7 +141,7 @@ function captionStyle(
       return {
         ...base,
         fontsize: Math.max(12, Math.round(baseFont * 0.88)),
-        highlight: brandHighlight ?? "&H00FFFFFF",
+        highlight: "&H00FFFFFF",
         outline: Math.max(1.2, base.outline * 0.6),
         shadow: 0.8,
         alignment:
@@ -227,7 +153,7 @@ function captionStyle(
       return {
         ...base,
         fontsize: Math.max(12, Math.round(baseFont * 0.9)),
-        highlight: brandHighlight ?? "&H00C4DCE8",
+        highlight: "&H00C4DCE8",
         outlineColour: "&H00000000",
         marginV:
           captionPosition === "center"
@@ -237,8 +163,8 @@ function captionStyle(
     case "energetic":
       return {
         ...base,
-        primary: brandKit?.accentColor ? hexToAssColor(brandKit.accentColor) : "&H00FFFFFF",
-        highlight: brandHighlight ?? "&H0066E0FF",
+        primary: "&H00FFFFFF",
+        highlight: "&H0066E0FF", // Vibrant yellow-gold
         outline: Math.max(2.2, base.outline * 1.15),
       };
     case "corporate":
@@ -246,7 +172,7 @@ function captionStyle(
         ...base,
         borderStyle: 3,
         backColour: "&HCC603018",
-        highlight: brandHighlight ?? "&H003CA9E5",
+        highlight: "&H003CA9E5",
         outlineColour: "&H00181818",
       };
     default:
@@ -432,6 +358,7 @@ function buildAssFile(
         }
       }
     } else {
+      // Clean broadcast timed subtitle phrases
       for (let cIdx = 0; cIdx < chunks.length; cIdx += 1) {
         const chunk = chunks[cIdx];
         const start = chunk[0].startSec;
@@ -451,8 +378,6 @@ function buildAssFile(
 
   return [...header, ...dialogues, ""].join("\n");
 }
-
-/* --------------------------------------------------------------- fetching */
 
 async function download(url: string, destination: string): Promise<void> {
   const ctrl = new AbortController();
@@ -683,7 +608,7 @@ async function resolveMedia(
     const asset = getLocalAsset(scene.mediaId);
     if (asset && asset.type === "video" && !isAbstractAsset(asset)) {
       const source = pickSource(asset, targetHeight);
-      if (source) return { url: source.url, fallbackUrl };
+      if (source) return { url: source.url, fallbackUrl, kind: "video" };
     }
   }
   if (!existingIsAbstract && scene.mediaUrl && scene.mediaType !== "photo") {
@@ -695,7 +620,7 @@ async function resolveMedia(
     ) {
       renderUrl = renderUrl.replace(/-360\.mp4$/, "-720.mp4");
     }
-    return { url: renderUrl, fallbackUrl };
+    return { url: renderUrl, fallbackUrl, kind: "video" };
   }
 
   // Match real-world footage directly to narration + chosen people/race option
@@ -716,219 +641,6 @@ async function resolveMedia(
   }
   return { url: "", kind: "generated" };
 }
-
-/* ------------------------------------------------- on-device background gen */
-
-/**
- * Composes a brand-tinted abstract plate with FFmpeg. Used when a stock clip
- * can't be fetched (offline, rate limited, or a dead CDN link) so a project
- * always renders instead of failing. The returned still is then animated by the
- * same Ken Burns push applied to AI-generated imagery.
- */
-async function renderProceduralPlate(
-  dir: string,
-  tag: string,
-  width: number,
-  height: number,
-  brandColor: string,
-  seed: number,
-): Promise<string> {
-  const output = path.join(dir, `procedural-${tag}.jpg`);
-  try {
-    await renderProceduralPlateImage(output, {
-      seed,
-      width: Math.max(320, Math.min(1280, width)),
-      height: Math.max(180, Math.round((Math.max(320, Math.min(1280, width)) * height) / width / 2) * 2),
-      primaryColor: brandColor,
-    });
-  } catch {
-    // Last-resort flat brand wash so the encode still completes.
-    await runFfmpeg([
-      "-y",
-      "-f",
-      "lavfi",
-      "-i",
-      `color=c=${hexToFfmpegColor(brandColor)}:s=${width}x${height}:d=1:r=1`,
-      "-vf",
-      "noise=alls=6:allf=u,vignette=PI/5",
-      "-frames:v",
-      "1",
-      "-q:v",
-      "3",
-      output,
-    ]);
-  }
-  return output;
-}
-
-/* ------------------------------------------------------------- media prep */
-
-type PreparedMedia = { file: string; isImage: boolean; procedural: boolean };
-
-async function prepareMedia(
-  scene: Scene,
-  index: number,
-  dir: string,
-  height: number,
-  duration: number,
-  width: number,
-  brandColor: string,
-): Promise<PreparedMedia> {
-  // 1. A generated image or uploaded asset already living in our storage root.
-  const local = resolveLocalAsset(scene.mediaUrl);
-  if (local) return { file: local, isImage: isImageFile(local), procedural: false };
-
-  // 2. Licensed stock clip (downloaded from the provider CDN).
-  const stock = resolveStockMedia(scene, height);
-  const candidates = [stock.url, stock.fallbackUrl].filter(
-    (url): url is string => Boolean(url),
-  );
-  for (const url of candidates) {
-    const ext = url.toLowerCase().includes(".webm") ? "webm" : "mp4";
-    const mediaFile = path.join(
-      dir,
-      `media-${String(index).padStart(2, "0")}-${candidates.indexOf(url)}.${ext}`,
-    );
-    try {
-      await download(url, mediaFile);
-      if (fs.statSync(/* turbopackIgnore: true */ mediaFile).size > 1024) {
-        return { file: mediaFile, isImage: false, procedural: false };
-      }
-    } catch (error) {
-      console.warn(
-        `[render] scene ${index + 1} clip download failed (${
-          error instanceof Error ? error.message : error
-        }); using on-device background`,
-      );
-      try {
-        fs.rmSync(/* turbopackIgnore: true */ mediaFile, { force: true });
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  // 2b. AI-generated footage (HunyuanVideo via a hosted replica of the model).
-  //     Only reached when the scene has no usable stock clip, so it replaces the
-  //     on-device plate below instead of displacing cheap, already-licensed
-  //     footage. generateSceneVideo() never throws, so a video API outage still
-  //     falls through to the plate and the render completes.
-  if (aiVideoEnabled()) {
-    const aspect: AspectRatio =
-      width === height ? "1:1" : width > height ? "16:9" : "9:16";
-    const video = await generateSceneVideo({
-      prompt: scene.mediaQuery || scene.narration || "",
-      duration,
-      width,
-      height,
-      aspect,
-      seed: index * 137 + 29,
-    });
-    if (video) return { file: video.file, isImage: false, procedural: false };
-  }
-
-  // 3. On-device abstract plate — guarantees the render still completes. It is
-  //    returned as an image so the Ken Burns push below gives it real motion.
-  const file = await renderProceduralPlate(
-    dir,
-    String(index).padStart(2, "0"),
-    width,
-    height,
-    brandColor,
-    index * 137 + 29,
-  );
-  return { file, isImage: true, procedural: true };
-}
-
-/* ---------------------------------------------------------- title cards */
-
-async function renderTitleCard(
-  dir: string,
-  name: string,
-  width: number,
-  height: number,
-  duration: number,
-  opts: {
-    title: string;
-    subtitle?: string | null;
-    footnote?: string | null;
-    brandColor: string;
-    accentColor: string;
-    brandKit?: BrandKit | null;
-  },
-): Promise<string> {
-  const output = path.join(dir, `card-${name}.mp4`);
-  const font = fontFileFor(opts.brandKit, true);
-  const fontArg = font ? `fontfile=${font.replace(/\\/g, "/").replace(/:/g, "\\:")}:` : "";
-  const brand = hexToFfmpegColor(opts.brandColor);
-  const accent = hexToFfmpegColor(opts.accentColor);
-
-  const titleSize = Math.max(18, Math.round(height * 0.082));
-  const subSize = Math.max(12, Math.round(height * 0.036));
-  const footSize = Math.max(10, Math.round(height * 0.028));
-
-  const lines: string[] = [
-    `color=c=${brand}:s=${width}x${height}:d=${duration.toFixed(3)}:r=${FPS}`,
-  ];
-
-  const title = escapeDrawtext(opts.title).slice(0, 90);
-  const subtitle = opts.subtitle ? escapeDrawtext(opts.subtitle).slice(0, 110) : "";
-  const footnote = opts.footnote ? escapeDrawtext(opts.footnote).slice(0, 110) : "";
-
-  // Vertical centring that accounts for whichever lines are present.
-  const blockHeight =
-    titleSize * 1.25 + (subtitle ? subSize * 1.9 : 0) + (footnote ? footSize * 2.4 : 0);
-  let cursor = Math.max(0, (height - blockHeight) / 2);
-
-  lines.push(
-    `drawtext=${fontArg}text='${title}':fontcolor=${accent}:fontsize=${titleSize}:x=(w-tw)/2:y=${Math.round(cursor)}`,
-  );
-  cursor += titleSize * 1.25;
-  if (subtitle) {
-    lines.push(
-      `drawtext=${fontArg}text='${subtitle}':fontcolor=${accent}:fontsize=${subSize}:x=(w-tw)/2:y=${Math.round(cursor)}`,
-    );
-    cursor += subSize * 1.9;
-  }
-  if (footnote) {
-    lines.push(
-      `drawtext=${fontArg}text='${footnote}':fontcolor=${accent}:fontsize=${footSize}:x=(w-tw)/2:y=${Math.round(cursor + footSize * 0.4)}`,
-    );
-  }
-
-  lines.push(`fade=t=in:st=0:d=0.42`);
-  lines.push(`fade=t=out:st=${Math.max(0.2, duration - 0.7).toFixed(2)}:d=0.66`);
-  lines.push(`setsar=1,fps=${FPS}`);
-
-  await runFfmpeg([
-    "-y",
-    "-f",
-    "lavfi",
-    "-i",
-    "anullsrc=r=44100:cl=stereo",
-    "-filter_complex",
-    lines.join(","),
-    "-t",
-    duration.toFixed(3),
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "23",
-    "-pix_fmt",
-    "yuv420p",
-    "-profile:v",
-    "high",
-    "-r",
-    String(FPS),
-    "-an",
-    output,
-  ]);
-  return output;
-}
-
-/* ------------------------------------------------------------ scene encode */
 
 async function renderSceneVideo(
   scene: Scene,
@@ -1040,7 +752,6 @@ async function renderSceneVideo(
     dir,
     `media-${String(index).padStart(2, "0")}.${isImage ? "img" : guessExt(chosenUrl)}`,
   );
-  const isImage = prepared.isImage;
 
   try {
     // Stored references (/api/files/..., data:) load locally; remote URLs download.
@@ -1110,25 +821,17 @@ async function renderSceneVideo(
     filters.push(colorGrade);
   }
 
-  // Subtle scene transitions.
+  // Subtle scene transitions when enabled
   if (scene.transition === "fade" || index === 0) {
-    const out = next();
-    complex.push(`[${cursor}]fade=t=in:st=0:d=0.32[${out}]`);
-    cursor = out;
+    filters.push("fade=t=in:st=0:d=0.32");
   }
   if (index === totalScenes - 1 && duration > 1.0) {
-    const out = next();
-    complex.push(
-      `[${cursor}]fade=t=out:st=${Math.max(0, duration - 0.4).toFixed(2)}:d=0.38[${out}]`,
-    );
-    cursor = out;
+    filters.push(`fade=t=out:st=${Math.max(0, duration - 0.4).toFixed(2)}:d=0.38`);
   }
 
   filters.push(...sceneProgress);
   if (captionFilter) {
-    const out = next();
-    complex.push(`[${cursor}]${captionFilter}[${out}]`);
-    cursor = out;
+    filters.push(captionFilter);
   }
 
   const inputArgs = isImage
@@ -1145,6 +848,8 @@ async function renderSceneVideo(
     ...inputArgs,
     "-t",
     duration.toFixed(3),
+    "-vf",
+    filters.join(","),
     "-c:v",
     "libx264",
     "-preset",
@@ -1156,64 +861,17 @@ async function renderSceneVideo(
     "-profile:v",
     "high",
     "-r",
-    String(FPS),
+    "30",
     ...(IS_VERCEL ? ["-threads", "2"] : []),
     "-an",
     output,
-  );
+  ];
 
   try {
     await runFfmpeg(args);
-  } catch (error) {
-    // Ken Burns can fail on unusual stills — retry as a straight scale/crop.
-    if (isImage) {
-      const fallbackComplex = [
-        `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,fps=${FPS}[base]`,
-      ];
-      let fbCursor = "base";
-      if (captionFilter) {
-        fallbackComplex.push(`[${fbCursor}]${captionFilter}[capped]`);
-        fbCursor = "capped";
-      }
-      fallbackComplex.push(`[${fbCursor}]null[out]`);
-      await runFfmpeg([
-        "-y",
-        "-loop",
-        "1",
-        "-i",
-        prepared.file,
-        "-filter_complex",
-        fallbackComplex.join(";"),
-        "-map",
-        "[out]",
-        "-t",
-        duration.toFixed(3),
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
-        "-pix_fmt",
-        "yuv420p",
-        "-profile:v",
-        "high",
-        "-r",
-        String(FPS),
-        "-an",
-        output,
-      ]);
-    } else {
-      throw error;
-    }
   } finally {
+    fs.rmSync(/* turbopackIgnore: true */ mediaFile, { force: true });
     fs.rmSync(/* turbopackIgnore: true */ captionFile, { force: true });
-    if (!prepared.procedural) {
-      // Downloaded clips are scratch; generated plates live in storage.
-      if (prepared.file.startsWith(dir)) {
-        fs.rmSync(/* turbopackIgnore: true */ prepared.file, { force: true });
-      }
-    }
   }
   return output;
 }
@@ -1260,33 +918,10 @@ async function renderProjectInternal(
     });
   }
 
-  const segments: Segment[] = [];
-  const brandColor = brandKit?.primaryColor ?? "#2563EB";
-  const accentColor = brandKit?.accentColor ?? "#FFFFFF";
+  const sceneFiles: string[] = [];
+  const sceneAudioSpecs: { file: string; duration: number }[] = [];
+  let totalTargetDuration = 0;
 
-  // ── Branded intro card ─────────────────────────────────────────────────
-  const introTitle = (brandKit?.introTitle ?? "").trim();
-  if (introTitle) {
-    await updateProject(projectId, { progress: 4, stage: "Rendering branded intro card" });
-    const cardDuration = 3.4;
-    const file = await renderTitleCard(
-      dir,
-      "intro",
-      width,
-      height,
-      cardDuration,
-      {
-        title: introTitle,
-        subtitle: brandKit?.introSubtitle ?? null,
-        brandColor,
-        accentColor,
-        brandKit,
-      },
-    );
-    segments.push({ video: file, audio: null, duration: cardDuration });
-  }
-
-  // ── Narrated scenes ────────────────────────────────────────────────────
   for (let index = 0; index < scenes.length; index += 1) {
     const scene = scenes[index];
     if (!inline) {
@@ -1337,6 +972,8 @@ async function renderProjectInternal(
       45,
       Math.max(2.6, spoken + 0.42, manual > 0 ? manual : 0),
     );
+    totalTargetDuration += duration;
+    sceneAudioSpecs.push({ file: audioFile, duration });
 
     if (!inline) {
       await updateProject(projectId, {
@@ -1372,112 +1009,53 @@ async function renderProjectInternal(
         punchZoom: Boolean(project.script.options?.punchZoom),
       },
     );
-    segments.push({ video: file, audio: audioFile, duration });
+    sceneFiles.push(file);
   }
-
-  // ── Branded outro card ─────────────────────────────────────────────────
-  const outroText = (brandKit?.outroText ?? "").trim();
-  if (outroText) {
-    await updateProject(projectId, { progress: 80, stage: "Rendering branded outro card" });
-    const cardDuration = 3.6;
-    const file = await renderTitleCard(
-      dir,
-      "outro",
-      width,
-      height,
-      cardDuration,
-      {
-        title: outroText,
-        subtitle: brandKit?.website ?? null,
-        brandColor,
-        accentColor,
-        brandKit,
-      },
-    );
-    segments.push({ video: file, audio: null, duration: cardDuration });
-  }
-
-  const totalTargetDuration = segments.reduce((acc, seg) => acc + seg.duration, 0);
 
   await updateProject(projectId, {
-    progress: 84,
+    progress: 82,
     stage: "Mixing voiceover, music bed & assembling master MP4",
   });
 
-  // 1. Concatenate the video segments.
+  // 1. Concatenate video scenes
   const videoList = path.join(dir, "scenes.txt");
   fs.writeFileSync(
     videoList,
-    segments.map((segment) => `file '${segment.video.replace(/'/g, "'\\''")}'`).join("\n"),
+    sceneFiles.map((file) => `file '${file.replace(/'/g, "'\\''")}'`).join("\n"),
     "utf8",
   );
   const silentVideo = path.join(dir, "video.mp4");
-  try {
-    await runFfmpeg([
-      "-y",
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-i",
-      videoList,
-      "-c",
-      "copy",
-      silentVideo,
-    ]);
-  } catch {
-    // Card and scene encodes can differ in minor SPS details — re-encode.
-    await runFfmpeg([
-      "-y",
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-i",
-      videoList,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "23",
-      "-pix_fmt",
-      "yuv420p",
-      "-profile:v",
-      "high",
-      "-r",
-      String(FPS),
-      silentVideo,
-    ]);
-  }
+  await runFfmpeg([
+    "-y",
+    "-f",
+    "concat",
+    "-safe",
+    "0",
+    "-i",
+    videoList,
+    "-c",
+    "copy",
+    silentVideo,
+  ]);
 
-  // 2. Build the narration bed: real audio per scene, silence under cards.
+  // 2. Pad each scene's audio to match its exact video duration so narration &
+  //    captions stay locked in frame-accurate sync across every cut!
   const audioInputs: string[] = [];
   const padChains: string[] = [];
-  segments.forEach((segment, index) => {
-    const dur = segment.duration.toFixed(3);
-    if (segment.audio) {
-      const inputIndex = audioInputs.length / 2;
-      audioInputs.push("-i", segment.audio);
-      // Plain `apad` + `atrim` is portable across FFmpeg 4.x → 7.x, unlike
-      // `apad=whole_dur=` which only exists on newer builds.
-      padChains.push(
-        `[${inputIndex}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad,atrim=0:${dur}[a${index}]`,
-      );
-    } else {
-      padChains.push(
-        `anullsrc=r=44100:cl=stereo,atrim=0:${dur},asetpts=PTS-STARTPTS[a${index}]`,
-      );
-    }
+  sceneAudioSpecs.forEach((spec, index) => {
+    audioInputs.push("-i", spec.file);
+    padChains.push(
+      `[${index}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad=whole_dur=${spec.duration.toFixed(3)},atrim=0:${spec.duration.toFixed(3)}[a${index}]`,
+    );
   });
 
-  const concatInputs = segments.map((_, idx) => `[a${idx}]`).join("");
+  const concatInputs = sceneAudioSpecs.map((_, idx) => `[a${idx}]`).join("");
   const voiceTrack = path.join(dir, "voice.m4a");
   await runFfmpeg([
     "-y",
     ...audioInputs,
     "-filter_complex",
-    `${padChains.join(";")};${concatInputs}concat=n=${segments.length}:v=0:a=1,loudnorm=I=-16:TP=-1.5:LRA=11[vo]`,
+    `${padChains.join(";")};${concatInputs}concat=n=${sceneAudioSpecs.length}:v=0:a=1,loudnorm=I=-16:TP=-1.5:LRA=11[vo]`,
     "-map",
     "[vo]",
     "-ac",
@@ -1568,7 +1146,7 @@ async function renderProjectInternal(
     }
   }
 
-  // 4. Final MP4 mux (+faststart for instant browser streaming).
+  // 4. Final MP4 mux (+faststart for instant browser streaming)
   const output = path.join(dir, "output.mp4");
   await runFfmpeg([
     "-y",
@@ -1586,17 +1164,12 @@ async function renderProjectInternal(
     output,
   ]);
 
-  // Branded first frame makes a much better library thumbnail than a cut.
-  const posterTime = Math.min(
-    Math.max(0.8, totalTargetDuration * 0.12),
-    Math.max(1, totalTargetDuration - 0.6),
-  );
   const poster = path.join(dir, "poster.jpg");
   try {
     await runFfmpeg([
       "-y",
       "-ss",
-      posterTime.toFixed(2),
+      "0.5",
       "-i",
       output,
       "-frames:v",
@@ -1618,7 +1191,7 @@ async function renderProjectInternal(
   }
 
   await updateProject(projectId, {
-    progress: 96,
+    progress: 94,
     stage: isBlobConfigured()
       ? "Uploading master to Vercel Blob"
       : "Saving rendered master",

@@ -11,7 +11,7 @@ export type GeneratedImage = {
 export type AiStatus = {
   text: string;
   image: string;
-  video: "pollinations" | "none";
+  video: "replicate" | "none";
   videoLabel: string;
   characterLabel: string;
   imageMode: "server";
@@ -128,7 +128,7 @@ export async function generateSceneVideo(args: {
     url: data.url,
     thumbUrl: data.thumbUrl ?? null,
     seed: data.seed ?? 0,
-    provider: data.provider ?? "pollinations",
+    provider: data.provider ?? "replicate",
     model: data.model ?? "",
   };
 }

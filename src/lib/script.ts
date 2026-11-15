@@ -408,19 +408,6 @@ export function detectCategory(prompt: string): Category {
   return best;
 }
 
-/**
- * Resolves a workflow id defensively. Callers may pass anything (URL params,
- * LLM output, older client builds), so an unknown id silently falls back to
- * "explainer" instead of crashing script generation.
- */
-function asWorkflow(workflow: string | undefined): Workflow {
-  return (workflow && workflow in WORKFLOWS ? workflow : "explainer") as Workflow;
-}
-
-function workflowMeta(workflow: string | undefined) {
-  return WORKFLOWS[asWorkflow(workflow)];
-}
-
 function sceneCountFor(duration: number, workflow: Workflow): number {
   const divisor = workflow === "shorts" ? 7 : workflow === "documentary" ? 11 : 9;
   return Math.max(MIN_SCENES, Math.min(MAX_SCENES, Math.round(duration / divisor)));
@@ -747,7 +734,7 @@ async function scriptToVideoGenerate(
 }
 
 async function localGenerate(options: GenerateScriptOptions): Promise<VideoScript> {
-  const workflow = asWorkflow(options.workflow);
+  const workflow = options.workflow ?? "explainer";
   if (workflow === "script") {
     return scriptToVideoGenerate(options);
   }
@@ -804,8 +791,7 @@ async function localGenerate(options: GenerateScriptOptions): Promise<VideoScrip
     );
   }
 
-
-const wfMeta = workflowMeta(workflow);
+  const wfMeta = WORKFLOWS[workflow];
   const title =
     options.title?.trim() ||
     `${titleCase(topic)} — ${wfMeta.shortLabel}`.slice(0, 90);
@@ -896,7 +882,7 @@ async function llmGenerate(
   if (workflow === "script" || textProvider() === "none") return null;
 
   const count = sceneCountFor(options.duration, workflow);
-  const wfMeta = workflowMeta(workflow);
+  const wfMeta = WORKFLOWS[workflow];
   try {
     const reply = await chatJSON<DirectorReply>(
       [
@@ -946,13 +932,7 @@ async function llmGenerate(
         visualStyle: style || undefined,
       },
     };
-  } catch (error) {
-    // Never surface this to the caller — the beat engine is a fine fallback —
-    // but a silent catch made LLM failures impossible to diagnose.
-    console.warn(
-      `[script] ${llm.label} (${llm.model}) script generation failed: ` +
-        `${error instanceof Error ? error.message : String(error)}`,
-    );
+  } catch {
     return null;
   }
 }
@@ -968,7 +948,7 @@ async function repairScript(
   deadline: number,
 ): Promise<{ script: VideoScript; repaired: number }> {
   const provider = textProvider();
-  if (provider !== "openai" && provider !== "pollinations") return { script, repaired: 0 };
+  if (provider === "none") return { script, repaired: 0 };
   const report = analyzeScript(script.scenes, options.prompt);
   if (report.weakScenes.length === 0) return { script, repaired: 0 };
   const reply = await chatJSON<{ scenes?: (DirectorScene & { index?: number })[] }>(
@@ -1248,89 +1228,4 @@ async function regenerateSceneBuiltIn(
     },
     matched,
   );
-}
-
-/**
- * Live end-to-end check of the configured LLM.
- *
- * Sends one real script request through the exact production body and reports
- * what came back, so a broken key, a retired model name or truncated JSON is
- * visible instead of silently degrading to the beat engine.
- */
-export async function llmProbe(): Promise<Record<string, unknown>> {
-  const llm = llmConfig();
-  if (!llm) {
-    return { configured: false, reason: "No LLM key set (OPENAI / GEMINI / GROQ)." };
-  }
-
-  const options = {
-    prompt: "a calm ocean sunrise",
-    language: "English",
-    tone: "calm",
-    duration: 15,
-  };
-  const count = sceneCountFor(options.duration, asWorkflow("storyboard"));
-  const report: Record<string, unknown> = {
-    configured: true,
-    provider: llm.label,
-    model: llm.model,
-    baseUrl: llm.baseUrl,
-    jsonMode: process.env.LLM_JSON_MODE !== "off",
-    tokenBudget: llmTokenBudget(count),
-    url: `${llm.baseUrl}/chat/completions`,
-  };
-
-  const started = Date.now();
-  try {
-    const response = await fetch(`${llm.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...llm.authHeaders },
-      body: JSON.stringify(llmBody(llm, count, options, workflowMeta("storyboard").label)),
-    });
-    report.httpStatus = response.status;
-    report.elapsedMs = Date.now() - started;
-
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      report.ok = false;
-      report.error = detail.slice(0, 600);
-      return report;
-    }
-
-    const data = (await response.json()) as {
-      choices?: {
-        message?: { content?: string };
-        finish_reason?: string;
-      }[];
-      usage?: Record<string, unknown>;
-    };
-    const content = data.choices?.[0]?.message?.content ?? "";
-    report.finishReason = data.choices?.[0]?.finish_reason ?? null;
-    report.usage = data.usage ?? null;
-    report.replyChars = content.length;
-
-    try {
-      const parsed = parseJsonLoose(content) as {
-        title?: string;
-        scenes?: { narration?: string; caption?: string; mediaQuery?: string }[];
-      };
-      report.ok = Boolean(parsed.scenes?.length);
-      report.sceneCount = parsed.scenes?.length ?? 0;
-      report.title = parsed.title ?? null;
-      report.firstNarration = parsed.scenes?.[0]?.narration ?? null;
-      if (report.finishReason === "length") {
-        report.warning =
-          "Reply hit the token limit (finish_reason=length) — raise LLM_MAX_TOKENS.";
-      }
-    } catch {
-      report.ok = false;
-      report.error = `Reply was not JSON (first 400 chars): ${content.slice(0, 400)}`;
-    }
-    return report;
-  } catch (error) {
-    report.ok = false;
-    report.elapsedMs = Date.now() - started;
-    report.error = error instanceof Error ? error.message : String(error);
-    return report;
-  }
 }
