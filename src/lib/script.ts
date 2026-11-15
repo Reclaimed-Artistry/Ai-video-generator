@@ -948,7 +948,7 @@ async function repairScript(
   deadline: number,
 ): Promise<{ script: VideoScript; repaired: number }> {
   const provider = textProvider();
-  if (provider !== "openai" && provider !== "pollinations") return { script, repaired: 0 };
+  if (provider === "none") return { script, repaired: 0 };
   const report = analyzeScript(script.scenes, options.prompt);
   if (report.weakScenes.length === 0) return { script, repaired: 0 };
   const reply = await chatJSON<{ scenes?: (DirectorScene & { index?: number })[] }>(

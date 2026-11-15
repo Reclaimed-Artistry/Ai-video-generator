@@ -23,3 +23,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 .DS_Store
+
+# Local PGlite database directory (created at runtime)
+/.pglite/
+/.data/

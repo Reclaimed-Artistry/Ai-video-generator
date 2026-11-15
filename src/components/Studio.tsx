@@ -1431,7 +1431,7 @@ export default function Studio({
                   }}
                   className={`group cursor-pointer p-3 transition-colors ${
                     selected
-                      ? "bg-elevated shadow-[inset_2px_0_0_0_#E5A93C]"
+                      ? "bg-elevated shadow-[inset_2px_0_0_0_#2563EB]"
                       : "hover:bg-inset/70"
                   }`}
                 >
@@ -1784,7 +1784,7 @@ export default function Studio({
                   type="checkbox"
                   checked={commandAutoRender}
                   onChange={(e) => setCommandAutoRender(e.target.checked)}
-                  className="accent-[#E5A93C]"
+                  className="accent-[#2563EB]"
                 />
                 <span>Auto re-render after command</span>
               </label>
@@ -2032,7 +2032,7 @@ export default function Studio({
                       onChange={(e) =>
                         updateScriptOptions({ autoMatchMedia: e.target.checked })
                       }
-                      className="accent-[#E5A93C]"
+                      className="accent-[#2563EB]"
                     />
                     <span>Auto-match clip to narration</span>
                   </label>
@@ -2575,7 +2575,7 @@ export default function Studio({
                             musicVolume: Number(e.target.value) / 100,
                           })
                         }
-                        className="mt-1 w-full accent-[#E5A93C]"
+                        className="mt-1 w-full accent-[#2563EB]"
                       />
                     </label>
                   ) : null}
@@ -2600,7 +2600,7 @@ export default function Studio({
                     onChange={(e) =>
                       updateScriptOptions({ voiceRateOffset: Number(e.target.value) })
                     }
-                    className="mt-1.5 w-full accent-[#E5A93C]"
+                    className="mt-1.5 w-full accent-[#2563EB]"
                   />
                 </div>
 

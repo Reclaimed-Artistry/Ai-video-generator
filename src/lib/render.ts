@@ -121,7 +121,7 @@ function captionStyle(
     fontname: "DejaVu Sans",
     fontsize: baseFont,
     primary: "&H00F2EFE9",
-    highlight: "&H003CA9E5", // Warm tungsten amber (#E5A93C in ASS BGR)
+    highlight: "&H00EB6325", // Accent blue (#2563EB in ASS BGR)
     outlineColour: "&H00121210",
     backColour: "&H990B0B0A",
     borderStyle: 1,

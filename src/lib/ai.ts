@@ -1,24 +1,33 @@
+import fs from "node:fs/promises";
+
+import { geminiAuthHeaders } from "./gemini";
+import { generateSceneVideo } from "./video";
 import { parseModelJson } from "./script-intelligence";
 import { AI_STYLES, type AiStyleId, type AspectRatio } from "./types";
 
 /**
  * Generative AI provider layer.
  *
- * Text (scripts, rewrites)   : OpenAI-compatible key → Pollinations key → free Pollinations → null
- * Images (scene visuals)     : Pollinations key → OpenAI key → free Pollinations
- * Video  (scene clips)       : Pollinations key (text-to-video models). There is
+ * Text (scripts, rewrites)   : OpenAI → Gemini → Groq → null. Gemini and Groq
+ *                              both have free tiers and speak the OpenAI wire
+ *                              format, so script drafting needs no card. With
+ *                              no key at all the built-in beat engine is used.
+ * Images (scene visuals)     : OpenAI key, or none (procedural/stock plates).
+ * Video  (scene clips)       : Replicate (HunyuanVideo) when
+ *                              REPLICATE_API_TOKEN is set, else none. There is
  *                              no free text-to-video tier, so without a key the
  *                              studio makes a motion shot from an AI image.
  *
- * The free Pollinations tier allows ~1 request per 45s *per IP* and is
- * best-effort. It rejects browser-origin requests without a Cloudflare
- * Turnstile token, so every call is made server-side: image calls surface
- * rate limits as AiRateLimitError (the studio counts down and retries) and
- * text calls degrade to the built-in script engine.
+ * Pollinations was removed: the free tier allows ~1 request per 45s *per IP*,
+ * and it rejects browser-origin requests without a Cloudflare Turnstile token.
+ * Every call is made server-side; rate limits surface as AiRateLimitError so
+ * the studio can count down and retry.
+
+
  */
 
-export type TextProvider = "openai" | "pollinations" | "pollinations-free" | "none";
-export type ImageProvider = "pollinations" | "openai" | "pollinations-free";
+export type TextProvider = "openai" | "gemini" | "groq" | "none";
+export type ImageProvider = "openai" | "none";
 
 export class AiRateLimitError extends Error {
   retryAfter: number;
@@ -29,33 +38,102 @@ export class AiRateLimitError extends Error {
   }
 }
 
-const FREE_TIER_ENABLED = process.env.AI_FREE_TIER !== "off";
-/** Overridable for self-hosted gateways and tests. */
-const POLLINATIONS_GEN_URL = (process.env.POLLINATIONS_GEN_URL || "https://gen.pollinations.ai").replace(/\/$/, "");
+/**
+ * Resolved credentials + endpoint for whichever text provider is configured.
+ * Gemini and Groq both expose an OpenAI-compatible `/chat/completions`, so
+ * only the base URL, key, model and auth header differ. Model names churn on
+ * both, so each default is overridable via `<PROVIDER>_TEXT_MODEL`.
+ */
+type LlmConfig = {
+  label: string;
+  baseUrl: string;
+  key: string;
+  model: string;
+  /** Gemini `AQ.` keys are rejected as bearer tokens; they need x-goog-api-key. */
+  authHeaders: Record<string, string>;
+  /** Provider-specific fields the others do not accept. */
+  extras: Record<string, unknown>;
+};
+
+function llmConfig(): LlmConfig | null {
+  if (process.env.OPENAI_API_KEY) {
+    return {
+      label: "OpenAI",
+      // LLM_BASE_URL lets you point any provider at a proxy or self-hosted
+      // gateway (OpenRouter, LiteLLM, a corporate egress proxy).
+      baseUrl: (process.env.LLM_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
+      key: process.env.OPENAI_API_KEY,
+      model: process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini",
+      authHeaders: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      extras: {},
+    };
+  }
+
+  // Free tier is roughly 15 RPM / 500 RPD. Note the `/openai` segment: the
+  // native Gemini endpoint has a different request shape.
+  const gemini = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (gemini) {
+    return {
+      label: "Gemini",
+      baseUrl: (process.env.LLM_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/$/, ""),
+      key: gemini,
+      model: process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash",
+      authHeaders: geminiAuthHeaders(gemini),
+      // Deliberately empty by default. Flash models think before answering and
+      // those tokens come out of the same output budget, but Google only
+      // documents `reasoning_effort` for the 3.x models — for 2.5 it is
+      // inconsistent (some clients reject it as an unsupported param) and a
+      // rejected param is a 400 that kills script generation. A generous token
+      // budget covers the overhead instead. Opt in with
+      // GEMINI_REASONING_EFFORT=low|medium|high|none on a 3.x model.
+      extras: process.env.GEMINI_REASONING_EFFORT
+        ? { reasoning_effort: process.env.GEMINI_REASONING_EFFORT }
+        : {},
+    };
+  }
+
+  // Free tier is 30 RPM / 1,000 RPD / 200K tokens a day per model. Do not use
+  // the old `llama-3.3-70b-versatile` quickstart default — Groq retired it
+  // from the free and developer tiers.
+  if (process.env.GROQ_API_KEY) {
+    const model = process.env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b";
+    return {
+      label: "Groq",
+      baseUrl: (process.env.LLM_BASE_URL || "https://api.groq.com/openai/v1").replace(/\/$/, ""),
+      key: process.env.GROQ_API_KEY,
+      model,
+      authHeaders: { authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      // `reasoning_effort` is only understood by the gpt-oss reasoning models;
+      // sending it to a plain chat model on Groq is rejected.
+      extras: model.includes("gpt-oss") ? { reasoning_effort: "low" } : {},
+    };
+  }
+
+  return null;
+}
 
 export function textProvider(): TextProvider {
   if (process.env.OPENAI_API_KEY) return "openai";
-  if (process.env.POLLINATIONS_API_KEY) return "pollinations";
-  if (FREE_TIER_ENABLED) return "pollinations-free";
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return "gemini";
+  if (process.env.GROQ_API_KEY) return "groq";
   return "none";
 }
 
 export function imageProvider(): ImageProvider {
-  if (process.env.POLLINATIONS_API_KEY) return "pollinations";
   if (process.env.OPENAI_API_KEY && process.env.AI_IMAGES_OPENAI !== "off") return "openai";
-  return "pollinations-free";
-}
-
-export type VideoProvider = "pollinations" | "none";
-
-export function videoProvider(): VideoProvider {
-  if (process.env.POLLINATIONS_API_KEY && process.env.AI_VIDEO !== "off") return "pollinations";
   return "none";
 }
 
-/** Cheapest solid default (0.01 pollen / second, 5s clips). Override with AI_VIDEO_MODEL. */
+export type VideoProvider = "replicate" | "none";
+
+export function videoProvider(): VideoProvider {
+  if (process.env.REPLICATE_API_TOKEN && process.env.AI_VIDEO !== "off") return "replicate";
+  return "none";
+}
+
+/** Replicate text-to-video model. Override with AI_VIDEO_MODEL. */
 export function videoModel(): string {
-  return process.env.AI_VIDEO_MODEL || "alibaba/wan-2.2-fast";
+  return process.env.AI_VIDEO_MODEL || "tencent/hunyuan-video";
 }
 
 export function videoDuration(): number {
@@ -70,31 +148,27 @@ export function aiStatus() {
   return {
     video,
     characterLabel:
-      video === "pollinations"
-        ? `Image-to-video: ${imageToVideoModel()} · Lip-sync: ${lipsyncModel()}`
-        : "Not configured: image-to-video and lip-sync need POLLINATIONS_API_KEY",
+      "Not configured: image-to-video and lip-sync need a provider that supports them (AI image + camera motion is used instead)",
     videoLabel:
-      video === "pollinations"
-        ? `Pollinations text-to-video (${videoModel()}, ${videoDuration()}s clips)`
-        : "Not configured: add POLLINATIONS_API_KEY for real AI video (AI image + camera motion is used instead)",
+      video === "replicate"
+        ? `Replicate text-to-video (${videoModel()}, ${videoDuration()}s clips)`
+        : "Not configured: add REPLICATE_API_TOKEN for real AI video (AI image + camera motion is used instead)",
     text,
     image,
     imageMode: "server" as const,
-    freeTier: text === "pollinations-free" || image === "pollinations-free",
+    freeTier: text === "gemini" || text === "groq",
     textLabel:
       text === "openai"
-        ? `OpenAI-compatible (${process.env.AI_TEXT_MODEL || "gpt-4o-mini"})`
-        : text === "pollinations"
-          ? "Pollinations (API key)"
-          : text === "pollinations-free"
-            ? "Pollinations free tier (rate-limited)"
+        ? `OpenAI (${process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini"})`
+        : text === "gemini"
+          ? `Gemini (${process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash"}, free tier)`
+          : text === "groq"
+            ? `Groq (${process.env.GROQ_TEXT_MODEL || "openai/gpt-oss-120b"}, free tier)`
             : "Built-in script engine",
     imageLabel:
-      image === "pollinations"
-        ? "Pollinations Flux (API key)"
-        : image === "openai"
-          ? "OpenAI gpt-image-1"
-          : "Pollinations Flux free tier (shared, about 1 image per 45s)",
+      image === "openai"
+        ? "OpenAI gpt-image-1"
+        : "Not configured: add OPENAI_API_KEY for AI images (procedural + stock footage is used instead)",
   };
 }
 
@@ -168,39 +242,22 @@ export async function chatJSON<T>(
   const temperature = opts.temperature ?? 0.8;
   const provider = textProvider();
   if (provider === "none") return null;
-  const timeoutMs = opts.timeoutMs ?? (provider === "pollinations-free" ? 60_000 : 45_000);
+  const timeoutMs = opts.timeoutMs ?? 45_000;
   const deadline = opts.deadline ?? Date.now() + timeoutMs;
 
   const request = (budget: number): Promise<ChatResult> => {
-    if (provider === "openai") {
-      const base = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
-      return postChat(
-        `${base}/chat/completions`,
-        { model: process.env.AI_TEXT_MODEL || "gpt-4o-mini", temperature, response_format: { type: "json_object" }, messages },
-        { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-        budget,
-      );
-    }
-    if (provider === "pollinations") {
-      return postChat(
-        `${POLLINATIONS_GEN_URL}/v1/chat/completions`,
-        { model: process.env.AI_TEXT_MODEL || "openai", temperature, response_format: { type: "json_object" }, messages },
-        { authorization: `Bearer ${process.env.POLLINATIONS_API_KEY}` },
-        budget,
-      );
-    }
-    // The free model is a reasoning model: with low effort and a roomy token
-    // limit it answers instead of exhausting its budget while "thinking".
+    const llm = llmConfig();
+    if (!llm) throw new Error("No text provider configured");
     return postChat(
-      "https://text.pollinations.ai/openai",
+      `${llm.baseUrl}/chat/completions`,
       {
-        model: "openai",
+        model: llm.model,
+        temperature,
+        ...(process.env.LLM_JSON_MODE !== "off" ? { response_format: { type: "json_object" } } : {}),
+        ...llm.extras,
         messages,
-        seed: Math.floor(Math.random() * 1e6),
-        reasoning_effort: "low",
-        max_tokens: 4000,
       },
-      {},
+      llm.authHeaders,
       budget,
     );
   };
@@ -252,19 +309,6 @@ export function randomSeed(): number {
   return Math.floor(Math.random() * 2_000_000_000);
 }
 
-/** Public free-tier URL a browser can fetch directly (CORS is open). */
-export function freeImageUrl(prompt: string, aspect: AspectRatio, seed: number): string {
-  const { width, height } = imageSize(aspect, "free");
-  const params = new URLSearchParams({
-    width: String(width),
-    height: String(height),
-    seed: String(seed),
-    model: "flux",
-    nologo: "true",
-    private: "true",
-  });
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?${params}`;
-}
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
   const ctrl = new AbortController();
@@ -283,36 +327,6 @@ function parseRetryAfter(response: Response, body: string, fallback: number): nu
   return match ? Math.min(120, Number(match[1])) : fallback;
 }
 
-/** Free Classic API, called server-side (browser origins need a Turnstile token). */
-async function generateFreeImage(
-  prompt: string,
-  aspect: AspectRatio,
-  seed: number,
-): Promise<{ data: Buffer; contentType: string; provider: ImageProvider }> {
-  const response = await fetchWithTimeout(freeImageUrl(prompt, aspect, seed), {}, 90_000);
-  const type = response.headers.get("content-type") ?? "";
-  if (response.ok && type.startsWith("image/")) {
-    return {
-      data: Buffer.from(await response.arrayBuffer()),
-      contentType: type,
-      provider: "pollinations-free",
-    };
-  }
-  const body = await response.text().catch(() => "");
-  if (response.status === 402 || response.status === 429) {
-    throw new AiRateLimitError(
-      "Free tier allows about 1 image every 45 seconds.",
-      parseRetryAfter(response, body, 45),
-    );
-  }
-  if (response.status === 503) {
-    throw new AiRateLimitError("The free image service is at capacity right now.", 20);
-  }
-  throw new Error(
-    `The free image service returned an error (${response.status}). Add POLLINATIONS_API_KEY or OPENAI_API_KEY for reliable generation.`,
-  );
-}
-
 /**
  * Generate an image on the server: keyed provider when configured, otherwise
  * the free Classic API. Throws AiRateLimitError when the caller should wait.
@@ -323,42 +337,6 @@ export async function generateImageOnServer(
   seed: number,
 ): Promise<{ data: Buffer; contentType: string; provider: ImageProvider }> {
   const provider = imageProvider();
-
-  if (provider === "pollinations-free") {
-    return generateFreeImage(prompt, aspect, seed);
-  }
-
-  if (provider === "pollinations") {
-    const { width, height } = imageSize(aspect, "hd");
-    const params = new URLSearchParams({
-      model: process.env.AI_IMAGE_MODEL || "flux",
-      width: String(width),
-      height: String(height),
-      seed: String(seed),
-      nologo: "true",
-      private: "true",
-    });
-    const response = await fetchWithTimeout(
-      `https://gen.pollinations.ai/image/${encodeURIComponent(prompt)}?${params}`,
-      { headers: { authorization: `Bearer ${process.env.POLLINATIONS_API_KEY}` } },
-      90_000,
-    );
-    if (response.status === 402 || response.status === 429) {
-      throw new AiRateLimitError(
-        "The image service is busy or your Pollinations balance is empty.",
-        Number(response.headers.get("retry-after")) || 30,
-      );
-    }
-    const type = response.headers.get("content-type") ?? "";
-    if (!response.ok || !type.startsWith("image/")) {
-      throw new Error(`Image generation failed (${response.status})`);
-    }
-    return {
-      data: Buffer.from(await response.arrayBuffer()),
-      contentType: type,
-      provider,
-    };
-  }
 
   if (provider === "openai") {
     const base = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
@@ -405,7 +383,9 @@ export async function generateImageOnServer(
     throw new Error("Image generation returned no data");
   }
 
-  return generateFreeImage(prompt, aspect, seed);
+  throw new Error(
+    "No image provider configured. Set OPENAI_API_KEY to generate scene art (procedural and stock footage is used without it).",
+  );
 }
 
 // ─── Video ────────────────────────────────────────────────────────────────
@@ -413,7 +393,7 @@ export async function generateImageOnServer(
 export class AiVideoUnavailableError extends Error {
   constructor() {
     super(
-      "Real AI video needs a Pollinations API key (POLLINATIONS_API_KEY). There is no free text-to-video service.",
+      "Real AI video needs a Replicate API token (REPLICATE_API_TOKEN). There is no free text-to-video service.",
     );
     this.name = "AiVideoUnavailableError";
   }
@@ -429,57 +409,31 @@ export function lipsyncModel(): string {
   return process.env.AI_LIPSYNC_MODEL || "alibaba/wan-3.0";
 }
 
-async function requestPollinationsVideo(
-  prompt: string,
-  params: Record<string, string>,
-): Promise<{ data: Buffer; contentType: string; provider: VideoProvider; model: string }> {
-  if (videoProvider() === "none") throw new AiVideoUnavailableError();
-  const query = new URLSearchParams({ audio: "false", ...params });
-  const response = await fetchWithTimeout(
-    `${POLLINATIONS_GEN_URL}/video/${encodeURIComponent(prompt)}?${query}`,
-    { headers: { authorization: `Bearer ${process.env.POLLINATIONS_API_KEY}` } },
-    285_000,
-  );
-  const type = response.headers.get("content-type") ?? "";
-  if (response.ok && type.startsWith("video/")) {
-    return {
-      data: Buffer.from(await response.arrayBuffer()),
-      contentType: type,
-      provider: "pollinations",
-      model: params.model,
-    };
-  }
-  const body = await response.text().catch(() => "");
-  let message = "";
-  try {
-    message = (JSON.parse(body) as { error?: { message?: string } }).error?.message ?? "";
-  } catch {
-    message = body.slice(0, 200);
-  }
-  if (response.status === 429) {
-    throw new AiRateLimitError("The video service is busy.", parseRetryAfter(response, body, 30));
-  }
-  if (response.status === 402) {
-    throw new Error("Your Pollinations balance is too low for video generation. Top up at enter.pollinations.ai.");
-  }
-  if (response.status === 401 || response.status === 403) {
-    throw new Error("Pollinations rejected the API key for video generation. Check POLLINATIONS_API_KEY.");
-  }
-  throw new Error(`Video generation failed (${response.status})${message ? `: ${message}` : ""}`);
-}
-
-/** Text-to-video clip (Pollinations returns the finished MP4 in the response). */
+/** Text-to-video clip. Replicate returns a finished MP4 we read off disk. */
 export async function generateVideoOnServer(
   prompt: string,
   aspect: AspectRatio,
   seed: number,
 ): Promise<{ data: Buffer; contentType: string; provider: VideoProvider; model: string }> {
-  return requestPollinationsVideo(prompt, {
-    model: videoModel(),
-    duration: String(videoDuration()),
-    aspectRatio: aspect,
-    seed: String(seed),
+  if (videoProvider() === "none") throw new AiVideoUnavailableError();
+  const { width, height } = imageSize(aspect, "hd");
+  const clip = await generateSceneVideo({
+    prompt,
+    duration: videoDuration(),
+    width,
+    height,
+    aspect,
+    seed,
   });
+  // generateSceneVideo swallows provider errors and returns null rather than
+  // throwing, which would surface here as a confusing "no data" failure.
+  if (!clip) throw new AiVideoUnavailableError();
+  return {
+    data: await fs.readFile(clip.file),
+    contentType: "video/mp4",
+    provider: "replicate",
+    model: clip.model,
+  };
 }
 
 /**
@@ -495,15 +449,13 @@ export async function generateCharacterVideo(args: {
   seed: number;
   durationSec: number;
 }): Promise<{ data: Buffer; contentType: string; provider: VideoProvider; model: string }> {
-  const lipsync = Boolean(args.audioUrl);
-  return requestPollinationsVideo(args.prompt, {
-    model: lipsync ? lipsyncModel() : imageToVideoModel(),
-    duration: String(Math.max(2, Math.min(15, Math.ceil(args.durationSec)))),
-    aspectRatio: args.aspect,
-    seed: String(args.seed),
-    image: args.imageUrl,
-    ...(lipsync && args.audioUrl ? { reference_audios: args.audioUrl } : {}),
-  });
+  if (videoProvider() === "none") throw new AiVideoUnavailableError();
+  // HunyuanVideo is text-to-video only: it has no image or audio conditioning,
+  // so animating a still or lip-syncing it is not something this provider can
+  // do. Keep the guard explicit instead of silently ignoring the inputs.
+  throw new Error(
+    "Animating a character image needs a provider with an image-to-video or lip-sync model. Replicate HunyuanVideo only does text-to-video.",
+  );
 }
 
 /**
@@ -529,4 +481,80 @@ export function toPublicMediaUrl(reference: string, origin: string): string {
   }
   if (/^http:\/\//i.test(reference)) return reference;
   throw new Error("Unsupported media reference");
+}
+
+/**
+ * Live end-to-end check of the configured text LLM.
+ *
+ * Sends one real script-shaped request through the exact production body and
+ * reports what came back, so a broken key, a retired model name or truncated
+ * JSON is visible instead of silently degrading to the built-in script engine.
+ * A `models.list` style call is not enough: Gemini happily answers that with
+ * 200 while `generateContent` 401s on a bad key.
+ */
+export async function llmProbe(): Promise<Record<string, unknown>> {
+  const llm = llmConfig();
+  if (!llm) {
+    return { configured: false, reason: "No LLM key set (OPENAI / GEMINI / GROQ)." };
+  }
+
+  const messages = [
+    { role: "system", content: 'Reply with JSON only: {"scenes":[{"narration":"..."}]}' },
+    {
+      role: "user",
+      content:
+        'Write a 2-scene storyboard about "a calm ocean sunrise". Return JSON: {"scenes":[{"narration":"...","caption":"...","mediaQuery":"..."}]}',
+    },
+  ];
+
+  const report: Record<string, unknown> = {
+    configured: true,
+    provider: llm.label,
+    model: llm.model,
+    url: `${llm.baseUrl}/chat/completions`,
+    authHeader: Object.keys(llm.authHeaders).join(","),
+  };
+
+  const started = Date.now();
+  try {
+    const response = await fetch(`${llm.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...llm.authHeaders },
+      body: JSON.stringify({
+        model: llm.model,
+        temperature: 0.8,
+        ...(process.env.LLM_JSON_MODE !== "off" ? { response_format: { type: "json_object" } } : {}),
+        ...llm.extras,
+        messages,
+      }),
+    });
+    report.httpStatus = response.status;
+    report.elapsedMs = Date.now() - started;
+
+    if (!response.ok) {
+      report.ok = false;
+      report.error = (await response.text().catch(() => "")).slice(0, 600);
+      return report;
+    }
+
+    const data = (await response.json()) as {
+      choices?: { message?: { content?: string }; finish_reason?: string }[];
+      usage?: Record<string, unknown>;
+    };
+    const content = data.choices?.[0]?.message?.content ?? "";
+    report.finishReason = data.choices?.[0]?.finish_reason ?? null;
+    report.usage = data.usage ?? null;
+    report.replyChars = content.length;
+
+    const parsed = parseModelJson<{ scenes?: unknown[] }>(content);
+    report.parsedScenes = parsed?.scenes?.length ?? null;
+    report.ok = Boolean(parsed?.scenes?.length);
+    if (!report.ok) report.error = "Reply did not contain a parseable scenes array";
+    return report;
+  } catch (error) {
+    report.ok = false;
+    report.elapsedMs = Date.now() - started;
+    report.error = error instanceof Error ? error.message : String(error);
+    return report;
+  }
 }

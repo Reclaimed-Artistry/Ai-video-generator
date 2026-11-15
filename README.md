@@ -37,7 +37,7 @@ PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react
 | Feature | Where | What it does |
 | --- | --- | --- |
 | **AI script writer** | Home page brief | An LLM writes the narration, captions, stock-footage queries and an image prompt for every scene |
-| **AI video** | Home page → *Visuals: AI video*, Studio → **AI** tab, or the AI edit box | A real text-to-video clip generated for each scene (Pollinations: Wan, Seedance, Veo, Kling…). Clips are stored once and slowed slightly to fill longer scenes |
+| **AI video** | Home page → *Visuals: AI video*, Studio → **AI** tab, or the AI edit box | A real text-to-video clip generated for each scene (Replicate: HunyuanVideo and friends). Clips are stored once and slowed slightly to fill longer scenes |
 | **AI images** | Home page → *Visuals: AI images*, Studio → **AI** tab, or the AI edit box | Text-to-image in 7 looks, animated with a camera move (push-in, pull-out, pan) so every shot moves |
 | **Stickman animation** | Home page → *Visuals: Stickman*, Studio → **AI** tab, or “use stickman animation for every scene” | Free, built-in stick-figure animator: 7 performances (talk, wave, point, think, celebrate, walk, shrug) auto-picked from each line, smooth eased motion, blinking, 3 themes, and **lip-sync driven by the real voiceover loudness**. No API key, renders ~4× faster than real time at 1080p |
 | **Image-to-video** | Studio → **AI** tab → *Character* | Upload a character (or use an AI image) and animate it with smooth, natural movement |
@@ -50,13 +50,16 @@ PostgreSQL · FFmpeg (`ffmpeg-static`) · `@andresaya/edge-tts` · `lucide-react
 
 **Engines** (picked automatically, best first):
 
-- **Text:** `OPENAI_API_KEY` (or any OpenAI-compatible API via `OPENAI_BASE_URL`) → `POLLINATIONS_API_KEY` → free Pollinations tier → built-in script engine.
-- **Images:** `POLLINATIONS_API_KEY` (Flux, HD) → `OPENAI_API_KEY` (gpt-image-1) → free Pollinations tier (1024×576).
-- **Characters:** image-to-video (`AI_I2V_MODEL`, default `alibaba/wan-2.2-fast`) and lip-sync (`AI_LIPSYNC_MODEL`, default `alibaba/wan-3.0`) use `POLLINATIONS_API_KEY`. The AI service downloads the character image and voice clip from your site, so it must be publicly reachable (deployed with `PUBLIC_APP_URL`, or Vercel Blob connected).
+- **Text:** `OPENAI_API_KEY` → `GEMINI_API_KEY` → `GROQ_API_KEY` → built-in script engine. Gemini and Groq both have free tiers and speak the OpenAI wire format, so script drafting needs no credit card. Point `OPENAI_BASE_URL` or `LLM_BASE_URL` at any OpenAI-compatible provider (OpenRouter, LiteLLM, Together, …).
+- **Gemini keys:** newer keys start with `AQ.` and must be sent in the `x-goog-api-key` header; legacy `AIza` keys are sent as a bearer token. The studio detects the prefix and uses the right one automatically. Model names churn, so override with `GEMINI_TEXT_MODEL` / `GROQ_TEXT_MODEL`.
+- **Images:** `OPENAI_API_KEY` (gpt-image-1). Without it, scenes use stock footage and the built-in procedural plates.
 - **Stickman:** built in, free and offline (no key needed).
-- **Video:** `POLLINATIONS_API_KEY` (default model `alibaba/wan-2.2-fast`, 5-second clips; change with `AI_VIDEO_MODEL` / `AI_VIDEO_DURATION`). There is **no free text-to-video service**: without a key, “AI video” falls back to a motion shot made from an AI image, and the studio says so. (OpenAI's Sora video API was shut down in September 2026, so it is not used.)
+- **Video:** `REPLICATE_API_TOKEN` (default model `tencent/hunyuan-video`, 5-second clips; change with `AI_VIDEO_MODEL` / `AI_VIDEO_DURATION`). There is **no free text-to-video service**: without a token, “AI video” falls back to a motion shot made from an AI image, and the studio says so. (OpenAI's Sora video API was shut down in September 2026, so it is not used.)
+- **Characters:** animating a still image or lip-syncing it needs a provider with an image-to-video model; Replicate's HunyuanVideo is text-to-video only, so this is disabled until such a provider is wired in.
 
-**Free tier:** works with no keys, but is shared and rate-limited (about one request every 45 seconds per server IP, best effort). The studio shows a countdown and retries automatically; if the AI writer is busy, the built-in engine writes the script. For production traffic, add a key.
+To check the configured LLM end to end, set `ENABLE_LLM_PROBE=1` and open `/api/verify-llm`. It sends one real script request and reports the HTTP status, model, finish reason and whether the reply parsed — a 401 there means the key or its auth header is wrong, a 404 that the model name is retired.
+
+**Free tier:** Gemini and Groq are free but rate-limited (roughly 15 and 30 requests a minute). The studio retries automatically, and if the AI writer is busy the built-in engine writes the script. For production traffic, add a key.
 
 Generated videos and images are stored once (Vercel Blob → Postgres → local disk → embedded in the project) and stay locked to their scene, so stock auto-matching never replaces them.
 
@@ -68,7 +71,7 @@ Generated videos and images are stored once (Vercel Blob → Postgres → local 
 - **Reliable parsing:** small models’ broken JSON (stray brackets, missing commas) is repaired instead of discarded, and free-tier rate limits are waited out instead of falling back to templates.
 - **Built-in engine (no AI available):** several cliché-free wordings per beat chosen per topic, timeline arcs for history briefs, captions from each scene’s own words, and varied filmable shots.
 
-The free tier uses a small model (GPT-OSS 20B) that can still invent facts. For factual or brand content, add `OPENAI_API_KEY` (or any OpenAI-compatible key) or `POLLINATIONS_API_KEY`.
+Free-tier models can still invent facts. For factual or brand content, add `OPENAI_API_KEY` (or any OpenAI-compatible key).
 
 ## API Surface
 

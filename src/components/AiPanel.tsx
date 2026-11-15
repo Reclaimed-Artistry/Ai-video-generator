@@ -69,8 +69,9 @@ const MOTION_ORDER: AiMotion[] = ["push-in", "pan-right", "pull-out", "pan-left"
 
 function engineName(provider: string): string {
   if (provider === "openai") return "OpenAI";
-  if (provider === "pollinations") return "Pollinations";
-  if (provider === "pollinations-free") return "Pollinations (free)";
+  if (provider === "gemini") return "Gemini";
+  if (provider === "groq") return "Groq";
+  if (provider === "replicate") return "Replicate";
   return "built-in engine";
 }
 
@@ -122,7 +123,7 @@ export default function AiPanel({
   const [rewriting, setRewriting] = useState(false);
   const [rewriteNote, setRewriteNote] = useState<string | null>(null);
 
-  const videoReady = status ? status.video === "pollinations" : true;
+  const videoReady = status ? status.video === "replicate" : true;
 
   useEffect(() => {
     fetch("/api/ai/status")
@@ -183,7 +184,7 @@ export default function AiPanel({
         } catch (err) {
           if (!(err instanceof VideoUnavailableError)) throw err;
           setNotice(
-            "No AI video key is configured, so this is a motion shot made from an AI image. Add POLLINATIONS_API_KEY for real AI video.",
+            "No AI video token is configured, so this is a motion shot made from an AI image. Add REPLICATE_API_TOKEN for real AI video.",
           );
         }
       }
@@ -342,7 +343,7 @@ export default function AiPanel({
           mediaThumb: clip.thumbUrl ?? imageUrl,
           mediaId: `ai-${mode}-${clip.seed ?? 0}`,
           mediaTitle: `${mode === "lipsync" ? "Talking character" : "Animated image"} · ${shortModel(clip.model ?? "")}`,
-          mediaCreator: "Pollinations",
+          mediaCreator: "Replicate",
           mediaProvider: "ai",
           mediaLocked: true,
           mediaSpeed: null,
@@ -571,7 +572,7 @@ export default function AiPanel({
       </div>
       {kind === "video" && !videoReady ? (
         <p className="font-tech text-[10px] leading-relaxed text-ash">
-          AI video needs POLLINATIONS_API_KEY (there is no free text-to-video service). Until then,
+          AI video needs REPLICATE_API_TOKEN (there is no free text-to-video service). Until then,
           “Generate video” makes a motion shot from an AI image.
         </p>
       ) : null}

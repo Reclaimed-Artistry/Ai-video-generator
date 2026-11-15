@@ -24,7 +24,7 @@ export function BrandMark({ className = "h-5 w-5" }: { className?: string }) {
       {/* Diagonal splice cut in tungsten amber */}
       <path
         d="M9.25 16.5L14.75 7.5"
-        stroke="#E5A93C"
+        stroke="#2563EB"
         strokeWidth="1.75"
         strokeLinecap="square"
       />
