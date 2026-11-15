@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+
+import { geminiAuthHeaders } from "./gemini";
 import { defaultMusicForTone } from "./music";
 import {
   hydrateSceneMedia,
@@ -667,6 +669,8 @@ type LlmConfig = {
   baseUrl: string;
   key: string;
   model: string;
+  /** Auth headers. Gemini may need `x-goog-api-key` rather than `Bearer`. */
+  authHeaders: Record<string, string>;
   /** Provider-specific request fields that the others do not accept. */
   extras: Record<string, unknown>;
 };
@@ -680,6 +684,7 @@ function llmConfig(): LlmConfig | null {
       baseUrl: process.env.LLM_BASE_URL || "https://api.openai.com/v1",
       key: process.env.OPENAI_API_KEY,
       model: process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini",
+      authHeaders: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
       extras: {},
     };
   }
@@ -695,6 +700,8 @@ function llmConfig(): LlmConfig | null {
         "https://generativelanguage.googleapis.com/v1beta/openai",
       key: gemini,
       model: process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash",
+      // `AQ.` keys are rejected as bearer tokens; they need x-goog-api-key.
+      authHeaders: geminiAuthHeaders(gemini),
       // Deliberately empty by default. Gemini's Flash models think before
       // answering and those tokens come out of the same output budget, but
       // Google only documents `reasoning_effort` for the Gemini 3.x models —
@@ -718,6 +725,7 @@ function llmConfig(): LlmConfig | null {
       baseUrl: process.env.LLM_BASE_URL || "https://api.groq.com/openai/v1",
       key: process.env.GROQ_API_KEY,
       model,
+      authHeaders: { authorization: `Bearer ${process.env.GROQ_API_KEY}` },
       // `reasoning_effort` is only understood by the gpt-oss reasoning models;
       // sending it to a plain chat model on Groq is rejected.
       extras: model.includes("gpt-oss") ? { reasoning_effort: "low" } : {},
@@ -812,10 +820,7 @@ async function llmGenerate(options: GenerateScriptOptions): Promise<VideoScript 
   try {
     const response = await fetch(`${llm.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${llm.key}`,
-        "content-type": "application/json",
-      },
+      headers: { "content-type": "application/json", ...llm.authHeaders },
       body: JSON.stringify(llmBody(llm, count, options, wfMeta.label)),
     });
     if (!response.ok) {
@@ -984,10 +989,7 @@ export async function llmProbe(): Promise<Record<string, unknown>> {
   try {
     const response = await fetch(`${llm.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${llm.key}`,
-        "content-type": "application/json",
-      },
+      headers: { "content-type": "application/json", ...llm.authHeaders },
       body: JSON.stringify(llmBody(llm, count, options, workflowMeta("storyboard").label)),
     });
     report.httpStatus = response.status;

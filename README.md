@@ -57,7 +57,7 @@ offline. Scripts use a deterministic built-in engine, narration uses
 | `DATABASE_URL` | Production Postgres (falls back to embedded PGlite) |
 | `OPENAI_API_KEY` | LLM script drafting + DALL·E imagery |
 | `STABILITY_API_KEY` / `REPLICATE_API_TOKEN` / `GEMINI_API_KEY` | Alternative image providers |
-| `GEMINI_API_KEY` | **Free** LLM script drafting via Gemini's OpenAI-compatible endpoint (~15 RPM / 500 RPD, no card) — also enables imagery, so one key covers both. Override: `GEMINI_TEXT_MODEL`. |
+| `GEMINI_API_KEY` | **Free** LLM script drafting via Gemini's OpenAI-compatible endpoint (~15 RPM / 500 RPD, no card) — also enables imagery, so one key covers both. Override: `GEMINI_TEXT_MODEL`. Accepts both the classic `AIza...` key and Google's newer `AQ.` Authentication Key — the app detects the prefix, since `AQ.` keys are rejected as bearer tokens and must be sent in `x-goog-api-key`. |
 | `GROQ_API_KEY` | **Free** LLM script drafting via Groq (~30 RPM / 1,000 RPD, no card). Override: `GROQ_TEXT_MODEL`. |
 | `LLM_MAX_TOKENS` / `LLM_JSON_MODE` / `LLM_BASE_URL` | Tuning for whichever LLM is active: output budget (raise it if scripts come back truncated), `LLM_JSON_MODE=off` if the model rejects `response_format`, `LLM_BASE_URL` to route through a proxy or gateway |
 | `REPLICATE_API_TOKEN` | AI scene **video** via HunyuanVideo (`tencent/hunyuan-video`). The model needs ~45GB VRAM, so it runs on Replicate's GPUs rather than locally. Optional `HUNYUAN_VIDEO_MODEL` / `HUNYUAN_INFER_STEPS` / `HUNYUAN_GUIDANCE_SCALE` / `HUNYUAN_FLOW_SHIFT` / `HUNYUAN_TIMEOUT_MS` overrides. |

@@ -42,8 +42,13 @@ createServer((req, res) => {
       res.end(JSON.stringify(payload));
     };
 
+    const authKind = req.headers["x-goog-api-key"]
+      ? "x-goog-api-key"
+      : (req.headers.authorization || "").startsWith("Bearer ")
+        ? "Bearer"
+        : "none";
     console.log(
-      `[mock] mode=${mode} ` +
+      `[mock] auth=${authKind} mode=${mode} ` +
         `model=${model} ` +
         `max_tokens=${body.max_completion_tokens ?? "-"} ` +
         `json_mode=${JSON.stringify(body.response_format ?? null)} ` +

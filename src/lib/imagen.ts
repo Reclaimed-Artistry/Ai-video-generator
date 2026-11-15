@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+
+import { geminiAuthHeaders, isGoogleAuthKey } from "@/lib/gemini";
 import path from "node:path";
 import { runFfmpeg } from "./ffmpeg";
 import { hexToFfmpegColor } from "./brandkit";
@@ -207,20 +209,22 @@ async function generateGemini(
   const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!key) return null;
   const model = process.env.GEMINI_IMAGE_MODEL || "imagen-3.0-generate-002";
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${encodeURIComponent(key)}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        instances: [{ prompt: prompt.slice(0, 1000) }],
-        parameters: {
-          sampleCount: 1,
-          aspectRatio: aspect === "9:16" ? "9:16" : aspect === "1:1" ? "1:1" : "16:9",
-        },
-      }),
-    },
-  );
+  // Legacy `AIza` keys authenticate with ?key=; the newer `AQ.` keys are
+  // rejected that way and have to travel in the x-goog-api-key header.
+  const url = isGoogleAuthKey(key)
+    ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`
+    : `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${encodeURIComponent(key)}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...geminiAuthHeaders(key) },
+    body: JSON.stringify({
+      instances: [{ prompt: prompt.slice(0, 1000) }],
+      parameters: {
+        sampleCount: 1,
+        aspectRatio: aspect === "9:16" ? "9:16" : aspect === "1:1" ? "1:1" : "16:9",
+      },
+    }),
+  });
   if (!response.ok) throw new Error(`Gemini image generation failed (${response.status})`);
   const json = (await response.json()) as {
     predictions?: { bytesBase64Encoded?: string }[];
