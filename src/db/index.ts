@@ -208,7 +208,7 @@ const SCHEMA_STATEMENTS: string[] = [
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
     logo_path text,
-    primary_color text NOT NULL DEFAULT '#6D4AFF',
+    primary_color text NOT NULL DEFAULT '#2563EB',
     accent_color text NOT NULL DEFAULT '#FFFFFF',
     font text NOT NULL DEFAULT 'DejaVu Sans',
     intro_title text,

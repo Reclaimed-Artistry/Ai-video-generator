@@ -11,7 +11,7 @@ export const BRAND_KIT_DEFAULTS: Omit<
 > = {
   name: "My Brand",
   logoPath: null,
-  primaryColor: "#6D4AFF",
+  primaryColor: "#2563EB",
   accentColor: "#FFFFFF",
   font: "dejavu" as BrandFontId,
   introTitle: null,
@@ -216,12 +216,12 @@ export function hexToAssColor(hex: string, fallback = "FFFFFF"): string {
 }
 
 /** Converts a `#rrggbb` hex into ffmpeg's `0xRRGGBB` colour syntax. */
-export function hexToFfmpegColor(hex: string, fallback = "6D4AFF"): string {
+export function hexToFfmpegColor(hex: string, fallback = "2563EB"): string {
   const match = /^#?([0-9a-fA-F]{6})$/.exec((hex || "").trim());
   return `0x${match ? match[1].toUpperCase() : fallback}`;
 }
 
-export function hexToRgb(hex: string, fallback = "109,74,255"): string {
+export function hexToRgb(hex: string, fallback = "37,99,235"): string {
   const match = /^#?([0-9a-fA-F]{6})$/.exec((hex || "").trim());
   if (!match) return fallback;
   const raw = match[1];

@@ -92,7 +92,7 @@ export const brandKits = pgTable("brand_kits", {
   name: text("name").notNull(),
   /** Stored reference (relative storage key or absolute https URL). */
   logoPath: text("logo_path"),
-  primaryColor: text("primary_color").notNull().default("#6D4AFF"),
+  primaryColor: text("primary_color").notNull().default("#2563EB"),
   accentColor: text("accent_color").notNull().default("#FFFFFF"),
   font: text("font").notNull().default("DejaVu Sans"),
   introTitle: text("intro_title"),

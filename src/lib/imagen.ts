@@ -318,7 +318,7 @@ function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
 function liftPlateColor(hex: string): string {
   const raw = (hex || "").trim();
   const match = /^#?([0-9a-f]{6})$/i.exec(raw);
-  if (!match) return hexToFfmpegColor("#6D4AFF");
+  if (!match) return hexToFfmpegColor("#2563EB");
 
   const int = parseInt(match[1], 16);
   const rgb: [number, number, number] = [(int >> 16) & 0xff, (int >> 8) & 0xff, int & 0xff];
@@ -346,7 +346,7 @@ export async function renderProceduralPlate(
 ): Promise<void> {
   const { width, height } = options;
   const size = `${width}x${height}`;
-  const tint = liftPlateColor(options.primaryColor ?? "#6D4AFF");
+  const tint = liftPlateColor(options.primaryColor ?? "#2563EB");
   const seed = Math.abs(Math.floor(options.seed)) % 9973;
 
   const scale = (0.008 + (seed % 40) * 0.006).toFixed(4);
@@ -472,7 +472,7 @@ export async function generateSceneImage(
       seed,
       width,
       height,
-      primaryColor: options.primaryColor ?? "#6D4AFF",
+      primaryColor: options.primaryColor ?? "#2563EB",
     });
     buffer = fs.readFileSync(/* turbopackIgnore: true */ tmpFile);
   } else {

@@ -737,7 +737,7 @@ async function renderSceneVideo(
     height,
     duration,
     width,
-    brandKit?.primaryColor ?? "#6D4AFF",
+    brandKit?.primaryColor ?? "#2563EB",
   );
   const isImage = prepared.isImage;
 
@@ -939,7 +939,7 @@ export async function renderProject(projectId: string): Promise<void> {
   });
 
   const segments: Segment[] = [];
-  const brandColor = brandKit?.primaryColor ?? "#6D4AFF";
+  const brandColor = brandKit?.primaryColor ?? "#2563EB";
   const accentColor = brandKit?.accentColor ?? "#FFFFFF";
 
   // ── Branded intro card ─────────────────────────────────────────────────

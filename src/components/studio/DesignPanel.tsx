@@ -10,11 +10,11 @@ import {
   type BrandKit,
 } from "@/lib/types";
 
-const SWATCHES = ["#6D4AFF", "#F0568F", "#2C7BF2", "#12946A", "#D98614", "#14162B"];
+const SWATCHES = ["#2563EB", "#F0568F", "#2C7BF2", "#12946A", "#D98614", "#14162B"];
 
 const EMPTY = {
   name: "My Brand",
-  primaryColor: "#6D4AFF",
+  primaryColor: "#2563EB",
   accentColor: "#FFFFFF",
   font: "dejavu" as BrandFontId,
   introTitle: "",

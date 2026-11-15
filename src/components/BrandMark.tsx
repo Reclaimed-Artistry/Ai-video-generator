@@ -16,15 +16,15 @@ export {
 type MarkProps = { className?: string };
 
 /**
- * Studio mark — a violet "play + spark" glyph that reads as both a play button
- * and a generative spark, matching the indigo/violet product palette.
+ * Studio mark — a blue "play + spark" glyph that reads as both a play button
+ * and a generative spark, matching the blue product palette.
  */
 export function BrandMark({ className = "h-6 w-6" }: MarkProps) {
   return (
     <svg viewBox="0 0 32 32" className={className} fill="none" aria-hidden="true">
       <defs>
         <linearGradient id="ra-mark" x1="4" y1="3" x2="28" y2="29" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#6D4AFF" />
+          <stop stopColor="#2563EB" />
           <stop offset="0.5" stopColor="#A855F7" />
           <stop offset="1" stopColor="#F0568F" />
         </linearGradient>

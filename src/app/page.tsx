@@ -141,7 +141,7 @@ export default async function HomePage() {
           <div className="grid-veil pointer-events-none absolute inset-0 opacity-60" />
           <div
             className="pointer-events-none absolute -top-40 left-1/2 h-80 w-[720px] -translate-x-1/2 rounded-full opacity-25 blur-3xl"
-            style={{ background: "radial-gradient(circle, #6D4AFF 0%, transparent 70%)" }}
+            style={{ background: "radial-gradient(circle, #2563EB 0%, transparent 70%)" }}
           />
           <div className="relative mx-auto max-w-[900px] px-4 py-14 sm:px-6 sm:py-20">
             <div className="text-center">
