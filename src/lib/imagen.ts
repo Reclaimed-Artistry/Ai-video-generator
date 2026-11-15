@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+
+import { flaqKey, generateFlaqMedia } from "@/lib/flaq";
 import path from "node:path";
 import { runFfmpeg } from "./ffmpeg";
 import { hexToFfmpegColor } from "./brandkit";
@@ -7,6 +9,7 @@ import { saveAppArtifact } from "./storage";
 import { RESOLUTIONS, type AspectRatio, type Resolution } from "./types";
 
 export type ImageProvider =
+  | "flaq"
   | "openai"
   | "stability"
   | "replicate"
@@ -28,6 +31,7 @@ export type GeneratedImage = {
 
 /** Provider chosen from whichever key is present, in quality order. */
 export function activeImageProvider(): ImageProvider {
+  if (flaqKey()) return "flaq";
   if (process.env.OPENAI_API_KEY) return "openai";
   if (process.env.STABILITY_API_KEY) return "stability";
   if (process.env.REPLICATE_API_TOKEN) return "replicate";
@@ -51,6 +55,7 @@ export function imageProviderStatus(): {
 } {
   const provider = activeImageProvider();
   const labels: Record<ImageProvider, string> = {
+    flaq: "Flaq AI Images",
     openai: "OpenAI Images",
     stability: "Stability AI",
     replicate: "Replicate Flux",
@@ -58,6 +63,7 @@ export function imageProviderStatus(): {
     procedural: "On-device generator",
   };
   const notes: Record<ImageProvider, string> = {
+    flaq: "Flaq AI text-to-image scene plates.",
     openai: "gpt-image-1 photoreal scene plates.",
     stability: "Stable Image Core scene plates.",
     replicate: "Flux Schnell scene plates.",
@@ -105,6 +111,19 @@ export function buildImagePrompt(topic: string, styleHint?: string): string {
 }
 
 /* ------------------------------------------------------------- providers */
+
+async function generateFlaq(
+  prompt: string,
+  aspect: AspectRatio,
+): Promise<{ data: Buffer; ext: string } | null> {
+  if (!flaqKey()) return null;
+  return generateFlaqMedia("image", {
+    model_name: process.env.FLAQ_IMAGE_MODEL || "gpt-image-2",
+    prompt: prompt.slice(0, 5000),
+    aspect_ratio: aspect === "9:16" ? "9:16" : aspect === "1:1" ? "1:1" : "16:9",
+    resolution: process.env.FLAQ_IMAGE_RESOLUTION || "1k",
+  });
+}
 
 async function generateOpenAi(
   prompt: string,
@@ -444,13 +463,15 @@ export async function generateSceneImage(
   if (provider !== "procedural") {
     try {
       const result =
-        provider === "openai"
-          ? await generateOpenAi(prompt, aspect)
-          : provider === "stability"
-            ? await generateStability(prompt, aspect)
-            : provider === "replicate"
-              ? await generateReplicate(prompt, aspect)
-              : await generateGemini(prompt, aspect);
+        provider === "flaq"
+          ? await generateFlaq(prompt, aspect)
+          : provider === "openai"
+            ? await generateOpenAi(prompt, aspect)
+            : provider === "stability"
+              ? await generateStability(prompt, aspect)
+              : provider === "replicate"
+                ? await generateReplicate(prompt, aspect)
+                : await generateGemini(prompt, aspect);
 
       if (result) buffer = result.data;
     } catch (error) {

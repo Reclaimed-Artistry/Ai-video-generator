@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { flaqKey, generateFlaqMedia } from "./flaq";
 import type { AspectRatio } from "./types";
 
 /**
@@ -17,7 +18,7 @@ import type { AspectRatio } from "./types";
  * `tencent/hunyuan-video`), which is the only way a Next.js app can use it.
  */
 
-export type AiVideoProvider = "hunyuan" | "none";
+export type AiVideoProvider = "flaq" | "hunyuan" | "none";
 
 /**
  * When to spend money and wall-clock time generating footage.
@@ -35,8 +36,13 @@ const HUNYUAN_FPS = 24;
 
 const DEFAULT_HUNYUAN_MODEL = "tencent/hunyuan-video";
 
+/** Verbatim from Flaq's own per-model curl examples. */
+const DEFAULT_FLAQ_VIDEO_MODEL = "seedance-v2.5-text-to-video";
+
 /** Provider chosen from whichever key is present. */
 export function activeAiVideoProvider(): AiVideoProvider {
+  // Flaq first: one key covers several features, so prefer it when present.
+  if (flaqKey()) return "flaq";
   if (process.env.REPLICATE_API_TOKEN) return "hunyuan";
   return "none";
 }
@@ -64,10 +70,12 @@ export function aiVideoStatus(): AiVideoStatus {
   const provider = activeAiVideoProvider();
   const mode = aiVideoMode();
   const labels: Record<AiVideoProvider, string> = {
+    flaq: "Flaq AI Video",
     hunyuan: "HunyuanVideo",
     none: "Not configured",
   };
   const notes: Record<AiVideoProvider, string> = {
+    flaq: "Seedance / Kling / Wan scene footage via Flaq AI.",
     hunyuan: "HunyuanVideo scene footage via Replicate.",
     none: "No video API key found — scenes use stock clips, or an AI still with camera motion.",
   };
@@ -77,7 +85,10 @@ export function aiVideoStatus(): AiVideoStatus {
     label: labels[provider],
     note: notes[provider],
     mode,
-    model: process.env.HUNYUAN_VIDEO_MODEL || DEFAULT_HUNYUAN_MODEL,
+    model:
+      provider === "flaq"
+        ? process.env.FLAQ_VIDEO_MODEL || DEFAULT_FLAQ_VIDEO_MODEL
+        : process.env.HUNYUAN_VIDEO_MODEL || DEFAULT_HUNYUAN_MODEL,
   };
 }
 
@@ -110,6 +121,18 @@ export function snapFrames(duration: number, fps = HUNYUAN_FPS): number {
   const raw = Math.max(1, Math.round(duration * fps));
   const k = Math.max(0, Math.round((raw - 1) / 4));
   return Math.min(HUNYUAN_MAX_FRAMES, k * 4 + 1);
+}
+
+/**
+ * Snaps a scene duration to the values Seedance accepts (4, 8 or 12 seconds).
+ * Sending an unsupported duration is rejected outright, so round to the
+ * nearest legal value rather than letting the request fail.
+ */
+export function snapDuration(duration: number): number {
+  const allowed = [4, 8, 12];
+  return allowed.reduce((best, value) =>
+    Math.abs(value - duration) < Math.abs(best - duration) ? value : best,
+  );
 }
 
 function numFromEnv(name: string, fallback: number): number {
@@ -266,6 +289,25 @@ async function generateHunyuan(options: GenerateOptions): Promise<GeneratedScene
  * caught here so a video API outage can never fail a render that would have
  * completed with stock footage or an on-device plate.
  */
+async function generateFlaq(options: GenerateOptions): Promise<GeneratedSceneVideo> {
+  const key = flaqKey();
+  if (!key) throw new Error("FLAQ_API_KEY is not set");
+  const model = process.env.FLAQ_VIDEO_MODEL || DEFAULT_FLAQ_VIDEO_MODEL;
+
+  const { data, ext } = await generateFlaqMedia("video", {
+    model_name: model,
+    prompt: buildVideoPrompt(options.prompt),
+    resolution: process.env.FLAQ_VIDEO_RESOLUTION || "720p",
+    // Seedance accepts 4, 8 or 12 seconds.
+    duration: snapDuration(options.duration),
+    aspect_ratio: options.aspect ?? "16:9",
+  });
+
+  const file = path.join(os.tmpdir(), `flaq-${randomUUID()}.${ext}`);
+  fs.writeFileSync(file, data);
+  return { file, provider: "flaq", model, prompt: options.prompt };
+}
+
 export async function generateSceneVideo(
   options: GenerateOptions,
 ): Promise<GeneratedSceneVideo | null> {
@@ -273,7 +315,7 @@ export async function generateSceneVideo(
   if (provider === "none") return null;
 
   try {
-    return await generateHunyuan(options);
+    return provider === "flaq" ? await generateFlaq(options) : await generateHunyuan(options);
   } catch (error) {
     console.warn(
       `[video] ${provider} generation failed, falling back:`,

@@ -684,6 +684,22 @@ function llmConfig(): LlmConfig | null {
     };
   }
 
+  // Flaq AI exposes an OpenAI-compatible /chat/completions endpoint, so one
+  // key covers scripting, imagery and video. Checked first for that reason.
+  // Model ids are flaq-specific (e.g. gpt-5.6-luna-text-to-text).
+  if (process.env.FLAQ_API_KEY || process.env.FLAQ_API_TOKEN) {
+    return {
+      label: "Flaq",
+      baseUrl:
+        process.env.LLM_BASE_URL ||
+        process.env.FLAQ_BASE_URL ||
+        "https://api.flaq.ai/api/v1",
+      key: (process.env.FLAQ_API_KEY || process.env.FLAQ_API_TOKEN) as string,
+      model: process.env.FLAQ_TEXT_MODEL || "gpt-5.6-luna-text-to-text",
+      extras: {},
+    };
+  }
+
   // Free tier is roughly 15 RPM / 500 RPD. Note the `/openai` segment: the
   // native Gemini endpoint has a different request shape.
   const gemini = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
