@@ -19,13 +19,39 @@ finished H.264/AAC MP4 master at **240p, 360p, or 1080p**.
   American, British, and Australian accents in 10 languages, normalized to
   `-16 LUFS` (EBU R128). Optional `ELEVENLABS_API_KEY` or `OPENAI_API_KEY`
   upgrades, plus offline `mespeak` fallback.
-- **Moving footage only** — every scene resolves to verified multi-rendition
-  video clips (never static slideshows). Ships with 40 verified Pexels video
-  clips out of the box and queries live Pexels (`PEXELS_API_KEY`) and Pixabay
-  Video (`PIXABAY_API_KEY`) pools when keys are set.
+- **Moving footage only** — search for videos in the Studio, preview them and
+  load additional pages. Mixkit, Wikimedia Commons and NASA are key-free;
+  Pexels and Pixabay search their live catalogues when `PEXELS_API_KEY` and
+  `PIXABAY_API_KEY` are configured. A small bundled Pexels library remains
+  available when the live Pexels API is not configured.
 - **Server-side FFmpeg master** — `libx264` High profile, `libass` vector
   caption burn-in across 5 caption styles, `loudnorm` stereo AAC-LC audio, and
   HTTP Range streaming for scrubbing and download.
+
+## Stock search and licensing
+
+The Studio's **All Sites** search queries Mixkit, Wikimedia Commons and NASA,
+plus Pexels and Pixabay when their keys are configured. Use **Load more clips**
+to browse further pages; changing a search term, provider or cast filter starts
+a new search. Provider errors and limited-library fallbacks are shown instead of
+quietly returning unrelated clips. The bundled Pexels index is small and its
+media still requires an internet connection.
+
+For live Pexels or Pixabay results, request an API key from the respective
+provider, set `PEXELS_API_KEY` or `PIXABAY_API_KEY` as a server environment
+variable, and redeploy. Without a Pexels key, its tab searches only the bundled
+index; without a Pixabay key, its tab cannot search Pixabay. Provider limits,
+filters and licensing restrictions may mean the results differ from their sites.
+
+Manual searches can include animation, while automatic narration matching
+continues to prefer real-world footage. Only Mixkit clips labelled with its
+commercial-use Free License are included. Wikimedia licences differ by file and
+may require attribution or share-alike. Follow each result's **Source & licence**
+link and fulfil its terms before publishing; the source and licence are retained
+when a clip is assigned to a scene.
+
+Run `npm run test:stock` for provider pagination, fallback and Studio search
+regression tests (all use mock provider responses).
 
 ## Stack
 
@@ -87,7 +113,7 @@ Free-tier models can still invent facts. For factual or brand content, add `OPEN
 | `/api/projects/[id]/script` | `POST` | Redraft all cues from project brief |
 | `/api/projects/[id]/scenes/[sceneId]` | `PATCH` / `POST` | Update or rewrite an individual cue |
 | `/api/projects/[id]/render` | `GET` / `POST` | Poll encode progress / start FFmpeg render |
-| `/api/media/search` | `GET` | Search moving video footage (`?q=&provider=all\|pexels\|pixabay`) |
+| `/api/media/search` | `GET` | Search videos (`?q=&provider=all\|pexels\|mixkit\|wikimedia\|nasa\|pixabay&page=1&limit=24`); returns `assets`, `hasMore`, `source`, and `notices` |
 | `/api/voices` | `GET` | Neural voice talent list & active provider status |
 | `/api/tts/preview` | `POST` | Synthesize live voice audition audio |
 | `/api/files/[...file]` | `GET` | Byte-range MP4 & poster streaming |

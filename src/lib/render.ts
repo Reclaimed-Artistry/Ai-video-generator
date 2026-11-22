@@ -594,8 +594,9 @@ async function resolveMedia(
     };
   }
 
-  // Reject any stale abstract clip attached to an old project and replace with real footage
-  const existingIsAbstract = Boolean(
+  // Preserve a clip deliberately selected by the editor. Automatic matches
+  // still replace legacy abstract footage with real-world footage.
+  const existingIsAbstract = !scene.mediaLocked && Boolean(
     scene.mediaTitle &&
       isAbstractAsset({
         title: scene.mediaTitle,
@@ -612,15 +613,9 @@ async function resolveMedia(
     }
   }
   if (!existingIsAbstract && scene.mediaUrl && scene.mediaType !== "photo") {
-    let renderUrl = scene.mediaUrl;
-    if (
-      targetHeight >= 720 &&
-      renderUrl.includes("assets.mixkit.co/videos/") &&
-      renderUrl.endsWith("-360.mp4")
-    ) {
-      renderUrl = renderUrl.replace(/-360\.mp4$/, "-720.mp4");
-    }
-    return { url: renderUrl, fallbackUrl, kind: "video" };
+    // Use the rendition actually returned by the provider; higher-resolution
+    // Mixkit URLs cannot safely be guessed from a preview URL.
+    return { url: scene.mediaUrl, fallbackUrl, kind: "video" };
   }
 
   // Match real-world footage directly to narration + chosen people/race option
