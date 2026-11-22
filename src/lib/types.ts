@@ -145,6 +145,9 @@ export type Scene = {
   mediaTitle?: string | null;
   mediaCreator?: string | null;
   mediaProvider?: string | null;
+  /** Original stock page and licence, retained for attribution and reuse checks. */
+  mediaPageUrl?: string | null;
+  mediaLicense?: string | null;
   mediaStart?: number | null; // Clip trim in-point (seconds)
   mediaSpeed?: number | null; // 0.75x .. 1.5x
   mediaFilter?: MediaFilter | null;
@@ -220,6 +223,9 @@ export type StockAsset = {
   portrait?: boolean;
   hasPeople?: boolean;
   demographics?: PeopleRepresentation[];
+  /** Per-item licence information, where the provider supplies it. */
+  license?: string;
+  licenseUrl?: string;
   sources: StockSource[];
 };
 

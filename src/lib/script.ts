@@ -617,6 +617,8 @@ function sceneFromAsset(
     mediaTitle: matched?.title ?? null,
     mediaCreator: matched?.creator ?? null,
     mediaProvider: matched?.provider ?? "pexels",
+    mediaPageUrl: matched?.pageUrl ?? null,
+    mediaLicense: matched?.license ?? null,
   });
 }
 

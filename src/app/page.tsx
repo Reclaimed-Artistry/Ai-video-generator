@@ -21,7 +21,7 @@ const PIPELINE_STAGES = [
     code: "02",
     title: "Multi-site stock video search — zero static slideshows",
     spec: "PEXELS · MIXKIT · WIKIMEDIA · NASA · PIXABAY",
-    body: "Searches live moving HD video clips across Pexels, Mixkit, Wikimedia Commons, and NASA right out of the box (plus full Pexels & Pixabay APIs when keys are added). Hover any clip in the Studio bin to preview before cutting.",
+    body: "Search Mixkit, Wikimedia Commons and NASA without a key, or connect Pexels and Pixabay for their live catalogues. Browse more results in the Studio and check each clip's licence before use.",
   },
   {
     code: "03",

@@ -32,6 +32,8 @@ function assetPayload(asset: StockAsset | null, mediaQuery: string) {
     mediaTitle: asset.title,
     mediaCreator: asset.creator,
     mediaProvider: asset.provider,
+    mediaPageUrl: asset.pageUrl,
+    mediaLicense: asset.license ?? null,
     mediaQuery,
   };
 }

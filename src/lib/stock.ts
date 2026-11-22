@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import catalogData from "./stock-catalog.json";
 import extraPeopleData from "./stock-people-extra.json";
 import reviewData from "./stock-review.json";
+import { MAX_STOCK_PAGE, stockAssetKey } from "./stock-id";
 import {
   getPeopleRepresentation,
   type MediaType,
@@ -11,9 +13,8 @@ import {
 } from "./types";
 
 /**
- * Hard filter blocking abstract, neon, 3D CGI, motion-graphics, particle,
- * wireframe, fractal, and subscribe-animation clips from EVERY local and live
- * stock provider so generated videos always use real-world camera footage.
+ * Automatic narration matching avoids abstract/animated footage by default.
+ * Manual stock searches can opt in to every video style instead.
  */
 const ABSTRACT_MEDIA_RE =
   /\b(abstract|animation|animated|motion\s+graphic|motion\s+graphics|3d\s+(?:render|animation|model|like|subscribe|background|loop|art)|cgi|neon|light\s+trails?|luminous|fractal|hologram|holographic|particles?|vfx|cyberpunk|cyberspace|matrix|wireframe|geometric|background\s+loop|swirl|swirls|gradient|tunnel|like\s+and\s+subscribe|subscribe\s+animation|text\s+animation|glitch|plexus|network\s+connections|data\s+flow|molecular\s+network|futuristic\s+digital|vaporwave|kaleidoscope|wave\s+animation|lines\s+background|screensaver|render\s+loop)\b/i;
@@ -73,16 +74,16 @@ function inferDemographicsFromMetadata(
 
 /**
  * Checks whether an asset is permitted under the selected people/race option:
- * - Never allows abstract media
+ * - Excludes abstract media unless `includeAbstract` is set
  * - For a specific race (`!== "all"`), rejects any human clip belonging to
  *   another race or whose race is unverified (when strictPeopleOnly is set)
  */
 export function isAssetCompatibleWithPeople(
   asset: StockAsset,
   people: PeopleRepresentation = "all",
-  opts: { allowNonHumanScenic?: boolean } = {},
+  opts: { allowNonHumanScenic?: boolean; includeAbstract?: boolean } = {},
 ): boolean {
-  if (isAbstractAsset(asset)) return false;
+  if (!opts.includeAbstract && isAbstractAsset(asset)) return false;
   if (!people || people === "all") return true;
 
   const { hasPeople, demographics } = inferDemographicsFromMetadata(asset);
@@ -155,9 +156,8 @@ const MERGED_CATALOG: StockAsset[] = (() => {
 const ANIMAL_CLIP_RE =
   /\b(dogs?|puppy|puppies|cats?|kittens?|lions?|cubs?|birds?|horses?|animals?|wildlife|pets?|golden retriever)\b/i;
 
-export const LOCAL_CATALOG = MERGED_CATALOG.filter(
-  (asset) => asset.type === "video" && !isAbstractAsset(asset),
-);
+const ALL_LOCAL_VIDEOS = MERGED_CATALOG.filter((asset) => asset.type === "video");
+export const LOCAL_CATALOG = ALL_LOCAL_VIDEOS.filter((asset) => !isAbstractAsset(asset));
 export const VIDEO_CATALOG = LOCAL_CATALOG;
 
 export function getLocalAsset(id: string): StockAsset | undefined {
@@ -508,8 +508,8 @@ export function buildVisualSearchPlan(
   };
 }
 
-function scoreAsset(asset: StockAsset, tokens: string[]): number {
-  if (isAbstractAsset(asset)) return -1000;
+function scoreAsset(asset: StockAsset, tokens: string[], includeAbstract = false): number {
+  if (!includeAbstract && isAbstractAsset(asset)) return -1000;
   if (tokens.length === 0) return 1;
   const title = asset.title.toLowerCase();
   const titleWords = new Set(tokenize(title));
@@ -529,55 +529,76 @@ function scoreAsset(asset: StockAsset, tokens: string[]): number {
   return score;
 }
 
+/** Avoid matching short words inside unrelated words (for example, cat in education). */
+function matchesLocalSearch(asset: StockAsset, tokens: string[]): boolean {
+  const words = `${asset.title} ${asset.tags.join(" ")}`.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  return tokens.some((token) => words.some((word) =>
+    word === token || word === `${token}s` || `${word}s` === token ||
+    (token.length >= 4 && word.startsWith(token)),
+  ));
+}
+
 /** Rank the bundled Pexels stock library against a search phrase and optional race/people preference. */
 export function searchLocalCatalog(
   query: string,
   opts: {
     type?: MediaType;
     limit?: number;
+    offset?: number;
     peopleRepresentation?: PeopleRepresentation;
     allowNonHumanScenic?: boolean;
+    includeAbstract?: boolean;
+    requireTextMatch?: boolean;
   } = {},
 ): StockAsset[] {
   const people = opts.peopleRepresentation ?? "all";
   const tokens = extractConcreteWords(query);
-  const fallbackTokens = tokens.length > 0 ? tokens : tokenize(query);
+  const fallbackTokens = tokens.length > 0
+    ? tokens
+    : opts.requireTextMatch
+      ? (query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((word) => word.length >= 2)
+      : tokenize(query);
   const limit = opts.limit ?? 24;
+  const offset = opts.offset ?? 0;
 
-  const eligible = LOCAL_CATALOG.filter(
+  const eligible = (opts.includeAbstract ? ALL_LOCAL_VIDEOS : LOCAL_CATALOG).filter(
     (asset) =>
       (!opts.type || asset.type === opts.type) &&
       isAssetCompatibleWithPeople(asset, people, {
         allowNonHumanScenic: opts.allowNonHumanScenic,
+        includeAbstract: opts.includeAbstract,
       }),
   );
 
   if (fallbackTokens.length === 0) {
-    // No query -> return demographic-matched real clips first
+    // A non-empty manual query with no searchable words must not become a generic search.
+    if (opts.requireTextMatch && query.trim()) return [];
     return eligible
       .sort((a, b) => {
         const aMatch = people !== "all" && a.demographics?.includes(people) ? 1 : 0;
         const bMatch = people !== "all" && b.demographics?.includes(people) ? 1 : 0;
         return bMatch - aMatch || a.title.localeCompare(b.title);
       })
-      .slice(0, limit);
+      .slice(offset, offset + limit);
   }
 
   return eligible
     .map((asset) => {
-      const textScore = scoreAsset(asset, fallbackTokens);
+      const textScore = scoreAsset(asset, fallbackTokens, opts.includeAbstract);
       const demoBonus =
         people !== "all" && asset.demographics?.includes(people) ? 14 : 0;
       return { asset, textScore, demoBonus, total: textScore + demoBonus };
     })
-    .filter((entry) => entry.textScore > 0 || (people !== "all" && entry.demoBonus > 0))
+    .filter((entry) => opts.requireTextMatch
+      ? matchesLocalSearch(entry.asset, fallbackTokens)
+      : entry.textScore > 0 || (people !== "all" && entry.demoBonus > 0))
     .sort(
       (a, b) =>
         b.total - a.total ||
         b.textScore - a.textScore ||
         a.asset.title.localeCompare(b.asset.title),
     )
-    .slice(0, limit)
+    .slice(offset, offset + limit)
     .map((entry) => entry.asset);
 }
 
@@ -664,7 +685,10 @@ export function hydrateSceneMedia(
     return { ...scene, mediaLocked: true };
   }
 
-  // Reject any legacy abstract clip titles/URLs and re-match to real footage
+  // Explicitly selected/locked footage belongs to the editor, including animation.
+  if (scene.mediaLocked && scene.mediaUrl && scene.mediaType === "video") return scene;
+
+  // Reject automatically matched legacy abstract clips and re-match to real footage.
   const existingLooksAbstract = Boolean(
     scene.mediaTitle &&
       ABSTRACT_MEDIA_RE.test(`${scene.mediaTitle} ${scene.mediaQuery ?? ""}`),
@@ -716,6 +740,8 @@ export function hydrateSceneMedia(
     mediaTitle: (!existingLooksAbstract && fromId && scene.mediaTitle) || videoAsset.title || null,
     mediaCreator: (!existingLooksAbstract && fromId && scene.mediaCreator) || videoAsset.creator || null,
     mediaProvider: (!existingLooksAbstract && fromId && scene.mediaProvider) || videoAsset.provider || "pexels",
+    mediaPageUrl: (!existingLooksAbstract && fromId && scene.mediaPageUrl) || videoAsset.pageUrl || null,
+    mediaLicense: (!existingLooksAbstract && fromId && scene.mediaLicense) || videoAsset.license || null,
   };
 }
 
@@ -747,7 +773,10 @@ function mapPexelsVideo(item: Record<string, unknown>): StockAsset {
     (item.files as Record<string, unknown>[] | undefined) ??
     [];
   const sources: StockSource[] = files
-    .filter((file) => String(file.file_type ?? "").includes("mp4"))
+    // Pexels also labels HLS manifests as video/mp4. Keep playable files, not playlists.
+    .filter((file) => String(file.file_type ?? "").includes("mp4") &&
+      String(file.quality ?? "").toLowerCase() !== "hls" &&
+      !/\.m3u8(?:[?#]|$)/i.test(String(file.link ?? "")))
     .map((file) => ({
       url: String(file.link ?? ""),
       width: Number(file.width ?? 0),
@@ -813,567 +842,747 @@ function withPeopleQuery(
   return base ? `${prefix} ${base}` : `${prefix} people lifestyle`;
 }
 
+type ProviderPage = {
+  assets: StockAsset[];
+  hasMore: boolean;
+  status: "ok" | "unconfigured" | "unavailable";
+  reason?: string;
+};
+
+const unavailable = (reason: string): ProviderPage => ({
+  assets: [], hasMore: false, status: "unavailable", reason,
+});
+
+function providerError(provider: string, status: number): string {
+  if (status === 401 || status === 403) return `${provider} rejected its API key or denied access.`;
+  if (status === 429) return `${provider} is temporarily rate-limited. Try again later.`;
+  return `${provider} is temporarily unavailable.`;
+}
+
 async function searchPexelsLive(
   query: string,
   limit: number,
   peopleHint?: PeopleRepresentation,
-): Promise<StockAsset[] | null> {
+  page = 1,
+): Promise<ProviderPage> {
   const key = process.env.PEXELS_API_KEY;
-  if (!key) return null;
-  const q = query.trim() || "city office people";
-  const url = `https://api.pexels.com/videos/search?query=${encodeURIComponent(q)}&per_page=${limit}`;
+  if (!key) return { assets: [], hasMore: false, status: "unconfigured" };
+  const q = query.trim();
+  const url = new URL(q
+    ? "https://api.pexels.com/v1/videos/search"
+    : "https://api.pexels.com/v1/videos/popular");
+  if (q) url.searchParams.set("query", q);
+  url.searchParams.set("per_page", String(limit));
+  url.searchParams.set("page", String(page));
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 7000);
     const response = await fetch(url, {
       headers: { authorization: key },
-      signal: ctrl.signal,
+      signal: AbortSignal.timeout(7000),
+      cache: "no-store",
     });
-    clearTimeout(timer);
-    if (!response.ok) return null;
-    const data = (await response.json()) as { videos?: Record<string, unknown>[] };
-    const mapped = (data.videos ?? [])
+    if (!response.ok) return unavailable(providerError("Pexels", response.status));
+    const data = (await response.json()) as {
+      videos?: Record<string, unknown>[];
+      total_results?: number;
+      next_page?: string;
+    };
+    const videos = Array.isArray(data.videos) ? data.videos : [];
+    const assets = videos
       .map(mapPexelsVideo)
-      .filter((asset) => asset.sources.length > 0 && !isAbstractAsset(asset))
+      .filter((asset) => asset.sources.length > 0)
       .map((asset) => attachLiveDemographics(asset, peopleHint));
-    return mapped.length > 0 ? mapped : null;
+    return {
+      assets,
+      hasMore: typeof data.total_results === "number"
+        ? page * limit < data.total_results
+        : Boolean(data.next_page) || videos.length === limit,
+      status: "ok",
+    };
   } catch {
-    return null;
+    return unavailable("Pexels is temporarily unavailable.");
   }
 }
 
+type MixkitSlot = {
+  id: string;
+  title: string;
+  pageUrl: string;
+  thumb: string;
+  slug: string;
+  contentUrl: string;
+  duration: number;
+  width: number;
+  height: number;
+  free: boolean;
+};
+
+type MixkitNativePage = {
+  slots: MixkitSlot[];
+  hasMore: boolean;
+  status: "ok" | "unavailable";
+};
+
+const MIXKIT_PAGE_SIZE = 24;
 const globalMixkit = globalThis as typeof globalThis & {
-  __raMixkitCache?: Map<string, { ts: number; items: StockAsset[] }>;
+  __raMixkitPages?: Map<string, { ts: number; page: MixkitNativePage }>;
+  __raMixkitDetails?: Map<string, { ts: number; free: boolean; source: string }>;
   __raMixkitCooldownUntil?: number;
 };
 
 function mixkitCache() {
-  if (!globalMixkit.__raMixkitCache) globalMixkit.__raMixkitCache = new Map();
-  return globalMixkit.__raMixkitCache;
+  if (!globalMixkit.__raMixkitPages) globalMixkit.__raMixkitPages = new Map();
+  return globalMixkit.__raMixkitPages;
 }
 
-async function fetchMixkitSlug(slug: string, limit: number): Promise<StockAsset[]> {
-  const cached = mixkitCache().get(slug);
-  if (cached && Date.now() - cached.ts < 30 * 60 * 1000) {
-    return cached.items.slice(0, limit);
-  }
-  if (globalMixkit.__raMixkitCooldownUntil && Date.now() < globalMixkit.__raMixkitCooldownUntil) {
-    return [];
-  }
+function mixkitDetailCache() {
+  if (!globalMixkit.__raMixkitDetails) globalMixkit.__raMixkitDetails = new Map();
+  return globalMixkit.__raMixkitDetails;
+}
 
-  const url = `https://mixkit.co/free-stock-video/${encodeURIComponent(slug)}/`;
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 6000);
-    const response = await fetch(url, {
-      headers: {
-        "user-agent":
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
-        accept: "text/html",
-      },
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    if (response.status === 429) {
-      // Back off for 90s on rate-limit so we don't stall renders
-      globalMixkit.__raMixkitCooldownUntil = Date.now() + 90_000;
-      return [];
-    }
-    if (!response.ok) {
-      mixkitCache().set(slug, { ts: Date.now(), items: [] });
-      return [];
-    }
+function cacheMixkitDetail(url: string, detail: { ts: number; free: boolean; source: string }) {
+  const cache = mixkitDetailCache();
+  cache.set(url, detail);
+  if (cache.size > 500) cache.delete(cache.keys().next().value!);
+}
 
-    const html = await response.text();
-    const idMatches = [
-      ...html.matchAll(
-        /https:\/\/assets\.mixkit\.co\/videos\/(\d+)\/\1-(?:360|720|1080)\.mp4/g,
-      ),
-    ];
-    const uniqueIds = [...new Set(idMatches.map((m) => m[1]))].slice(0, limit);
-    if (uniqueIds.length === 0) return [];
-
-    const slugTokens = slug.split("-").filter((t) => t.length > 2);
-    return uniqueIds.map((id) => {
-      const altMatch = new RegExp(
-        `alt="([^"]{4,160})"[^>]{0,280}assets\\.mixkit\\.co/videos/${id}/|assets\\.mixkit\\.co/videos/${id}/[^"]{0,140}"[^>]{0,280}alt="([^"]{4,160})"`,
-      ).exec(html);
-      const rawTitle = (
-        altMatch?.[1] ||
-        altMatch?.[2] ||
-        `Mixkit ${slug.replace(/-/g, " ")} footage`
-      )
-        .replace(/&#39;/g, "'")
-        .replace(/&quot;/g, '"')
-        .replace(/&amp;/g, "&")
-        .replace(/\.$/, "")
-        .trim();
-
-      const has1080InHtml = html.includes(
-        `assets.mixkit.co/videos/${id}/${id}-1080.mp4`,
-      );
-      const sources: StockSource[] = [
-        {
-          url: `https://assets.mixkit.co/videos/${id}/${id}-360.mp4`,
-          width: 640,
-          height: 360,
-          fps: 30,
-        },
-        {
-          url: `https://assets.mixkit.co/videos/${id}/${id}-720.mp4`,
-          width: 1280,
-          height: 720,
-          fps: 30,
-        },
-      ];
-      if (has1080InHtml) {
-        sources.push({
-          url: `https://assets.mixkit.co/videos/${id}/${id}-1080.mp4`,
-          width: 1920,
-          height: 1080,
-          fps: 30,
-        });
+function jsonLdNodes(html: string): Record<string, unknown>[] {
+  const nodes: Record<string, unknown>[] = [];
+  const scripts = html.matchAll(/<script\b[^>]*\btype\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+  for (const script of scripts) {
+    try {
+      const pending: unknown[] = [JSON.parse(script[1])];
+      while (pending.length) {
+        const value = pending.shift();
+        if (Array.isArray(value)) pending.push(...value);
+        else if (value && typeof value === "object") {
+          const node = value as Record<string, unknown>;
+          nodes.push(node);
+          pending.push(...Object.values(node).filter((item) => item && typeof item === "object"));
+        }
       }
+    } catch {
+      // Ignore a malformed JSON-LD block without losing other blocks.
+    }
+  }
+  return nodes;
+}
 
-      const tags = [...new Set([...slugTokens, ...extractConcreteWords(rawTitle)])].slice(
-        0,
-        7,
-      );
+function isVideoObject(node: Record<string, unknown>): boolean {
+  return node["@type"] === "VideoObject" ||
+    (Array.isArray(node["@type"]) && node["@type"].includes("VideoObject"));
+}
 
-      return {
-        id: `mixkit-${id}`,
-        provider: "mixkit",
-        type: "video",
-        title: rawTitle,
-        tags,
-        creator: "Mixkit",
-        pageUrl: url,
-        thumb: `https://assets.mixkit.co/videos/${id}/${id}-thumb-360-0.jpg`,
-        duration: 12,
-        portrait: false,
-        sources,
-      };
-    });
+function mixkitFreeLicense(node: Record<string, unknown>): boolean {
+  const text = `${node.license ?? ""} ${node.copyrightNotice ?? ""}`.toLowerCase();
+  return !text.includes("restricted") &&
+    (/videofree|stock video free license|free license/.test(text) || text.trim() === "free");
+}
+
+function firstString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.find((item): item is string => typeof item === "string") ?? "";
+  return "";
+}
+
+function mixkitMediaUrl(value: string): string {
+  try {
+    const url = new URL(value.replace(/&amp;/g, "&"), "https://mixkit.co");
+    return url.protocol === "https:" && url.hostname === "assets.mixkit.co" && /\.mp4$/i.test(url.pathname)
+      ? url.toString()
+      : "";
   } catch {
-    return [];
+    return "";
   }
 }
 
-async function fetchMixkitSlugCached(slug: string, limit: number): Promise<StockAsset[]> {
-  const items = await fetchMixkitSlug(slug, Math.max(limit, 18));
-  if (items.length > 0) {
-    mixkitCache().set(slug, { ts: Date.now(), items });
-  }
-  return items.slice(0, limit);
+function mixkitDuration(value: unknown): number {
+  if (typeof value === "number" && value > 0) return value;
+  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i.exec(String(value ?? ""));
+  return match ? Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0) : 12;
 }
 
-/**
- * Rate-limit-friendly Mixkit live search: tries candidate slugs sequentially
- * (using the 30-min cache) and stops at the first slug with real hits so we
- * never burst Mixkit into HTTP 429.
- */
+/** Parse the listing's actual VideoObjects; never invent a downloadable rendition. */
+function parseMixkitListing(html: string, slug: string): MixkitSlot[] {
+  const normalizedHtml = html.replace(/\\\//g, "/").replace(/&amp;/g, "&");
+  const slots: MixkitSlot[] = [];
+  const seen = new Set<string>();
+  for (const node of jsonLdNodes(html)) {
+    if (!isVideoObject(node)) continue;
+    const rawPage = firstString(node["@id"]) || firstString(node.url);
+    let pageUrl: URL;
+    try {
+      pageUrl = new URL(rawPage.split("#")[0], "https://mixkit.co");
+    } catch {
+      continue;
+    }
+    const id = /-(\d+)\/?$/.exec(pageUrl.pathname)?.[1];
+    if (pageUrl.hostname !== "mixkit.co" || !pageUrl.pathname.startsWith("/free-stock-video/") || !id || seen.has(id)) continue;
+    seen.add(id);
+    const publishedFile = new RegExp(`https://assets\\.mixkit\\.co/videos/${id}/${id}-(?:360|720|1080)\\.mp4(?:\\?[^"'\\s<>]*)?`, "i").exec(normalizedHtml)?.[0] ?? "";
+    const publishedThumb = new RegExp(`https://assets\\.mixkit\\.co/videos/${id}/${id}-thumb-[^"'\\s<>]+\\.(?:jpg|jpeg|png|webp)(?:\\?[^"'\\s<>]*)?`, "i").exec(normalizedHtml)?.[0] ?? "";
+    const title = firstString(node.name).trim() || pageUrl.pathname.split("/").filter(Boolean).pop()?.replace(/-\d+$/, "").replace(/-/g, " ") || "Mixkit video";
+    slots.push({
+      id,
+      title,
+      pageUrl: pageUrl.toString(),
+      thumb: firstString(node.thumbnailUrl) || publishedThumb,
+      slug,
+      contentUrl: mixkitMediaUrl(firstString(node.contentUrl)) || mixkitMediaUrl(publishedFile),
+      duration: mixkitDuration(node.duration),
+      width: Number(node.width) || 0,
+      height: Number(node.height) || 0,
+      free: mixkitFreeLicense(node),
+    });
+  }
+  return slots;
+}
+
+async function fetchMixkitNativePage(slug: string, page: number): Promise<MixkitNativePage> {
+  const key = `${slug}:${page}`;
+  const cached = mixkitCache().get(key);
+  if (cached && Date.now() - cached.ts < 30 * 60 * 1000) return cached.page;
+  if (globalMixkit.__raMixkitCooldownUntil && Date.now() < globalMixkit.__raMixkitCooldownUntil) {
+    return { slots: [], hasMore: false, status: "unavailable" };
+  }
+  const url = new URL(`https://mixkit.co/free-stock-video/${encodeURIComponent(slug)}${slug ? "/" : ""}`);
+  if (page > 1) url.searchParams.set("page", String(page));
+  try {
+    const response = await fetch(url, {
+      headers: { "user-agent": "Mozilla/5.0 (compatible; ReclaimedArtistry/1.0)", accept: "text/html" },
+      signal: AbortSignal.timeout(6000),
+      cache: "no-store",
+    });
+    if (response.status === 429) {
+      globalMixkit.__raMixkitCooldownUntil = Date.now() + 90_000;
+      return { slots: [], hasMore: false, status: "unavailable" };
+    }
+    if (response.status === 404) return { slots: [], hasMore: false, status: "ok" };
+    if (!response.ok) return { slots: [], hasMore: false, status: "unavailable" };
+    const html = await response.text();
+    const slots = parseMixkitListing(html, slug);
+    // A changed listing format is an outage, not proof that the query has no results.
+    if (slots.length === 0 && /item-grid-card/.test(html)) {
+      return { slots: [], hasMore: false, status: "unavailable" };
+    }
+    const hasNextLink = new RegExp(`(?:\\?|&amp;|&)page=${page + 1}(?:["'&#]|$)`, "i").test(html);
+    const result: MixkitNativePage = { slots, hasMore: hasNextLink || slots.length >= MIXKIT_PAGE_SIZE, status: "ok" };
+    mixkitCache().set(key, { ts: Date.now(), page: result });
+    // Bound the per-process cache; entries must never depend on a prior requested limit.
+    if (mixkitCache().size > 200) mixkitCache().delete(mixkitCache().keys().next().value!);
+    return result;
+  } catch {
+    return { slots: [], hasMore: false, status: "unavailable" };
+  }
+}
+
+async function resolveMixkitSlot(slot: MixkitSlot): Promise<{ asset: StockAsset | null; unavailable: boolean }> {
+  // The detail page is authoritative: a listing can say "free" while the
+  // actual downloadable clip is licensed for personal use only.
+  if (!slot.free) return { asset: null, unavailable: false };
+  let detail = mixkitDetailCache().get(slot.pageUrl);
+  if (!detail || Date.now() - detail.ts >= 30 * 60 * 1000) {
+    try {
+      const response = await fetch(slot.pageUrl, {
+        headers: { "user-agent": "Mozilla/5.0 (compatible; ReclaimedArtistry/1.0)", accept: "text/html" },
+        signal: AbortSignal.timeout(6000), cache: "no-store",
+      });
+      if (!response.ok) return { asset: null, unavailable: true };
+      const html = await response.text();
+      const declared = [...html.matchAll(/\bdata-license\s*=\s*["'](video(?:Free|Restricted))["']/gi)]
+        .map((match) => match[1].toLowerCase());
+      const videoNodes = jsonLdNodes(html).filter(isVideoObject);
+      const node = videoNodes.find((item) => {
+        const id = firstString(item["@id"]) || firstString(item.url);
+        return id.split("#")[0].replace(/\/$/, "") === slot.pageUrl.replace(/\/$/, "");
+      }) ?? (videoNodes.length === 1 ? videoNodes[0] : undefined);
+      // Download-block labels override JSON-LD. If a page has conflicting
+      // labels, do not risk presenting a restricted clip as commercial-free.
+      const restricted = declared.includes("videorestricted");
+      const free = declared.length > 0
+        ? declared.includes("videofree") && !restricted
+        : Boolean(node && mixkitFreeLicense(node));
+      if (!free) {
+        if (restricted || (node && !mixkitFreeLicense(node) && /restricted/i.test(`${node.license ?? ""} ${node.copyrightNotice ?? ""}`))) {
+          cacheMixkitDetail(slot.pageUrl, { ts: Date.now(), free: false, source: "" });
+          return { asset: null, unavailable: false };
+        }
+        return { asset: null, unavailable: true };
+      }
+      const published = new RegExp(`https://assets\\.mixkit\\.co/videos/${slot.id}/${slot.id}-(?:360|720|1080)\\.mp4(?:\\?[^"'\\s<>]*)?`, "i")
+        .exec(html.replace(/\\\//g, "/").replace(/&amp;/g, "&"))?.[0] ?? "";
+      // Both the detail JSON-LD and the original listing are provider-published
+      // URLs. Never manufacture a different resolution from either one.
+      const source = mixkitMediaUrl(firstString(node?.contentUrl)) || mixkitMediaUrl(published) || slot.contentUrl;
+      if (!source) return { asset: null, unavailable: true };
+      detail = { ts: Date.now(), free: true, source };
+      cacheMixkitDetail(slot.pageUrl, detail);
+    } catch {
+      return { asset: null, unavailable: true };
+    }
+  }
+  if (!detail.free) return { asset: null, unavailable: false };
+  const source = detail.source;
+  const inferredHeight = /-(360|720|1080)\.mp4/i.exec(source)?.[1];
+  const tags = [...new Set([...slot.slug.split("-"), ...tokenize(slot.title)])].filter(Boolean).slice(0, 8);
+  return { asset: attachLiveDemographics({
+    id: `mixkit-${slot.id}`,
+    provider: "mixkit",
+    type: "video",
+    title: slot.title,
+    tags,
+    creator: "Mixkit",
+    pageUrl: slot.pageUrl,
+    thumb: slot.thumb,
+    duration: slot.duration,
+    license: "Mixkit Stock Video Free License",
+    licenseUrl: "https://mixkit.co/license/#videoFree",
+    sources: [{ url: source, width: slot.width, height: slot.height || Number(inferredHeight) || undefined }],
+  }), unavailable: false };
+}
+
+function matchesAllSearchWords(asset: StockAsset, words: string[]): boolean {
+  return words.every((word) => matchesLocalSearch(asset, [word]));
+}
+
+/** Page through Mixkit's native 24-item pages without skipping or repeating slots. */
 async function searchMixkitLive(
   query: string,
   limit: number,
   extraSlugs: string[] = [],
-): Promise<StockAsset[]> {
+  page = 1,
+): Promise<ProviderPage> {
   const words = extractConcreteWords(query);
   const rawWords = words.length > 0 ? words : tokenize(query);
-
   const candidates: string[] = [];
-  const add = (s: string) => {
-    const clean = s
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-|-$/g, "");
-    if (clean.length >= 3 && !candidates.includes(clean)) candidates.push(clean);
+  const add = (value: string) => {
+    const clean = value.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+    if (clean && !candidates.includes(clean)) candidates.push(clean);
   };
-
-  for (const s of extraSlugs) add(s);
+  // Automatic narration matching supplies carefully chosen demographic and
+  // subject slugs; preserve their priority. Manual search has no such hints.
+  for (const slug of extraSlugs) add(slug);
+  add(query.trim().replace(/\s+/g, "-"));
   if (rawWords.length >= 2) add(`${rawWords[0]}-${rawWords[1]}`);
-  for (const w of rawWords.slice(0, 3)) add(w);
-  if (candidates.length === 0) add("cinematic");
+  for (const word of rawWords.slice(0, 3)) add(word);
+  if (candidates.length === 0) candidates.push("");
+  const exactSlug = candidates[0];
 
-  const tokens = rawWords.length > 0 ? rawWords : tokenize(query);
-  for (const slug of candidates.slice(0, 4)) {
-    const hits = (await fetchMixkitSlugCached(slug, limit)).filter(
-      (asset) => !isAbstractAsset(asset),
-    );
-    if (hits.length > 0) {
-      return hits
-        .map((asset) => ({ asset: attachLiveDemographics(asset), score: scoreAsset(asset, tokens) }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit)
-        .map((e) => e.asset);
+  for (const slug of candidates.slice(0, 5)) {
+    const first = await fetchMixkitNativePage(slug, 1);
+    if (first.status === "unavailable") return unavailable("Mixkit is temporarily unavailable.");
+    if (first.slots.length === 0) continue;
+    let nativePage = Math.floor(((page - 1) * limit) / MIXKIT_PAGE_SIZE) + 1;
+    let offset = ((page - 1) * limit) % MIXKIT_PAGE_SIZE;
+    let remaining = limit;
+    let hasMore = false;
+    const selected: MixkitSlot[] = [];
+    while (remaining > 0) {
+      const batch = nativePage === 1 ? first : await fetchMixkitNativePage(slug, nativePage);
+      if (batch.status === "unavailable") return unavailable("Mixkit is temporarily unavailable.");
+      const take = Math.min(remaining, MIXKIT_PAGE_SIZE - offset);
+      selected.push(...batch.slots.slice(offset, offset + take));
+      hasMore = batch.slots.length > offset + take || batch.hasMore;
+      remaining -= take;
+      if (!batch.hasMore || remaining <= 0) break;
+      nativePage += 1;
+      offset = 0;
     }
+    const resolutions = await Promise.all(selected.map(resolveMixkitSlot));
+    const resolved = resolutions.map(({ asset }) => asset).filter((asset): asset is StockAsset => asset !== null);
+    // If a multi-word category does not exist, a broader category must still
+    // match the other words rather than returning unrelated generic footage.
+    const assets = slug !== exactSlug && rawWords.length > 1 && extraSlugs.length === 0
+      ? resolved.filter((asset) => matchesAllSearchWords(asset, rawWords.slice(0, 3)))
+      : resolved;
+    return {
+      assets, hasMore, status: "ok",
+      reason: resolutions.some(({ unavailable }) => unavailable)
+        ? "Some Mixkit clips could not be verified or are temporarily unavailable."
+        : undefined,
+    };
   }
-  return [];
+  return { assets: [], hasMore: false, status: "ok" };
 }
 
-/**
- * Wikimedia Commons open-license stock video API — WebM footage + JPEG
- * thumbnails, zero API key required.
- */
-async function searchWikimediaLive(
-  query: string,
-  limit: number,
-): Promise<StockAsset[]> {
-  const q = query.trim() || "city skyline";
-  const url =
-    `https://commons.wikimedia.org/w/api.php?action=query&generator=search` +
-    `&gsrnamespace=6&gsrsearch=${encodeURIComponent(`filetype:video ${q}`)}` +
-    `&gsrlimit=${Math.min(16, limit)}&prop=imageinfo&iiprop=url|size|mime|user&iiurlwidth=640&format=json`;
+/** Wikimedia Commons is key-free; keep the per-file licence visible to the editor. */
+async function searchWikimediaLive(query: string, limit: number, page = 1): Promise<ProviderPage> {
+  const url = new URL("https://commons.wikimedia.org/w/api.php");
+  const params: Record<string, string> = {
+    action: "query", generator: "search", gsrnamespace: "6",
+    gsrsearch: `filetype:video ${query.trim()}`.trim(),
+    gsrlimit: String(limit), gsroffset: String((page - 1) * limit),
+    prop: "imageinfo|videoinfo", iiprop: "url|size|mime|user|extmetadata",
+    iiextmetadatafilter: "LicenseShortName|LicenseUrl|Artist|AttributionRequired",
+    viprop: "derivatives", iiurlwidth: "640", format: "json",
+  };
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 7000);
     const response = await fetch(url, {
-      headers: {
-        "user-agent":
-          "ReclaimedArtistry/1.0 (https://github.com/Reclaimed-Artistry/Ai-video-generator)",
-      },
-      signal: ctrl.signal,
+      headers: { "user-agent": "ReclaimedArtistry/1.0 (https://github.com/Reclaimed-Artistry/Ai-video-generator)" },
+      signal: AbortSignal.timeout(7000),
+      cache: "no-store",
     });
-    clearTimeout(timer);
-    if (!response.ok) return [];
-
+    if (!response.ok) return unavailable(providerError("Wikimedia", response.status));
     const data = (await response.json()) as {
+      continue?: { gsroffset?: number };
       query?: { pages?: Record<string, Record<string, unknown>> };
     };
-    const pages = Object.values(data.query?.pages ?? {});
-    const results: StockAsset[] = [];
-
-    for (const page of pages) {
-      const info = (page.imageinfo as Record<string, unknown>[] | undefined)?.[0];
+    const pages = Object.values(data.query?.pages ?? {}).sort((a, b) => Number(a.index ?? 0) - Number(b.index ?? 0));
+    const assets: StockAsset[] = [];
+    for (const entry of pages) {
+      const info = (entry.imageinfo as Record<string, unknown>[] | undefined)?.[0];
       if (!info) continue;
       const mime = String(info.mime ?? "");
       if (!mime.includes("webm") && !mime.includes("mp4")) continue;
-      const fileUrl = String(info.url ?? "").split("?")[0];
       const thumb = String(info.thumburl ?? "");
+      if (!thumb) continue;
+      const duration = Number(info.duration ?? 12);
+      const fileUrl = String(info.url ?? "").split("?")[0];
       const sizeBytes = Number(info.size ?? 0);
-      if (!fileUrl || !thumb || sizeBytes > 45 * 1024 * 1024) continue;
-
       const width = Number(info.width ?? 1280);
       const height = Number(info.height ?? 720);
-      const cleanTitle = String(page.title ?? "Wikimedia clip")
-        .replace(/^File:/i, "")
-        .replace(/\.(webm|mp4|ogv)$/i, "")
-        .replace(/_/g, " ")
-        .trim();
-
-      const candidate: StockAsset = {
-        id: `wikimedia-${page.pageid}`,
+      const sources: StockSource[] = [];
+      if (fileUrl && sizeBytes > 0 && sizeBytes <= 45 * 1024 * 1024) {
+        sources.push({ url: fileUrl, width, height, bytes: sizeBytes });
+      }
+      const videoInfo = (entry.videoinfo as { derivatives?: Record<string, unknown>[] }[] | undefined)?.[0];
+      for (const derivative of videoInfo?.derivatives ?? []) {
+        const src = String(derivative.src ?? "");
+        const type = String(derivative.type ?? "");
+        const estimatedBytes = Number(derivative.bandwidth ?? 0) * duration / 8;
+        if (!src || (!type.includes("webm") && !type.includes("mp4")) || estimatedBytes > 45 * 1024 * 1024) continue;
+        sources.push({ url: src, width: Number(derivative.width ?? 0), height: Number(derivative.height ?? 0), bytes: estimatedBytes || undefined });
+      }
+      if (sources.length === 0) continue;
+      const cleanTitle = String(entry.title ?? "Wikimedia clip").replace(/^File:/i, "").replace(/\.(webm|mp4|ogv)$/i, "").replace(/_/g, " ").trim();
+      const metadata = (info.extmetadata ?? {}) as Record<string, { value?: string }>;
+      const cleanMeta = (value?: string) => (value ?? "").replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").trim();
+      const license = cleanMeta(metadata.LicenseShortName?.value);
+      const licenseUrl = cleanMeta(metadata.LicenseUrl?.value);
+      assets.push(attachLiveDemographics({
+        id: `wikimedia-${entry.pageid}`,
         provider: "wikimedia",
         type: "video",
         title: cleanTitle,
-        tags: extractConcreteWords(`${q} ${cleanTitle}`).slice(0, 6),
-        creator: String(info.user ?? "Wikimedia Commons"),
-        pageUrl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(String(page.title ?? ""))}`,
+        tags: extractConcreteWords(cleanTitle).slice(0, 6),
+        creator: cleanMeta(metadata.Artist?.value) || String(info.user ?? "Wikimedia Commons"),
+        pageUrl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(String(entry.title ?? ""))}`,
         thumb,
-        duration: Math.max(4, Math.min(60, Math.round(Number(info.duration ?? 12)))),
+        duration: Math.max(1, Math.round(duration)),
         portrait: height > width,
-        sources: [{ url: fileUrl, width, height, bytes: sizeBytes }],
-      };
-      if (!isAbstractAsset(candidate)) {
-        results.push(attachLiveDemographics(candidate));
-      }
+        license: license || "Check the file page for licence terms",
+        licenseUrl: /^https?:\/\//i.test(licenseUrl) ? licenseUrl : undefined,
+        sources,
+      }));
     }
-    return results.slice(0, limit);
+    return { assets, hasMore: typeof data.continue?.gsroffset === "number", status: "ok" };
   } catch {
-    return [];
+    return unavailable("Wikimedia is temporarily unavailable.");
   }
 }
 
-/**
- * NASA Image & Video Library API — public-domain HD MP4 footage of Earth,
- * oceans, clouds, space, science, and engineering.
- */
-async function searchNasaLive(
-  query: string,
-  limit: number,
-): Promise<StockAsset[]> {
-  const q = query.trim() || "earth";
-  const url = `https://images-api.nasa.gov/search?q=${encodeURIComponent(q)}&media_type=video&page_size=${Math.min(8, limit)}`;
+/** NASA's search is key-free; resolve only the MP4 URLs in its asset manifests. */
+async function searchNasaLive(query: string, limit: number, page = 1): Promise<ProviderPage> {
+  const url = new URL("https://images-api.nasa.gov/search");
+  if (query.trim()) url.searchParams.set("q", query.trim());
+  url.searchParams.set("media_type", "video");
+  url.searchParams.set("page_size", String(limit));
+  url.searchParams.set("page", String(page));
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 7000);
-    const response = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!response.ok) return [];
-
+    const response = await fetch(url, { signal: AbortSignal.timeout(7000), cache: "no-store" });
+    if (!response.ok) return unavailable(providerError("NASA", response.status));
     const data = (await response.json()) as {
       collection?: {
-        items?: {
-          href?: string;
-          data?: { nasa_id?: string; title?: string; keywords?: string[]; center?: string }[];
-          links?: { rel?: string; href?: string }[];
-        }[];
+        items?: { href?: string; data?: { nasa_id?: string; title?: string; keywords?: string[]; center?: string }[]; links?: { rel?: string; href?: string }[] }[];
+        links?: { rel?: string }[];
+        metadata?: { total_hits?: number };
       };
     };
-
-    const items = (data.collection?.items ?? []).slice(0, Math.min(6, limit));
-    const resolved = await Promise.all(
-      items.map(async (item): Promise<StockAsset | null> => {
-        const meta = item.data?.[0];
-        const thumb = item.links?.find((l) => l.rel === "preview")?.href;
-        if (!meta?.nasa_id || !thumb || !item.href) return null;
-        try {
-          const manifestRes = await fetch(item.href);
-          if (!manifestRes.ok) return null;
-          const files = (await manifestRes.json()) as string[];
-          const mp4s = files
-            .filter((f) => typeof f === "string" && f.endsWith(".mp4"))
-            .map((f) => f.replace(/^http:\/\//, "https://"));
-          if (mp4s.length === 0) return null;
-
-          const pickBySuffix = (suffix: string) =>
-            mp4s.find((f) => f.toLowerCase().includes(suffix));
-          const sources: StockSource[] = [];
-          const mobile = pickBySuffix("~mobile.mp4") || pickBySuffix("~small.mp4");
-          const medium = pickBySuffix("~medium.mp4") || pickBySuffix("~preview.mp4");
-          const large = pickBySuffix("~large.mp4") || pickBySuffix("~orig.mp4");
-          if (mobile) sources.push({ url: mobile, width: 640, height: 360 });
-          if (medium) sources.push({ url: medium, width: 1280, height: 720 });
-          if (large && sources.length === 0) {
-            sources.push({ url: large, width: 1920, height: 1080 });
+    const items = data.collection?.items ?? [];
+    const resolved = await Promise.all(items.map(async (item): Promise<StockAsset | null> => {
+      const meta = item.data?.[0];
+      const thumb = item.links?.find((link) => link.rel === "preview")?.href;
+      if (!meta?.nasa_id || !thumb || !item.href) return null;
+      try {
+        const manifestUrl = new URL(item.href.replace(/^http:\/\//, "https://"));
+        if (manifestUrl.protocol !== "https:" || manifestUrl.hostname !== "images-assets.nasa.gov") return null;
+        const manifest = await fetch(manifestUrl, { signal: AbortSignal.timeout(7000), cache: "no-store" });
+        if (!manifest.ok) return null;
+        const files = (await manifest.json()) as unknown;
+        if (!Array.isArray(files)) return null;
+        const mp4s = files.flatMap((file): string[] => {
+          if (typeof file !== "string") return [];
+          try {
+            const url = new URL(file.replace(/^http:\/\//, "https://"));
+            return url.protocol === "https:" && url.hostname === "images-assets.nasa.gov" && /\.mp4$/i.test(url.pathname)
+              ? [url.toString()]
+              : [];
+          } catch {
+            return [];
           }
-          if (sources.length === 0) {
-            sources.push({ url: mp4s[0], width: 1280, height: 720 });
-          }
-
-          return {
-            id: `nasa-${meta.nasa_id}`,
-            provider: "nasa",
-            type: "video",
-            title: meta.title || "NASA Footage",
-            tags: (meta.keywords ?? extractConcreteWords(meta.title || q)).slice(0, 6),
-            creator: meta.center ? `NASA / ${meta.center}` : "NASA",
-            pageUrl: `https://images.nasa.gov/details/${encodeURIComponent(meta.nasa_id)}`,
-            thumb: thumb.replace(/^http:\/\//, "https://"),
-            duration: 15,
-            portrait: false,
-            sources,
-          };
-        } catch {
-          return null;
-        }
-      }),
-    );
-
-    return resolved.filter((item): item is StockAsset => item !== null);
+        });
+        if (!mp4s.length) return null;
+        const pick = (suffix: string) => mp4s.find((file) => file.toLowerCase().includes(suffix));
+        const sources: StockSource[] = [];
+        const mobile = pick("~mobile.mp4") || pick("~small.mp4");
+        const medium = pick("~medium.mp4") || pick("~preview.mp4");
+        const large = pick("~large.mp4") || pick("~orig.mp4");
+        if (mobile) sources.push({ url: mobile, width: 640, height: 360 });
+        if (medium) sources.push({ url: medium, width: 1280, height: 720 });
+        if (large && !sources.length) sources.push({ url: large, width: 1920, height: 1080 });
+        if (!sources.length) sources.push({ url: mp4s[0], width: 1280, height: 720 });
+        return attachLiveDemographics({
+          id: `nasa-${meta.nasa_id}`, provider: "nasa", type: "video",
+          title: meta.title || "NASA Footage",
+          tags: (meta.keywords ?? extractConcreteWords(meta.title || query)).slice(0, 6),
+          creator: meta.center ? `NASA / ${meta.center}` : "NASA",
+          pageUrl: `https://images.nasa.gov/details/${encodeURIComponent(meta.nasa_id)}`,
+          thumb: thumb.replace(/^http:\/\//, "https://"), duration: 15, portrait: false, sources,
+        });
+      } catch {
+        return null;
+      }
+    }));
+    const total = data.collection?.metadata?.total_hits;
+    return {
+      assets: resolved.filter((asset): asset is StockAsset => asset !== null),
+      hasMore: typeof total === "number" ? page * limit < total : Boolean(data.collection?.links?.some((link) => link.rel === "next")),
+      status: "ok",
+    };
   } catch {
-    return [];
+    return unavailable("NASA is temporarily unavailable.");
   }
 }
+
+type PixabayPageData = { hits?: Record<string, unknown>[]; totalHits?: number };
+class PixabayPageRangeError extends Error {}
+const PIXABAY_CACHE_SECONDS = 24 * 60 * 60;
+const globalPixabay = globalThis as typeof globalThis & {
+  __raPixabayPages?: Map<string, { ts: number; data: PixabayPageData }>;
+  __raPixabayPending?: Map<string, Promise<PixabayPageData>>;
+};
 
 async function searchPixabayLive(
   query: string,
   limit: number,
   peopleHint?: PeopleRepresentation,
-): Promise<StockAsset[] | null> {
+  page = 1,
+): Promise<ProviderPage> {
   const key = process.env.PIXABAY_API_KEY;
-  if (!key) return null;
-  const q = query.trim() || "city office people";
-  const url = `https://pixabay.com/api/videos/?key=${key}&q=${encodeURIComponent(q)}&per_page=${limit}`;
+  if (!key) return { assets: [], hasMore: false, status: "unconfigured" };
+  // Pixabay requires at least three results per page; slice its pages when the
+  // combined search assigns a smaller quota so no hits are skipped.
+  const upstreamLimit = Math.max(3, limit);
+  const offset = (page - 1) * limit;
+  const fetchPage = async (number: number, perPage: number): Promise<PixabayPageData> => {
+    // Pixabay requires caching API responses for 24 hours. Keep a bounded
+    // in-process cache and opt into Next's shared data cache for serverless.
+    // Never put the raw API key into our own cache keys or client responses.
+    const keyHash = createHash("sha256").update(key).digest("hex");
+    const cacheKey = JSON.stringify([keyHash, query.trim().slice(0, 100), perPage, number]);
+    const pages = globalPixabay.__raPixabayPages ??= new Map();
+    const pending = globalPixabay.__raPixabayPending ??= new Map();
+    const cached = pages.get(cacheKey);
+    if (cached && Date.now() - cached.ts < PIXABAY_CACHE_SECONDS * 1000) return cached.data;
+    const existing = pending.get(cacheKey);
+    if (existing) return existing;
+
+    const request = (async () => {
+      const url = new URL("https://pixabay.com/api/videos/");
+      url.searchParams.set("key", key);
+      if (query.trim()) url.searchParams.set("q", query.trim().slice(0, 100));
+      url.searchParams.set("per_page", String(perPage));
+      url.searchParams.set("page", String(number));
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(7000), next: { revalidate: PIXABAY_CACHE_SECONDS },
+      });
+      if (!response.ok) {
+        // Once Pixabay's accessible results are exhausted it returns 400 rather
+        // than an empty page. Do not confuse that with an invalid key.
+        if (response.status === 400 && number > 1) {
+          const message = await response.text().catch(() => "");
+          if (/["']?page["']?\s+is\s+out\s+of\s+valid\s+range/i.test(message)) throw new PixabayPageRangeError();
+        }
+        throw new Error(String(response.status));
+      }
+      const data = (await response.json()) as PixabayPageData;
+      pages.set(cacheKey, { ts: Date.now(), data });
+      if (pages.size > 500) pages.delete(pages.keys().next().value!);
+      return data;
+    })();
+    pending.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      pending.delete(cacheKey);
+    }
+  };
+  const readSlice = async (perPage: number, count: number) => {
+    const number = Math.floor(offset / perPage) + 1;
+    const withinPage = offset % perPage;
+    const first = await fetchPage(number, perPage);
+    const firstHits = first.hits ?? [];
+    let selected = firstHits.slice(withinPage, withinPage + count);
+    if (withinPage + count > perPage && firstHits.length === perPage) {
+      try {
+        const next = await fetchPage(number + 1, perPage);
+        selected = [...selected, ...(next.hits ?? []).slice(0, count - selected.length)];
+      } catch (error) {
+        if (!(error instanceof PixabayPageRangeError)) throw error;
+      }
+    }
+    return { selected, first, firstHits, perPage };
+  };
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 7000);
-    const response = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!response.ok) return null;
-    const data = (await response.json()) as { hits?: Record<string, unknown>[] };
-    const mapped = (data.hits ?? [])
-      .map((hit) => {
-        const videos = (hit.videos ?? {}) as Record<string, Record<string, unknown>>;
-        const sources: StockSource[] = Object.values(videos)
-          .filter((variant) => variant && typeof variant.url === "string")
-          .map((variant) => ({
-            url: variant.url as string,
-            width: Number(variant.width ?? 0),
-            height: Number(variant.height ?? 0),
-            bytes: Number(variant.size ?? 0),
-          }));
-        const mediumThumb = (videos.medium?.thumbnail ??
-          videos.small?.thumbnail ??
-          "") as string;
-        return {
-          id: `pixabay-${hit.id}`,
-          provider: "pixabay",
-          type: "video",
-          title: String(hit.tags ?? "Pixabay clip").split(",")[0].trim(),
-          tags: String(hit.tags ?? "")
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean),
-          creator: String(hit.user ?? "Pixabay"),
-          pageUrl: String(hit.pageURL ?? "https://pixabay.com/videos/"),
-          thumb: mediumThumb,
-          duration: Number(hit.duration ?? 10),
-          sources,
-        } satisfies StockAsset;
-      })
-      .filter((asset) => asset.sources.length > 0 && !isAbstractAsset(asset))
-      .map((asset) => attachLiveDemographics(asset, peopleHint));
-    return mapped.length > 0 ? mapped : null;
-  } catch {
-    return null;
+    let slice;
+    try {
+      slice = await readSlice(upstreamLimit, limit);
+    } catch (error) {
+      if (!(error instanceof PixabayPageRangeError)) throw error;
+      // Standard Pixabay keys expose the first 500 hits. A partial final page
+      // can be rejected when its requested page size crosses that boundary;
+      // realign to 25-hit pages so those last clips are not lost.
+      if (offset >= 500) return { assets: [], hasMore: false, status: "ok" };
+      try {
+        slice = await readSlice(25, Math.min(limit, 500 - offset));
+      } catch (retryError) {
+        if (retryError instanceof PixabayPageRangeError) return { assets: [], hasMore: false, status: "ok" };
+        throw retryError;
+      }
+    }
+    const { selected, first, firstHits, perPage } = slice;
+    const assets = selected.map((hit) => {
+      const videos = (hit.videos ?? {}) as Record<string, Record<string, unknown>>;
+      const sources: StockSource[] = Object.values(videos)
+        .filter((variant) => variant && typeof variant.url === "string" && Boolean(variant.url))
+        .map((variant) => ({ url: variant.url as string, width: Number(variant.width ?? 0), height: Number(variant.height ?? 0), bytes: Number(variant.size ?? 0) }));
+      return {
+        id: `pixabay-${hit.id}`, provider: "pixabay", type: "video",
+        title: String(hit.tags ?? "Pixabay clip").split(",")[0].trim(),
+        tags: String(hit.tags ?? "").split(",").map((tag) => tag.trim()).filter(Boolean),
+        creator: String(hit.user ?? "Pixabay"), pageUrl: String(hit.pageURL ?? "https://pixabay.com/videos/"),
+        thumb: String(videos.medium?.thumbnail ?? videos.small?.thumbnail ?? videos.tiny?.thumbnail ?? ""),
+        duration: Number(hit.duration ?? 10), sources,
+      } satisfies StockAsset;
+    }).filter((asset) => asset.sources.length > 0).map((asset) => attachLiveDemographics(asset, peopleHint));
+    return {
+      assets,
+      hasMore: typeof first.totalHits === "number" ? offset + limit < first.totalHits : firstHits.length === perPage,
+      status: "ok",
+    };
+  } catch (error) {
+    const status = error instanceof Error ? Number(error.message) : 0;
+    return unavailable(providerError("Pixabay", status));
   }
 }
 
 function interleave(lists: StockAsset[][], limit: number): StockAsset[] {
   const out: StockAsset[] = [];
   const seen = new Set<string>();
-  let idx = 0;
-  while (out.length < limit) {
-    let added = false;
+  const maxLength = Math.max(0, ...lists.map((list) => list.length));
+  for (let index = 0; index < maxLength && out.length < limit; index += 1) {
     for (const list of lists) {
-      const item = list[idx];
-      if (item && !seen.has(item.id)) {
-        seen.add(item.id);
-        out.push(item);
-        added = true;
-        if (out.length >= limit) break;
-      }
+      const asset = list[index];
+      if (!asset) continue;
+      const key = stockAssetKey(asset);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(asset);
+      if (out.length >= limit) break;
     }
-    if (!added) break;
-    idx += 1;
   }
   return out;
 }
 
-/**
- * Multi-site stock video search (100% real-world moving video clips, zero abstract).
- * Supports `all`, `pexels`, `mixkit`, `wikimedia`, `nasa`, and `pixabay`, plus
- * optional demographic/cast filtering (`peopleRepresentation`).
- */
+export type StockSearchResult = {
+  assets: StockAsset[];
+  source: string;
+  page: number;
+  hasMore: boolean;
+  notices: string[];
+};
+
+/** Manual searches can include all video styles; automatic matching retains its real-footage filter. */
 export async function searchStock(
   query: string,
   opts: {
     type?: MediaType;
     limit?: number;
+    page?: number;
     provider?: string;
     peopleRepresentation?: PeopleRepresentation;
+    includeAbstract?: boolean;
   } = {},
-): Promise<{ assets: StockAsset[]; source: string }> {
-  const limit = opts.limit ?? 20;
+): Promise<StockSearchResult> {
+  const limit = Number.isFinite(opts.limit) ? Math.min(40, Math.max(1, Math.floor(opts.limit!))) : 20;
+  const page = Number.isFinite(opts.page) ? Math.min(MAX_STOCK_PAGE, Math.max(1, Math.floor(opts.page!))) : 1;
   const provider = (opts.provider ?? "all").toLowerCase();
   const people = opts.peopleRepresentation ?? "all";
   const effectiveQuery = query.trim();
   const plan = effectiveQuery ? buildVisualSearchPlan(effectiveQuery) : null;
   const allowScenic = plan ? plan.allowNonHumanScenic : true;
   const peopleAwareQuery = withPeopleQuery(effectiveQuery, people, allowScenic && Boolean(effectiveQuery));
-
-  const filterCompatible = (list: StockAsset[]) =>
-    list.filter((asset) =>
-      isAssetCompatibleWithPeople(asset, people, {
-        allowNonHumanScenic: allowScenic,
-      }),
-    );
-
-  if (provider === "pexels") {
-    const live = await searchPexelsLive(peopleAwareQuery, limit, people);
-    const liveFiltered = live ? filterCompatible(live) : [];
-    if (liveFiltered.length > 0) return { assets: liveFiltered, source: "pexels-live" };
-    const local = searchLocalCatalog(effectiveQuery, {
-      type: "video",
-      limit,
-      peopleRepresentation: people,
-      allowNonHumanScenic: allowScenic,
+  const filterCompatible = (list: StockAsset[]) => list.filter((asset) =>
+    isAssetCompatibleWithPeople(asset, people, { allowNonHumanScenic: allowScenic, includeAbstract: opts.includeAbstract }),
+  );
+  const localPage = (size: number): ProviderPage => {
+    const items = searchLocalCatalog(effectiveQuery, {
+      type: "video", limit: size + 1, offset: (page - 1) * size,
+      peopleRepresentation: people, allowNonHumanScenic: allowScenic,
+      includeAbstract: opts.includeAbstract, requireTextMatch: true,
     });
-    return {
-      assets:
-        local.length > 0
-          ? local
-          : filterCompatible(VIDEO_CATALOG).slice(0, limit),
-      source: "pexels-pool",
-    };
-  }
-
-  if (provider === "mixkit") {
-    const mixkit = filterCompatible(
-      await searchMixkitLive(peopleAwareQuery || "office people", limit, plan?.slugs ?? []),
-    );
-    if (mixkit.length > 0) return { assets: mixkit, source: "mixkit-live" };
-    return {
-      assets: searchLocalCatalog(effectiveQuery, {
-        type: "video",
-        limit,
-        peopleRepresentation: people,
-        allowNonHumanScenic: allowScenic,
-      }),
-      source: "pexels-pool",
-    };
-  }
-
-  if (provider === "wikimedia") {
-    const wiki = filterCompatible(
-      await searchWikimediaLive(peopleAwareQuery || "city", limit),
-    );
-    return { assets: wiki, source: "wikimedia-live" };
-  }
-
-  if (provider === "nasa") {
-    const nasa = (await searchNasaLive(effectiveQuery || "earth", limit)).filter(
-      (a) => !isAbstractAsset(a),
-    );
-    return { assets: nasa, source: "nasa-live" };
-  }
-
-  if (provider === "pixabay") {
-    const pixabay = await searchPixabayLive(peopleAwareQuery, limit, people);
-    const pixFiltered = pixabay ? filterCompatible(pixabay) : [];
-    if (pixFiltered.length > 0) {
-      return { assets: pixFiltered, source: "pixabay-live" };
-    }
-    const local = searchLocalCatalog(effectiveQuery, {
-      type: "video",
-      limit,
-      peopleRepresentation: people,
-      allowNonHumanScenic: allowScenic,
-    });
-    return { assets: local, source: "pexels-pool" };
-  }
-
-  // provider === "all": merge verified local pool + live Pexels/Mixkit/Pixabay, strictly filtering abstract & mismatched race
-  const [pexelsLive, mixkitLive, pixabayLive] = await Promise.all([
-    searchPexelsLive(peopleAwareQuery, Math.ceil(limit / 2), people),
-    effectiveQuery && people === "all"
-      ? searchMixkitLive(effectiveQuery, Math.ceil(limit / 2), plan?.slugs ?? [])
-      : Promise.resolve([]),
-    searchPixabayLive(peopleAwareQuery, Math.ceil(limit / 3), people),
-  ]);
-
-  const pexelsLocal = searchLocalCatalog(effectiveQuery, {
-    type: "video",
-    limit,
-    peopleRepresentation: people,
-    allowNonHumanScenic: allowScenic,
+    return { assets: items.slice(0, size), hasMore: items.length > size, status: "ok" };
+  };
+  const fromPage = (result: ProviderPage, source: string, notices: string[] = []): StockSearchResult => ({
+    assets: filterCompatible(result.assets), source, page, hasMore: result.hasMore,
+    notices: [...notices, ...(result.reason ? [result.reason] : [])],
   });
 
-  const livePexelsClean = pexelsLive ? filterCompatible(pexelsLive) : [];
-  const liveMixkitClean = filterCompatible(mixkitLive);
-  const livePixabayClean = pixabayLive ? filterCompatible(pixabayLive) : [];
-
-  const pexelsList = livePexelsClean.length > 0 ? livePexelsClean : pexelsLocal;
-  const lists = [pexelsList, liveMixkitClean, livePixabayClean, pexelsLocal].filter(
-    (l) => l.length > 0,
-  );
-
-  if (lists.length === 0) {
-    return {
-      assets: filterCompatible(VIDEO_CATALOG).slice(0, limit),
-      source: "pexels-pool",
-    };
+  if (provider === "pexels") {
+    const live = await searchPexelsLive(peopleAwareQuery, limit, people, page);
+    if (live.status === "ok") return fromPage(live, "pexels-live");
+    const notice = live.status === "unconfigured"
+      ? "Pexels is showing the small bundled library. Set PEXELS_API_KEY for live search."
+      : `${live.reason} Showing matching clips from the bundled Pexels library instead.`;
+    return fromPage(localPage(limit), "pexels-pool", [notice]);
+  }
+  if (provider === "mixkit") return fromPage(await searchMixkitLive(peopleAwareQuery, limit, [], page), "mixkit-live");
+  if (provider === "wikimedia") return fromPage(await searchWikimediaLive(peopleAwareQuery, limit, page), "wikimedia-live");
+  if (provider === "nasa") return fromPage(await searchNasaLive(effectiveQuery, limit, page), "nasa-live");
+  if (provider === "pixabay") {
+    const live = await searchPixabayLive(peopleAwareQuery, limit, people, page);
+    return fromPage(live, "pixabay-live", live.status === "unconfigured" ? ["Set PIXABAY_API_KEY to search Pixabay's full video catalogue."] : []);
   }
 
-  const sourcesUsed = [
-    livePexelsClean.length ? "pexels-live" : pexelsLocal.length ? "pexels" : null,
-    liveMixkitClean.length ? "mixkit" : null,
-    livePixabayClean.length ? "pixabay" : null,
-  ].filter(Boolean);
-
+  // Each provider gets its own quota on each page. Returning all of those
+  // results (rather than truncating larger provider pages) avoids losing hits.
+  const sources: ("pexels" | "mixkit" | "wikimedia" | "nasa" | "pixabay")[] = ["pexels", "mixkit", "wikimedia", "nasa"];
+  if (process.env.PIXABAY_API_KEY) sources.push("pixabay");
+  const enabled = sources.slice(0, Math.max(1, limit));
+  const quota = Math.max(1, Math.floor(limit / enabled.length));
+  const pages = await Promise.all(enabled.map(async (name): Promise<{ name: string; result: ProviderPage }> => {
+    if (name === "pexels") {
+      const live = await searchPexelsLive(peopleAwareQuery, quota, people, page);
+      if (live.status === "ok") return { name: "pexels-live", result: live };
+      const local = localPage(quota);
+      local.reason = live.status === "unconfigured"
+        ? "Pexels is showing the small bundled library. Set PEXELS_API_KEY for live search."
+        : `${live.reason} Showing matching bundled Pexels clips instead.`;
+      return { name: "pexels-pool", result: local };
+    }
+    if (name === "mixkit") return { name: "mixkit", result: await searchMixkitLive(peopleAwareQuery, quota, [], page) };
+    if (name === "wikimedia") return { name: "wikimedia", result: await searchWikimediaLive(peopleAwareQuery, quota, page) };
+    if (name === "nasa") return { name: "nasa", result: await searchNasaLive(effectiveQuery, quota, page) };
+    return { name: "pixabay", result: await searchPixabayLive(peopleAwareQuery, quota, people, page) };
+  }));
+  const cleaned = pages.map(({ name, result }) => ({ name, result, assets: filterCompatible(result.assets) }));
+  const sourcesUsed = cleaned.filter((entry) => entry.assets.length).map((entry) => entry.name);
   return {
-    assets: interleave(lists, limit),
-    source: sourcesUsed.join(" + ") || "pexels-pool",
+    assets: interleave(cleaned.map((entry) => entry.assets), limit),
+    source: sourcesUsed.join(" + ") || "No results",
+    page,
+    hasMore: cleaned.some(({ result }) => result.hasMore),
+    notices: [...new Set(cleaned.map(({ result }) => result.reason).filter((reason): reason is string => Boolean(reason)))],
   };
 }
 
@@ -1508,14 +1717,14 @@ export async function matchVideoForNarration(opts: {
 
   const [pexelsLive, mixkitLive, nasaLive, pixabayLive] = await Promise.all([
     process.env.PEXELS_API_KEY
-      ? searchPexelsLive(query, 12, people)
+      ? searchPexelsLive(query, 12, people).then((result) => result.assets)
       : Promise.resolve(null),
     people === "all" || plan.allowNonHumanScenic
-      ? searchMixkitLive(query, 12, mixkitSlugs)
+      ? searchMixkitLive(query, 12, mixkitSlugs).then((result) => result.assets)
       : Promise.resolve([]),
-    plan.preferNasa ? searchNasaLive(plan.displayQuery, 6) : Promise.resolve([]),
+    plan.preferNasa ? searchNasaLive(plan.displayQuery, 6).then((result) => result.assets) : Promise.resolve([]),
     process.env.PIXABAY_API_KEY
-      ? searchPixabayLive(query, 10, people)
+      ? searchPixabayLive(query, 10, people).then((result) => result.assets)
       : Promise.resolve(null),
   ]);
 
@@ -1545,7 +1754,7 @@ export async function matchVideoForNarration(opts: {
     (people === "all" || plan.allowNonHumanScenic) &&
     (!best || scoreAsset(best, plan.targetTokens) < 10)
   ) {
-    const wiki = filterCompatible(await searchWikimediaLive(query, 8));
+    const wiki = filterCompatible((await searchWikimediaLive(query, 8)).assets);
     if (wiki.length > 0) {
       best = rankCandidates(
         [...pool, ...wiki],

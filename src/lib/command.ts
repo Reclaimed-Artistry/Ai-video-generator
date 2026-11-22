@@ -162,6 +162,8 @@ export async function interpretEditCommand(
             mediaTitle: asset.title,
             mediaCreator: asset.creator,
             mediaProvider: asset.provider,
+            mediaPageUrl: asset.pageUrl,
+            mediaLicense: asset.license ?? null,
           },
           requestedPeople,
         );
@@ -325,6 +327,8 @@ export async function interpretEditCommand(
             mediaTitle: matched.title,
             mediaCreator: matched.creator,
             mediaProvider: matched.provider,
+            mediaPageUrl: matched.pageUrl,
+            mediaLicense: matched.license ?? null,
           },
           activePeople,
         );
@@ -399,6 +403,8 @@ export async function interpretEditCommand(
       mediaTitle: matched?.title ?? null,
       mediaCreator: matched?.creator ?? null,
       mediaProvider: matched?.provider ?? "pexels",
+      mediaPageUrl: matched?.pageUrl ?? null,
+      mediaLicense: matched?.license ?? null,
       duration: null,
       transition: "fade",
     });
@@ -479,6 +485,8 @@ export async function interpretEditCommand(
           mediaTitle: matched.title,
           mediaCreator: matched.creator,
           mediaProvider: matched.provider,
+          mediaPageUrl: matched.pageUrl,
+          mediaLicense: matched.license ?? null,
         });
         scriptDirty = true;
         changes.push(

@@ -53,6 +53,7 @@ import {
 } from "@/lib/client-store";
 import { resolveMediaUrl } from "@/lib/media-url";
 import { getMusicTrack, MUSIC_TRACKS } from "@/lib/music";
+import { MAX_STOCK_PAGE, stockAssetKey } from "@/lib/stock-id";
 import {
   ASPECT_ORDER,
   ASPECTS,
@@ -204,6 +205,20 @@ export default function Studio({
     initialProject.script.scenes[0]?.mediaQuery ?? "",
   );
   const [searching, setSearching] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [mediaPage, setMediaPage] = useState(0);
+  const [mediaHasMore, setMediaHasMore] = useState(false);
+  const [mediaNotices, setMediaNotices] = useState<string[]>([]);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [appliedMediaSearch, setAppliedMediaSearch] = useState<{
+    query: string;
+    provider: StockProvider;
+    people: PeopleRepresentation;
+  }>({
+    query: initialProject.script.scenes[0]?.mediaQuery ?? "",
+    provider: "all",
+    people: initialProject.script.options?.peopleRepresentation ?? "all",
+  });
   const [matchingSceneId, setMatchingSceneId] = useState<string | null>(null);
   const [syncingAllMedia, setSyncingAllMedia] = useState(false);
   const [hoveredAssetId, setHoveredAssetId] = useState<string | null>(null);
@@ -229,6 +244,8 @@ export default function Studio({
   const autorunDone = useRef(false);
   const saveSeqRef = useRef(0);
   const matchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mediaRequestId = useRef(0);
+  const mediaAbortRef = useRef<AbortController | null>(null);
 
   const scenes = useMemo(() => project.script.scenes ?? [], [project.script.scenes]);
   const activeIndex = useMemo(() => {
@@ -272,28 +289,71 @@ export default function Studio({
 
   const hasMasterFile = Boolean(inlineBlobUrl) || Boolean(project.outputPath) || render.status === "done";
 
-  const searchMedia = useCallback(
-    async (
-      query: string,
-      provider: StockProvider = providerFilter,
-      peopleOverride: PeopleRepresentation = peopleRepresentation,
-    ) => {
+  const loadMediaPage = useCallback(async (
+    query: string,
+    provider: StockProvider,
+    people: PeopleRepresentation,
+    page: number,
+    append = false,
+  ) => {
+    // A slower earlier request must never overwrite a newer search or filter.
+    mediaAbortRef.current?.abort();
+    const controller = new AbortController();
+    mediaAbortRef.current = controller;
+    const requestId = ++mediaRequestId.current;
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setAppliedMediaSearch({ query, provider, people });
+      setAssets([]);
+      setMediaSource("");
+      setMediaNotices([]);
+      setMediaHasMore(false);
+      setMediaPage(0);
       setSearching(true);
-      try {
-        const response = await fetch(
-          `/api/media/search?q=${encodeURIComponent(query)}&provider=${provider}&people=${encodeURIComponent(peopleOverride)}&limit=24`,
-        );
-        const data = await response.json().catch(() => ({}));
-        if (response.ok) {
-          setAssets(Array.isArray(data.assets) ? data.assets : []);
-          setMediaSource(data.source ?? "");
-        }
-      } finally {
+      setLoadingMore(false);
+    }
+    setMediaError(null);
+    try {
+      const params = new URLSearchParams({ q: query, provider, people, limit: "24", page: String(page) });
+      const response = await fetch(`/api/media/search?${params}`, { signal: controller.signal, cache: "no-store" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error("Search failed");
+      if (requestId !== mediaRequestId.current) return;
+      const incoming: StockAsset[] = Array.isArray(data.assets) ? data.assets : [];
+      setAssets((current) => {
+        const merged = append ? [...current, ...incoming] : incoming;
+        const seen = new Set<string>();
+        return merged.filter((asset) => {
+          const key = stockAssetKey(asset);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      });
+      setMediaSource(typeof data.source === "string" ? data.source : "");
+      setMediaNotices(Array.isArray(data.notices) ? data.notices.filter((notice: unknown): notice is string => typeof notice === "string") : []);
+      setMediaHasMore(Boolean(data.hasMore) && page < MAX_STOCK_PAGE);
+      setMediaPage(page);
+    } catch (error) {
+      if (controller.signal.aborted || requestId !== mediaRequestId.current) return;
+      setMediaError(error instanceof Error && error.message !== "Search failed"
+        ? "Could not reach stock search. Please try again."
+        : "Stock search failed. Please try again.");
+    } finally {
+      if (requestId === mediaRequestId.current) {
         setSearching(false);
+        setLoadingMore(false);
       }
-    },
-    [providerFilter, peopleRepresentation],
-  );
+    }
+  }, []);
+
+  const searchMedia = useCallback((
+    query: string,
+    provider: StockProvider = providerFilter,
+    peopleOverride: PeopleRepresentation = peopleRepresentation,
+  ) => loadMediaPage(query.trim(), provider, peopleOverride, 1),
+  [loadMediaPage, providerFilter, peopleRepresentation]);
 
   useEffect(() => {
     let active = true;
@@ -311,16 +371,9 @@ export default function Studio({
       })
       .catch(() => undefined);
 
-    fetch(
-      `/api/media/search?q=${encodeURIComponent(firstQuery)}&provider=all&people=${encodeURIComponent(initialPeople)}&limit=24`,
-    )
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!active || !data) return;
-        setAssets(Array.isArray(data.assets) ? data.assets : []);
-        setMediaSource(data.source ?? "");
-      })
-      .catch(() => undefined);
+    void Promise.resolve().then(() => {
+      if (active) return loadMediaPage(firstQuery.trim(), "all", initialPeople, 1);
+    });
 
     if (ephemeralMode) {
       void loadLocalVideoBlob(initialProject.id).then((blob) => {
@@ -332,8 +385,10 @@ export default function Studio({
 
     return () => {
       active = false;
+      mediaRequestId.current += 1;
+      mediaAbortRef.current?.abort();
     };
-  }, [initialProject, ephemeralMode]);
+  }, [initialProject, ephemeralMode, loadMediaPage]);
 
   // Apply live trim start & playback speed to the Storyboard monitor video element
   useEffect(() => {
@@ -679,6 +734,8 @@ export default function Studio({
       mediaTitle: unusedAsset?.title ?? null,
       mediaCreator: unusedAsset?.creator ?? null,
       mediaProvider: unusedAsset?.provider ?? "pexels",
+      mediaPageUrl: unusedAsset?.pageUrl ?? null,
+      mediaLicense: unusedAsset?.license ?? null,
       mediaStart: 0,
       mediaSpeed: 1,
       mediaFilter: "none",
@@ -790,6 +847,9 @@ export default function Studio({
       mediaTitle: cleanUrl.split("/").pop()?.split("?")[0] || "Custom Video URL",
       mediaCreator: "Custom URL",
       mediaProvider: "custom",
+      mediaPageUrl: null,
+      mediaLicense: null,
+      mediaSource: "stock",
       mediaLocked: true,
     });
     setCustomVideoUrl("");
@@ -825,7 +885,7 @@ export default function Studio({
   }
 
   function applyAiVisual(sceneId: string, patch: Partial<Scene>) {
-    updateScene(sceneId, patch);
+    updateScene(sceneId, { mediaPageUrl: null, mediaLicense: null, ...patch });
     if (hasMasterFile) setHasUnrenderedEdits(true);
   }
 
@@ -841,6 +901,8 @@ export default function Studio({
       mediaTitle: null,
       mediaCreator: null,
       mediaProvider: null,
+      mediaPageUrl: null,
+      mediaLicense: null,
       mediaLocked: false,
       stickAction: null,
       aiLipsync: null,
@@ -929,6 +991,9 @@ export default function Studio({
       mediaTitle: asset.title,
       mediaCreator: asset.creator,
       mediaProvider: asset.provider,
+      mediaPageUrl: asset.pageUrl,
+      mediaLicense: asset.license ?? null,
+      mediaSource: "stock",
       mediaQuery: asset.tags.slice(0, 3).join(" "),
       mediaLocked: true,
     });
@@ -2096,6 +2161,14 @@ export default function Studio({
                       Find
                     </button>
                   </div>
+                  {activeScene.mediaPageUrl?.startsWith("https://") ? (
+                    <p className="mt-1.5 text-[10px] text-stone-ink">
+                      {activeScene.mediaLicense ? `${activeScene.mediaLicense} · ` : ""}
+                      <a href={activeScene.mediaPageUrl} target="_blank" rel="noopener noreferrer" className="text-amber-cue underline">
+                        View clip source and licence
+                      </a>
+                    </p>
+                  ) : null}
                 </div>
 
                 <label className="block sm:col-span-3">
@@ -2282,7 +2355,7 @@ export default function Studio({
                       <span>People / Cast</span>
                     </span>
                     <span className="font-tech text-[9px] text-ash">
-                      No abstract media
+                      All video styles
                     </span>
                   </div>
                   <select
@@ -2337,12 +2410,13 @@ export default function Studio({
                   <div className="relative min-w-0 flex-1">
                     <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-ash" />
                     <input
+                      aria-label="Search stock videos"
                       value={search}
                       onChange={(event) => setSearch(event.target.value)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter") void searchMedia(search);
                       }}
-                      placeholder="Search Pexels, Mixkit, Wikimedia, NASA…"
+                      placeholder="Search stock videos…"
                       className="w-full rounded-[3px] border border-line bg-canvas py-2 pl-8 pr-2.5 text-xs text-paper outline-none transition-colors focus:border-amber-cue"
                     />
                   </div>
@@ -2408,87 +2482,111 @@ export default function Studio({
                   <span className="uppercase">{mediaSource || "video-only"}</span>
                 </div>
 
+                {mediaNotices.length > 0 ? (
+                  <div className="space-y-1 rounded-[3px] border border-line bg-inset p-2 text-[10px] leading-relaxed text-stone-ink" role="status">
+                    {mediaNotices.map((notice) => <p key={notice}>{notice}</p>)}
+                  </div>
+                ) : null}
+                {mediaError ? (
+                  <p className="rounded-[3px] border border-line bg-inset p-2 text-xs text-stone-ink" role="alert">{mediaError}</p>
+                ) : null}
+
                 {searching ? (
-                  <div className="grid place-items-center py-10 font-tech text-xs text-stone-ink">
+                  <div className="grid place-items-center py-10 font-tech text-xs text-stone-ink" role="status">
                     <span className="inline-flex items-center gap-2">
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-cue" />
                       Searching stock video libraries…
                     </span>
                   </div>
-                ) : assets.length === 0 ? (
+                ) : assets.length === 0 && !mediaError ? (
                   <div className="rounded-[3px] border border-line bg-inset p-4 text-center font-tech text-xs text-stone-ink">
-                    No clips matched “{search}” on {providerFilter}. Try another term or switch to All Sites.
+                    {mediaHasMore
+                      ? "No usable clips on this page. Load more to keep looking."
+                      : appliedMediaSearch.query
+                        ? `No clips matched “${appliedMediaSearch.query}” on ${appliedMediaSearch.provider}. Try another term or provider.`
+                        : "No clips are available right now. Try another provider or search term."}
                   </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-2">
-                    {assets.map((asset) => {
-                      const isAssigned = activeScene?.mediaId === asset.id;
-                      const hovered = hoveredAssetId === asset.id;
-                      const clipPreview = pickPreviewUrl(asset);
+                ) : assets.length > 0 ? (
+                  <>
+                    <p className="font-tech text-[10px] text-ash" aria-live="polite">
+                      {assets.length} {assets.length === 1 ? "clip" : "clips"} loaded
+                      {appliedMediaSearch.query ? ` for “${appliedMediaSearch.query}”` : ""}
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {assets.map((asset) => {
+                        const isAssigned = activeScene?.mediaId === asset.id;
+                        const hovered = hoveredAssetId === asset.id;
+                        const clipPreview = pickPreviewUrl(asset);
 
-                      return (
-                        <button
-                          key={asset.id}
-                          type="button"
-                          onClick={() => assignMedia(asset)}
-                          onMouseEnter={() => setHoveredAssetId(asset.id)}
-                          onMouseLeave={() =>
-                            setHoveredAssetId((curr) =>
-                              curr === asset.id ? null : curr,
-                            )
-                          }
-                          className={`group overflow-hidden rounded-[3px] border text-left transition-colors ${
-                            isAssigned
-                              ? "border-amber-cue bg-elevated"
-                              : "border-line bg-inset hover:border-line-strong"
-                          }`}
-                        >
-                          <div className="relative aspect-video w-full overflow-hidden bg-black">
-                            {hovered && clipPreview ? (
-                              <video
-                                src={clipPreview}
-                                poster={asset.thumb}
-                                autoPlay
-                                muted
-                                loop
-                                playsInline
-                                className="h-full w-full object-cover"
-                              />
-                            ) : (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={asset.thumb}
-                                alt={asset.title}
-                                loading="lazy"
-                                className="h-full w-full object-cover"
-                              />
-                            )}
-                            <span className="absolute bottom-1 left-1 rounded-[2px] bg-black/80 px-1 py-0.5 font-tech text-[9px] text-paper">
-                              {formatClock(asset.duration ?? 10)}
-                            </span>
-                            <span className="absolute bottom-1 right-1 rounded-[2px] bg-black/80 px-1 py-0.5 font-tech text-[8px] uppercase text-stone-ink">
-                              {asset.provider}
-                            </span>
-                            {isAssigned ? (
-                              <span className="absolute right-1 top-1 inline-flex items-center gap-0.5 rounded-[2px] bg-amber-cue px-1.5 py-0.5 font-tech text-[9px] font-semibold text-[#14110A]">
-                                <Check className="h-2.5 w-2.5" />
-                                IN CUE
-                              </span>
-                            ) : null}
+                        return (
+                          <div
+                            key={stockAssetKey(asset)}
+                            className={`overflow-hidden rounded-[3px] border transition-colors ${
+                              isAssigned
+                                ? "border-amber-cue bg-elevated"
+                                : "border-line bg-inset hover:border-line-strong"
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => assignMedia(asset)}
+                              onMouseEnter={() => setHoveredAssetId(asset.id)}
+                              onMouseLeave={() => setHoveredAssetId((curr) => curr === asset.id ? null : curr)}
+                              className="block w-full text-left"
+                              aria-label={`Use ${asset.title} for scene ${activeIndex + 1}`}
+                            >
+                              <div className="relative aspect-video w-full overflow-hidden bg-black">
+                                {hovered && clipPreview ? (
+                                  <video src={clipPreview} poster={asset.thumb || undefined} autoPlay muted loop playsInline className="h-full w-full object-cover" />
+                                ) : asset.thumb ? (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={asset.thumb} alt={asset.title} loading="lazy" className="h-full w-full object-cover" />
+                                ) : (
+                                  <span className="grid h-full place-items-center text-[10px] text-stone-ink">Video preview</span>
+                                )}
+                                <span className="absolute bottom-1 left-1 rounded-[2px] bg-black/80 px-1 py-0.5 font-tech text-[9px] text-paper">
+                                  {formatClock(asset.duration ?? 10)}
+                                </span>
+                                <span className="absolute bottom-1 right-1 rounded-[2px] bg-black/80 px-1 py-0.5 font-tech text-[8px] uppercase text-stone-ink">
+                                  {asset.provider}
+                                </span>
+                                {isAssigned ? (
+                                  <span className="absolute right-1 top-1 inline-flex items-center gap-0.5 rounded-[2px] bg-amber-cue px-1.5 py-0.5 font-tech text-[9px] font-semibold text-[#14110A]">
+                                    <Check className="h-2.5 w-2.5" /> IN CUE
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="px-2 pt-2">
+                                <p className="truncate text-[11px] font-medium text-paper">{asset.title}</p>
+                                <p className="font-tech truncate text-[9px] uppercase text-ash">{asset.creator}</p>
+                                {asset.license ? <p className="truncate text-[9px] text-stone-ink" title={asset.license}>{asset.license}</p> : null}
+                              </div>
+                            </button>
+                            {asset.pageUrl?.startsWith("https://") ? (
+                              <a href={asset.pageUrl} target="_blank" rel="noopener noreferrer" className="block px-2 pb-2 pt-1 font-tech text-[9px] text-amber-cue underline">
+                                Source &amp; licence ↗
+                              </a>
+                            ) : <span className="block pb-2" />}
                           </div>
-                          <div className="p-2">
-                            <p className="truncate text-[11px] font-medium text-paper">
-                              {asset.title}
-                            </p>
-                            <p className="font-tech truncate text-[9px] uppercase text-ash">
-                              {asset.creator}
-                            </p>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : null}
+
+                {!searching && mediaHasMore ? (
+                  <button
+                    type="button"
+                    disabled={loadingMore}
+                    onClick={() => void loadMediaPage(appliedMediaSearch.query, appliedMediaSearch.provider, appliedMediaSearch.people, mediaPage + 1, true)}
+                    className="w-full rounded-[3px] border border-line bg-inset px-3 py-2 font-tech text-[11px] font-medium text-paper transition-colors hover:border-amber-cue disabled:opacity-50"
+                  >
+                    {loadingMore ? "Loading more…" : "Load more clips"}
+                  </button>
+                ) : null}
+                <p className="text-[10px] leading-relaxed text-ash">
+                  Footage includes <a href="https://www.pexels.com/" target="_blank" rel="noopener noreferrer" className="text-amber-cue underline">Pexels</a> and other providers. Review each clip’s source and licence before publishing; Wikimedia clips may require attribution or share-alike.
+                </p>
               </div>
             ) : null}
 
